@@ -201,10 +201,14 @@ def is_done(run_dir, job):
 def job_state(run_dir, job):
     """done | running | dead | failed | pending (4.7)."""
     job = _load(job)
-    if is_done(run_dir, job):
-        return "done"
+    # Read the marker BEFORE the done check. A worker writes <out> and its meta and only then removes its marker, so
+    # in this order "no marker" always means the outputs are already on disk. The other order lets a worker that
+    # finishes between the two reads look "pending" (not done yet, no marker any more), and the dispatcher launches
+    # the finished job a second time (two ok calls for one prompt).
     run_dir, prompt_path, out_path = _paths(run_dir, job)
     exists, live, m = _marker_live(marker_path(run_dir, job.get("id")))
+    if is_done(run_dir, job):
+        return "done"
     if exists and live:
         return "running"
     if exists and _stale_but_alive(marker_path(run_dir, job.get("id")), m):

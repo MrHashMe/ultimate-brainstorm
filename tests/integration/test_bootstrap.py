@@ -4,7 +4,9 @@
 - Git Bash / POSIX sh: the rendered install.sh with UB_RELEASE_DIR succeeds; a wrong hash aborts before extraction;
   root is refused (POSIX CI only, when running as root or with passwordless sudo).
 - PowerShell 5.1 (`powershell -NoProfile -File`, when available): the same cases for install.ps1, plus a parse check
-  via [System.Management.Automation.Language.Parser]::ParseFile for the template and the rendered file.
+  via [System.Management.Automation.Language.Parser]::ParseFile for the template and the rendered file. In an elevated
+  shell (GitHub's Windows runners run as administrator) the shims get UB_ALLOW_ROOT=1, and a separate case checks that
+  install.ps1 refuses to run elevated without it.
 Shell availability is an environment property: missing shells skip (never "MISSING DEPENDENCY").
 """
 
@@ -46,6 +48,18 @@ def find_sh():
 
 def find_powershell():
     return shutil.which("powershell") if os.name == "nt" else None
+
+
+def windows_elevated():
+    """True in an elevated (administrator) Windows process, e.g. every GitHub Actions Windows runner. install.ps1
+    and install.py refuse such a process unless UB_ALLOW_ROOT=1 (10.4 item 8), like tmphome.TmpHome sets it."""
+    if os.name != "nt":
+        return False
+    try:
+        import ctypes
+        return bool(ctypes.windll.shell32.IsUserAnAdmin())
+    except Exception:  # noqa: BLE001
+        return False
 
 
 def read_bytes(path):
@@ -102,7 +116,13 @@ def shim_env(home, release_dir, extra=None):
     env.update({"HOME": home, "USERPROFILE": home, "UB_HOME": os.path.join(home, ".ultimate-brainstorm"),
                 "UB_RELEASE_DIR": release_dir, "PYTHONDONTWRITEBYTECODE": "1"})
     env["PATH"] = os.path.dirname(sys.executable) + os.pathsep + env.get("PATH", "")
-    env.update(extra or {})
+    if windows_elevated():
+        env["UB_ALLOW_ROOT"] = "1"  # CI runners are elevated; test_elevated_refused covers the refusal itself
+    for k, v in (extra or {}).items():
+        if v is None:
+            env.pop(k, None)
+        else:
+            env[k] = v
     return env
 
 
@@ -223,6 +243,17 @@ class PowerShellShim(unittest.TestCase):
             proc = self.run_ps(os.path.join(bad, "install.ps1"), ["version"], shim_env(home, bad))
             self.assertNotEqual(proc.returncode, 0, paths.describe(proc))
             self.assertRegex((proc.out + proc.err).lower(), r"sha|hash|checksum")
+
+    def test_elevated_refused(self):
+        if not windows_elevated():
+            self.skipTest("elevation refusal is tested in an elevated shell only (GitHub Windows runners)")
+        dist = Release.build(self)
+        with tempfile.TemporaryDirectory() as home:
+            proc = self.run_ps(os.path.join(dist, "install.ps1"), ["version"],
+                               shim_env(home, dist, {"UB_ALLOW_ROOT": None}))
+            self.assertNotEqual(proc.returncode, 0, paths.describe(proc))
+            self.assertIn("elevated", (proc.out + proc.err).lower())
+            self.assertNotIn(Release.version, proc.out)
 
 
 if __name__ == "__main__":

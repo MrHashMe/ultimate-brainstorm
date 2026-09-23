@@ -195,6 +195,16 @@ class ShimArgv(unittest.TestCase):
                     self.assertIn(r.returncode, (0, 2), r.stderr)
                     self.assertEqual(th.fake_calls("codex")[-1]["argv"], ["plugin", "noop"] + args)
 
+    @unittest.skipIf(os.name == "nt", "POSIX sh shims only")
+    def test_posix_shim_needs_nothing_from_path(self):
+        # CI runners keep Python outside /usr/bin, so the tests' PATH has no coreutils; a shim that calls `dirname`
+        # (or anything else) passes locally with a system Python and fails there. An empty PATH catches it anywhere.
+        with TmpHome(tools=("codex",)) as th:
+            r = call(th, "codex", ["plugin", "noop", "x y"], env_extra={"PATH": os.path.join(th.root, "empty")})
+            self.assertIn(r.returncode, (0, 2), r.stderr)
+            self.assertNotIn(b"not found", r.stderr)
+            self.assertEqual(th.fake_calls("codex")[-1]["argv"], ["plugin", "noop", "x y"])
+
     def test_cmd_shim_text(self):
         self.assertEqual(shims.cmd_text("claude"), '@"%UB_FAKE_PY%" "%~dp0fakecli.py" claude %*\r\n')
         with TmpHome(tools=("claude",)) as th:

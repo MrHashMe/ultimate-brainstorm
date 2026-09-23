@@ -230,7 +230,7 @@ kit/                                          repo root = plugin root = marketpl
   .agents/plugins/marketplace.json            B1  Codex marketplace (read before .claude-plugin/marketplace.json)
   .kimi-plugin/plugin.json                    B1  Kimi Code manifest (Kimi never reads .claude-plugin)
   .kimi-plugin/marketplace.json               B1  Kimi custom marketplace, version "2"
-  bundles/stack/.claude-plugin/plugin.json    B1  EXPERIMENTAL Claude bundle: name + dependencies only
+  bundles/stack/.claude-plugin/plugin.json    B1  EXPERIMENTAL Claude bundle: name, author + dependencies
   skills/ultimate-brainstorm/
     SKILL.md                                  B3  driver (<= 12 KB, portable frontmatter)
     agents/openai.yaml                        B1  Codex display + allow_implicit_invocation: false
@@ -2573,6 +2573,7 @@ accepted). Milestone 0 (09_PROBE.md) runs first; do not plan beyond its kill cri
 ```json
 // bundles/stack/.claude-plugin/plugin.json   (experimental; the installer never uses it) [U-15]
 {"name": "ultimate-brainstorm-stack", "version": "2.0.0", "description": "Installs ultimate-brainstorm and mattpocock-skills.",
+ "author": {"name": "OWNER"},
  "dependencies": ["ultimate-brainstorm", {"name": "mattpocock-skills", "marketplace": "claude-plugins-official"}]}
 ```
 

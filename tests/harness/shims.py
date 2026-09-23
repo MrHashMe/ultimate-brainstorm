@@ -1,6 +1,7 @@
 """Install the fake CLIs into a temporary bin folder (KIT_SPEC 4.18, 11.2). Owner: B4.
 
-POSIX: an executable `/bin/sh` wrapper per tool (a shebang script) that execs "$UB_FAKE_PY" fakecli.py <tool> "$@".
+POSIX: an executable `/bin/sh` wrapper per tool (a shebang script) that execs "$UB_FAKE_PY" /abs/fakecli.py <tool> "$@"
+(no external commands, since the tests' PATH has no coreutils on CI runners).
 Windows: `<tool>.cmd` = `@"%UB_FAKE_PY%" "%~dp0fakecli.py" <tool> %*` (CRLF), so the real `.cmd` quoting path runs.
 
 fakecli.py is copied next to the shims together with `_kit_path.txt`, which tells the copy where the kit lives (for
@@ -21,10 +22,17 @@ def cmd_text(tool):
     return '@"%%UB_FAKE_PY%%" "%%~dp0fakecli.py" %s %%*\r\n' % tool
 
 
-def sh_text(tool):
+def _sh_quote(s):
+    return "'" + s.replace("'", "'\\''") + "'"
+
+
+def sh_text(tool, fakecli):
+    """The POSIX shim, with the absolute path of fakecli.py baked in. It needs nothing from PATH: the tests' PATH is
+    only the temp bin folder and Python's folder, which on CI runners (hostedtoolcache, venvs, python.org framework
+    builds) holds no coreutils such as `dirname`."""
     return ('#!/bin/sh\n'
             '# fake %s for ultimate-brainstorm tests (tests/harness/shims.py)\n'
-            'exec "${UB_FAKE_PY:-python3}" "$(dirname "$0")/fakecli.py" %s "$@"\n') % (tool, tool)
+            'exec "${UB_FAKE_PY:-python3}" %s %s "$@"\n') % (tool, _sh_quote(fakecli), tool)
 
 
 def install_fakes(bin_dir, tools=DEFAULT_TOOLS, windows=None):
@@ -43,7 +51,7 @@ def install_fakes(bin_dir, tools=DEFAULT_TOOLS, windows=None):
         else:
             path = os.path.join(bin_dir, tool)
             with open(path, "w", encoding="ascii", newline="\n") as f:
-                f.write(sh_text(tool))
+                f.write(sh_text(tool, os.path.join(os.path.abspath(bin_dir), "fakecli.py")))
             os.chmod(path, os.stat(path).st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
         made[tool] = path
     return made
