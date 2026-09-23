@@ -106,9 +106,11 @@ class GoldenSourceTests(unittest.TestCase):
             want_files, want_out = _golden(name)
             got_files, got_out = _run(ls.V1_BS, name)
             self.assertEqual(set(got_files), set(want_files), name)
+            # Same line-ending normalization as GoldenTests.check: git stores the goldens with LF.
             for rel in want_files:
-                self.assertEqual(got_files[rel], want_files[rel], "%s: %s" % (name, rel))
-            self.assertEqual(got_out, want_out, name)
+                self.assertEqual(got_files[rel].replace(b"\r\n", b"\n"), want_files[rel].replace(b"\r\n", b"\n"),
+                                 "%s: %s" % (name, rel))
+            self.assertEqual(got_out.replace("\r\n", "\n"), want_out.replace("\r\n", "\n"), name)
 
 
 class CliTests(unittest.TestCase):
