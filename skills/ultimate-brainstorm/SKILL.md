@@ -4,7 +4,7 @@ description: "Evidence-based idea-to-proposal pipeline. Use when the user wants 
 license: MIT
 compatibility: "Claude Code 2.1.268+, Codex 0.156+, Kimi Code CLI 2.0+, ZCode. Needs Python 3.9+. The claude, codex and kimi CLIs or a GLM key add model families."
 metadata:
-  version: "2.0.0"
+  version: "2.0.1"
 ---
 
 # Ultimate Brainstorm (driver)

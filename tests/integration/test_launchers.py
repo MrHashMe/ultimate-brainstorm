@@ -16,6 +16,8 @@ import unittest
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "harness"))
 import paths  # noqa: E402
 import inst  # noqa: E402
+_KIT_V = open(os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "VERSION"),
+              encoding="utf-8").read().strip()  # kit version, so a release bump needs no test edits
 
 TOKEN = "zai-launcher-TOKEN-5e1f0c"
 
@@ -116,7 +118,7 @@ class Launchers(unittest.TestCase):
             self.assertEqual(proc.returncode, 0, paths.describe(proc))
             proc = paths.run([launcher(th, "ub"), "--version"], env=th.env, cwd=th.project)
             self.assertEqual(proc.returncode, 0, paths.describe(proc))
-            self.assertIn("2.0.0", proc.out + proc.err)
+            self.assertIn(_KIT_V, proc.out + proc.err)
 
 
 if __name__ == "__main__":

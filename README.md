@@ -57,7 +57,7 @@ pipeline uses (Compound Engineering, and mattpocock `grilling` + `domain-modelin
 `... | sh -s -- install --with-clis codex --login`.
 
 Prefer to read a script before running it? Open the URL in a browser, or use `curl -fsSL <url> | less` /
-`irm <url> | more`. To pin a version, replace `latest/download` with `download/v2.0.0`.
+`irm <url> | more`. To pin a version, replace `latest/download` with `download/v2.0.1`.
 
 Check everything at any time with `python ~/.ultimate-brainstorm/kit/install/install.py doctor` (Windows:
 `py -3 "$HOME\.ultimate-brainstorm\kit\install\install.py" doctor`).
@@ -82,9 +82,9 @@ Installed from a git clone? `git pull` in the clone, then `python install/instal
 
 | Agent | Commands |
 |---|---|
-| Claude Code (terminal) | `claude plugin marketplace add MrHashMe/ultimate-brainstorm@v2.0.0` then `claude plugin install ultimate-brainstorm@ultimate-brainstorm --scope user` |
-| Codex (terminal) | `codex plugin marketplace add MrHashMe/ultimate-brainstorm@v2.0.0` then `codex plugin add ultimate-brainstorm@ultimate-brainstorm`, then restart Codex |
-| Kimi Code (inside the app) | `/plugins install https://github.com/MrHashMe/ultimate-brainstorm/releases/tag/v2.0.0` then `/reload` |
+| Claude Code (terminal) | `claude plugin marketplace add MrHashMe/ultimate-brainstorm@v2.0.1` then `claude plugin install ultimate-brainstorm@ultimate-brainstorm --scope user` |
+| Codex (terminal) | `codex plugin marketplace add MrHashMe/ultimate-brainstorm@v2.0.1` then `codex plugin add ultimate-brainstorm@ultimate-brainstorm`, then restart Codex |
+| Kimi Code (inside the app) | `/plugins install https://github.com/MrHashMe/ultimate-brainstorm/releases/tag/v2.0.1` then `/reload` |
 | ZCode | Settings > Plugins > add a marketplace (this route is not yet confirmed; the installer's copy route is) |
 
 With this route you add the helper skills yourself; the commands are in [docs/INSTALL.md](docs/INSTALL.md).

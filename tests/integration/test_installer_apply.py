@@ -14,6 +14,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."
 import paths  # noqa: E402
 import fsnap  # noqa: E402
 import inst  # noqa: E402
+_KIT_V = open(os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "VERSION"),
+              encoding="utf-8").read().strip()  # kit version, so a release bump needs no test edits
 
 SECRETS = {"ZAI_API_KEY": "zai-SECRET-value-0001", "ZAI_PAYG_API_KEY": "payg-SECRET-value-0002",
            "KIMI_API_KEY": "kimi-SECRET-value-0003", "KIMI_CODE_API_KEY": "kcode-SECRET-value-0004",
@@ -52,7 +54,7 @@ class InstallBasics(unittest.TestCase):
             self.assertEqual(inst.find_files(kit_dir, r"__pycache__|\.pyc$"), [])
             manifest = inst.read_manifest(th)
             self.assertEqual((manifest["schema"], manifest["kit"], manifest["version"]),
-                             (1, "ultimate-brainstorm", "2.0.0"))
+                             (1, "ultimate-brainstorm", _KIT_V))
             for key in ("commit", "installed_at", "entries", "components", "launchers", "routing_blocks"):
                 self.assertIn(key, manifest)
             copies = [e for e in manifest["entries"] if e.get("route") == "copy"]
@@ -64,7 +66,7 @@ class InstallBasics(unittest.TestCase):
                 self.assertTrue(os.path.isfile(marker), marker)
                 with open(marker, encoding="utf-8") as f:
                     m = json.load(f)
-                self.assertEqual((m["kit"], m["version"]), ("ultimate-brainstorm", "2.0.0"))
+                self.assertEqual((m["kit"], m["version"]), ("ultimate-brainstorm", _KIT_V))
                 self.assertTrue(paths.same_path(m["manifest"], os.path.join(th.ub_home, "install-manifest.json")))
                 self.assertIn("installed_at", m)
                 self.assertTrue(e["files"], "manifest records a SHA-256 per file")

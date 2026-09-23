@@ -48,7 +48,7 @@ what goes where, and which steps you must do by hand) and asks once before it ch
 `install` is passed on, for example `... | sh -s -- install --with-clis codex --login`. Leave out `install` (use
 `sh -s -- plan`) to print only the plan.
 
-To pin a version, replace `latest/download` with `download/v2.0.0`. Inspect first:
+To pin a version, replace `latest/download` with `download/v2.0.1`. Inspect first:
 
 ```
 curl -fsSL https://github.com/MrHashMe/ultimate-brainstorm/releases/latest/download/install.sh | less
@@ -66,7 +66,7 @@ PY install/install.py
 PY install/install.py install --with-clis claude,codex,kimi --login
 ```
 
-Use `git clone --depth 1 --branch v2.0.0 ...` for a fixed version. The same two commands work from any copy of the
+Use `git clone --depth 1 --branch v2.0.1 ...` for a fixed version. The same two commands work from any copy of the
 kit: replace `install/install.py` with `<kit>/install/install.py`.
 
 The first line prints the plan: which agents were found, what goes where, and which steps you must do by hand. The
@@ -161,9 +161,9 @@ and replaces it. Your v1 run folders keep working: `continue` upgrades them.
 
 | Agent | Where | Commands |
 |---|---|---|
-| Claude Code | terminal | `claude plugin marketplace add MrHashMe/ultimate-brainstorm@v2.0.0` then `claude plugin install ultimate-brainstorm@ultimate-brainstorm --scope user` |
-| Codex | terminal | `codex plugin marketplace add MrHashMe/ultimate-brainstorm@v2.0.0` then `codex plugin add ultimate-brainstorm@ultimate-brainstorm`, then restart Codex |
-| Kimi Code | inside the app | `/plugins install https://github.com/MrHashMe/ultimate-brainstorm/releases/tag/v2.0.0` then `/reload` |
+| Claude Code | terminal | `claude plugin marketplace add MrHashMe/ultimate-brainstorm@v2.0.1` then `claude plugin install ultimate-brainstorm@ultimate-brainstorm --scope user` |
+| Codex | terminal | `codex plugin marketplace add MrHashMe/ultimate-brainstorm@v2.0.1` then `codex plugin add ultimate-brainstorm@ultimate-brainstorm`, then restart Codex |
+| Kimi Code | inside the app | `/plugins install https://github.com/MrHashMe/ultimate-brainstorm/releases/tag/v2.0.1` then `/reload` |
 | ZCode | app | Settings > Plugins > add a marketplace or local directory. Not yet confirmed for this kit; the installer's copy route is |
 
 Then add the helper skills with the commands in section 5, and the terminal launcher is not installed (use the

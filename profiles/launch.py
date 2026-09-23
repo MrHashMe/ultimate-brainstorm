@@ -31,7 +31,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-KIT_VERSION = "2.0.0"
+KIT_VERSION = "2.0.1"
 IS_WINDOWS = os.name == "nt"
 
 PROFILES_DIR = Path(__file__).resolve().parent

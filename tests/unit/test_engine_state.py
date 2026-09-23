@@ -15,6 +15,8 @@ import engine_testlib as tl  # noqa: E402
 from ublib import textio  # noqa: E402
 from ublib.engine import migrate, pipeline  # noqa: E402
 from ublib.engine import state as st  # noqa: E402
+_KIT_V = open(os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "VERSION"),
+              encoding="utf-8").read().strip()  # kit version, so a release bump needs no test edits
 
 
 class RunJsonTests(tl.EngineTestCase):
@@ -23,7 +25,7 @@ class RunJsonTests(tl.EngineTestCase):
         st.save(ctx.run_dir, ctx.state)
         loaded = st.load(ctx.run_dir)
         self.assertEqual(loaded["schema"], 2)
-        self.assertEqual(loaded["kit_version"], "2.0.0")
+        self.assertEqual(loaded["kit_version"], _KIT_V)
         for key in ("run", "created_at", "topic", "lang", "mode", "variant", "build_type", "autopilot", "host",
                     "python", "runner", "privacy", "families", "components", "seats", "provisional", "gates",
                     "steps", "choice", "budget", "exec", "legacy_v1"):

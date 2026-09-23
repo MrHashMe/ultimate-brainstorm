@@ -13,6 +13,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."
 import paths  # noqa: E402
 import fsnap  # noqa: E402
 import inst  # noqa: E402
+_KIT_V = open(os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "VERSION"),
+              encoding="utf-8").read().strip()  # kit version, so a release bump needs no test edits
 
 
 class PlanWritesNothing(unittest.TestCase):
@@ -33,7 +35,7 @@ class PlanWritesNothing(unittest.TestCase):
             for key in ("kit", "system", "agents", "rows", "warnings", "manual", "next"):
                 self.assertIn(key, plan)
             self.assertEqual(plan["kit"]["name"], "ultimate-brainstorm")
-            self.assertEqual(plan["kit"]["version"], "2.0.0")
+            self.assertEqual(plan["kit"]["version"], _KIT_V)
             for r in plan["rows"]:
                 for k in ("n", "agent", "item", "action", "how", "path", "commands"):
                     self.assertIn(k, r)

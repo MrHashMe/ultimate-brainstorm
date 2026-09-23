@@ -25,6 +25,8 @@ for _p in (_SCRIPTS, _FIX):
         sys.path.insert(0, _p)
 
 import legacy_scenarios as ls  # noqa: E402
+_KIT_V = open(os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "VERSION"),
+              encoding="utf-8").read().strip()  # kit version, so a release bump needs no test edits
 
 
 def _golden(name):
@@ -130,9 +132,9 @@ class CliTests(unittest.TestCase):
     def test_version(self):
         p = self.bs("--version")
         self.assertEqual(p.returncode, 0)
-        self.assertEqual(p.stdout.decode().strip(), "2.0.0")
+        self.assertEqual(p.stdout.decode().strip(), _KIT_V)
         with open(os.path.join(_KIT, "VERSION")) as f:
-            self.assertEqual(f.read().strip(), "2.0.0")
+            self.assertEqual(f.read().strip(), _KIT_V)
 
     def test_usage_exit_2(self):
         self.assertEqual(self.bs().returncode, 2)

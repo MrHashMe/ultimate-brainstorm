@@ -1,6 +1,23 @@
-# Changelog 2.0.0
+# Changelog 2.0.1
 
 All notable changes to ultimate-brainstorm are listed here, newest first.
+
+## 2.0.1 - 2026-09-23
+
+Bug-fix release. CI now runs every suite on Windows, macOS and Linux (Python 3.9, 3.12, 3.14) and is green.
+
+### Fixed
+
+- Background workers: the job-state check read the "done" marker before the "running" marker, so a model call that
+  finished between the two reads looked pending and was launched a second time (duplicate calls and duplicate
+  records). The running marker is now read first.
+- `install.ps1` now stops on every error. Before, if a cmdlet such as `Get-FileHash` failed to load (for example when
+  Windows PowerShell 5.1 inherits a PowerShell 7 module path), the bootstrap could exit 0 without verifying the
+  download or installing anything.
+- The experimental Claude bundle manifest has an `author`, so `claude plugin validate --strict` passes.
+- Tests: the POSIX fake-CLI shims no longer depend on `dirname` being on PATH (this failed every fake CLI call on the
+  GitHub Linux and macOS runners); golden files are compared with normalized line endings; bootstrap tests run on
+  elevated Windows runners.
 
 ## 2.0.0 - 2026-09-23
 

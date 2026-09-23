@@ -20,6 +20,8 @@ from ublib.engine import state as st  # noqa: E402
 
 sys.path.insert(0, tl.SCRIPTS)
 import ub  # noqa: E402
+_KIT_V = open(os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "VERSION"),
+              encoding="utf-8").read().strip()  # kit version, so a release bump needs no test edits
 
 MODES = ("quick", "standard", "deep", "proposal")
 PRESETS = ("hands-on", "guided", "full-auto")
@@ -354,7 +356,7 @@ class CliTests(tl.EngineTestCase):
 
     def test_version_and_usage(self):
         rc, out = self.run_ub("--version")
-        self.assertEqual((rc, out), (0, "ub.py 2.0.0\n"))
+        self.assertEqual((rc, out), (0, "ub.py %s\n" % _KIT_V))
         err = io.StringIO()
         with mock.patch.object(sys, "stderr", err):
             rc, out = self.run_ub("answer")
@@ -368,7 +370,7 @@ class CliTests(tl.EngineTestCase):
         card = json.loads(out)
         self.assertEqual(card["type"], "HUMAN")
         self.assertEqual(card["gate"], "G0")
-        self.assertEqual(card["ub"], "2.0.0")
+        self.assertEqual(card["ub"], _KIT_V)
         for key in ("run", "runner", "type", "step", "stage", "gate", "say", "progress", "show", "show_file",
                     "answer_file", "answer_template", "answer_cmd", "default_answer", "error", "task", "jobs", "then",
                     "next_wait_s", "fix", "notes"):

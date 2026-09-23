@@ -14,6 +14,8 @@ sys.path.insert(0, os.path.join(_KIT, "tests", "fixtures", "adapter"))
 
 import adapter_testlib as tl  # noqa: E402
 from ublib import batch, proc, textio  # noqa: E402
+_KIT_V = open(os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "VERSION"),
+              encoding="utf-8").read().strip()  # kit version, so a release bump needs no test edits
 
 try:
     from ublib import stubs as _stubs  # noqa: F401  (B4)
@@ -265,7 +267,7 @@ class CliTests(tl.AdapterTestCase):
     def test_version_and_usage(self):
         cp = self.run_cli("--version")
         self.assertEqual(cp.returncode, 0)
-        self.assertIn("2.0.0", cp.stdout.decode())
+        self.assertIn(_KIT_V, cp.stdout.decode())
         self.assertEqual(self.run_cli().returncode, 2)
         self.assertEqual(self.run_cli("call", "--family", "claude").returncode, 2)
 
