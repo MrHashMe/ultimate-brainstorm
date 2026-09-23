@@ -6,7 +6,8 @@
 - PowerShell 5.1 (`powershell -NoProfile -File`, when available): the same cases for install.ps1, plus a parse check
   via [System.Management.Automation.Language.Parser]::ParseFile for the template and the rendered file. In an elevated
   shell (GitHub's Windows runners run as administrator) the shims get UB_ALLOW_ROOT=1, and a separate case checks that
-  install.ps1 refuses to run elevated without it.
+  install.ps1 refuses to run elevated without it. A module path that cannot load Get-FileHash must end in a
+  non-zero exit (never an unchecked exit 0).
 Shell availability is an environment property: missing shells skip (never "MISSING DEPENDENCY").
 """
 
@@ -210,7 +211,14 @@ class PowerShellShim(unittest.TestCase):
                % path.replace("'", "''"))
         return paths.run([self.ps, "-NoProfile", "-NonInteractive", "-Command", cmd], timeout=120)
 
-    def run_ps(self, script, args, env):
+    def run_ps(self, script, args, env, module_path=None):
+        # Windows PowerShell 5.1 computes its own module path when PSModulePath is unset. An inherited value from a
+        # PowerShell 7 parent (GitHub's default Windows `run:` shell is pwsh) lists pwsh 7's Core-only modules first,
+        # and 5.1 then cannot load Microsoft.PowerShell.Utility (Get-FileHash, Select-Object, ...). pwsh 7 strips it
+        # the same way when it starts powershell.exe itself; test_cmdlet_load_failure_exits_nonzero covers that case.
+        env = {k: v for k, v in env.items() if k.upper() != "PSMODULEPATH"}
+        if module_path:
+            env["PSModulePath"] = module_path
         return paths.run([self.ps, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", script]
                          + list(args), env=env, timeout=300)
 
@@ -243,6 +251,32 @@ class PowerShellShim(unittest.TestCase):
             proc = self.run_ps(os.path.join(bad, "install.ps1"), ["version"], shim_env(home, bad))
             self.assertNotEqual(proc.returncode, 0, paths.describe(proc))
             self.assertRegex((proc.out + proc.err).lower(), r"sha|hash|checksum")
+
+    def test_cmdlet_load_failure_exits_nonzero(self):
+        # A Core-only Microsoft.PowerShell.Utility first on PSModulePath (what 5.1 sees under a pwsh 7 parent) makes
+        # Get-FileHash unloadable. install.ps1 must then fail with a non-zero exit, never exit 0 unchecked.
+        dist = Release.build(self)
+        with tempfile.TemporaryDirectory() as tmp:
+            mod = os.path.join(tmp, "pwsh7-modules", "Microsoft.PowerShell.Utility")
+            os.makedirs(mod)
+            psd1 = os.path.join(mod, "Microsoft.PowerShell.Utility.psd1")
+            with open(psd1, "w", encoding="ascii", newline="\r\n") as f:
+                f.write("@{\n"
+                        "GUID = '1DA87E53-152B-403E-98DC-74D7B4D63D59'\n"
+                        "ModuleVersion = '7.0.0.0'\n"
+                        "CompatiblePSEditions = @('Core')\n"
+                        "PowerShellVersion = '3.0'\n"
+                        "NestedModules = 'Microsoft.PowerShell.Commands.Utility.dll'\n"
+                        "CmdletsToExport = @('Get-FileHash', 'Select-Object')\n"
+                        "}\n")
+            home = os.path.join(tmp, "home")
+            os.makedirs(home)
+            windir = os.environ.get("SystemRoot", r"C:\Windows")
+            modpath = os.pathsep.join([os.path.dirname(mod), os.path.join(windir, "system32", "WindowsPowerShell",
+                                                                           "v1.0", "Modules")])
+            proc = self.run_ps(os.path.join(dist, "install.ps1"), ["version"], shim_env(home, dist), modpath)
+            self.assertNotEqual(proc.returncode, 0, paths.describe(proc))
+            self.assertNotIn(Release.version, proc.out)
 
     def test_elevated_refused(self):
         if not windows_elevated():

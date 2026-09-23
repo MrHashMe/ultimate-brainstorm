@@ -2776,6 +2776,8 @@ The README shows all three routes, in this order.
 - **`install.ps1`** (PowerShell 5.1):
   - Sets TLS 1.2.
   - `function Main { param([string[]]$Rest) ... }` with `Main $args` last.
+  - `$ErrorActionPreference = 'Stop'` inside `Main`, so any error (even a cmdlet that fails to load) ends the
+    script with a non-zero exit instead of skipping the hash check and exiting 0.
   - Downloads the `.zip` (or copies from `UB_RELEASE_DIR`), checks it with `Get-FileHash -Algorithm SHA256`, and
     extracts it with `Expand-Archive`.
   - Finds Python: `py -3`, then `python` when its path does not contain `WindowsApps`.

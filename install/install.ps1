@@ -16,6 +16,11 @@
 function Main {
     param([string[]]$Rest)
 
+    # Every error stops the script. Without this, a statement-terminating error (a cmdlet that cannot load, e.g.
+    # Get-FileHash under a PSModulePath inherited from PowerShell 7) skips the rest of the try block, and
+    # 'powershell -File' then exits 0 without having checked the hash or installed anything.
+    $ErrorActionPreference = 'Stop'
+
     $UbVersion = '@UB_VERSION@'
     $UbOwner = '@UB_OWNER@'
     $UbSha256 = '@UB_SHA256_ZIP@'
