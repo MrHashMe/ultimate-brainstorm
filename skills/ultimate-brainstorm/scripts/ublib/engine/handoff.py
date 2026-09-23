@@ -49,8 +49,8 @@ def _is_link(path):
     if os.path.islink(path):
         return True
     try:
-        real = os.path.realpath(path)
-        expect = os.path.join(os.path.realpath(os.path.dirname(os.path.abspath(path))), os.path.basename(path))
+        real = textio.real_path(path)
+        expect = os.path.join(textio.real_path(os.path.dirname(os.path.abspath(path))), os.path.basename(path))
         return os.path.normcase(real) != os.path.normcase(expect)
     except OSError:
         return True

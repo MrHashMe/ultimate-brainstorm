@@ -28,11 +28,9 @@ TEXT = {"type": "text", "min_chars": 5}
 
 
 def read_marker(path):
-    """The marker dict, or {} while it is missing or mid-replace (Windows sharing violation)."""
-    try:
-        return textio.read_json(path) if os.path.isfile(path) else {}
-    except (OSError, ValueError):
-        return {}
+    """The marker dict, or {} while it is missing (textio retries a read that lands in a worker's replace)."""
+    data = textio.read_json_or(path, {})
+    return data if isinstance(data, dict) else {}
 
 
 def wait_until(pred, timeout=30.0, step=0.1):
@@ -236,9 +234,9 @@ class WorkerTests(BatchBase):
         job, path = self.job("k1")
         info = batch.launch_job(path)
         self.assertTrue(wait_until(lambda: batch.running_jobs(self.run_dir) == ["k1"], timeout=15))
-        self.assertTrue(wait_until(lambda: textio.read_json(batch.marker_path(self.run_dir, "k1")).get("backend")
-                                   == "stub", timeout=15))
-        pid = textio.read_json(batch.marker_path(self.run_dir, "k1"))["pid"]
+        marker = batch.marker_path(self.run_dir, "k1")
+        self.assertTrue(wait_until(lambda: read_marker(marker).get("backend") == "stub", timeout=15))
+        pid = read_marker(marker)["pid"]
         self.assertEqual(batch.stop_all(self.run_dir), 1)
         self.assertTrue(wait_until(lambda: not proc.pid_alive(pid), timeout=15))
         self.assertFalse(proc.pid_alive(info["pid"]) and info["pid"] == pid)

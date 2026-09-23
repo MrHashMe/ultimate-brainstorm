@@ -389,7 +389,7 @@ class AllBackends(unittest.TestCase):
                 proc = e.run_job(path)
                 self.assertEqual(proc.returncode, 0, paths.describe(proc))
                 self.assertEqual(len(hs.requests), 2)
-                self.assertGreaterEqual(hs.requests[1]["ts"] - hs.requests[0]["ts"], 0.9, "Retry-After honored")
+                self.assertGreaterEqual(hs.requests[1]["mono"] - hs.requests[0]["mono"], 0.9, "Retry-After honored")
                 self.assertTrue(all(r["has_auth"] for r in hs.requests))
                 body = hs.requests[0]["body"]
                 self.assertEqual(body["model"], "gpt-test")
@@ -397,6 +397,23 @@ class AllBackends(unittest.TestCase):
                 out, meta = e.outputs(job)
                 self.assertEqual(meta["backend"], "openai-http")
                 self.assertNotIn(key, json.dumps(meta))
+
+
+def hard_kill(pid):
+    """Kill a worker the way a host that tears down its process tree does: no signal handler and no finally block
+    runs. (A SIGTERM lets the worker exit cleanly and delete its marker, which is not the case under test.)"""
+    from ublib import proc as uproc
+    if os.name == "nt":
+        uproc.kill_tree(pid)  # taskkill /T /F
+        return
+    import signal
+    try:
+        os.killpg(os.getpgid(pid), signal.SIGKILL)
+    except OSError:
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except OSError:
+            pass
 
 
 class WorkerProtocol(unittest.TestCase):
@@ -421,23 +438,34 @@ class WorkerProtocol(unittest.TestCase):
                 import importlib
                 batch = importlib.import_module("ublib.batch")
                 from ublib import proc as uproc
+                from ublib import textio
+
+                def read_marker():
+                    # the worker replaces its marker every heartbeat (1 s here); textio retries a read that lands in
+                    # that replace (Windows: PermissionError), and a marker that is gone reads as {}
+                    m = textio.read_json_or(marker, {})
+                    return m if isinstance(m, dict) else {}
+
                 marker = os.path.join(e.run, ".ub", "jobs", "t-worker.running.json")
                 info = batch.launch_job(path)
                 self.assertIn("pid", info)
-                self.wait(lambda: os.path.isfile(marker), 60, "the running marker")
-                with open(marker, encoding="utf-8") as f:
-                    m = json.load(f)
+                self.wait(lambda: read_marker().get("backend"), 60, "the worker's running marker")
+                m = read_marker()
                 for k in ("pid", "started_at", "heartbeat_at", "attempt", "backend"):
                     self.assertIn(k, m)
                 self.assertEqual(batch.job_state(e.run, job), "running")
                 self.assertIn("t-worker", batch.running_jobs(e.run))
-                uproc.kill_tree(m["pid"])
+                hard_kill(m["pid"])
+                for c in e.model_calls("claude"):  # POSIX: the model call runs in its own session; stop it too
+                    if c.get("action") == "sleep" and uproc.pid_alive(c.get("pid")):
+                        uproc.kill_tree(c["pid"])
                 self.wait(lambda: batch.job_state(e.run, job) == "dead", 30, "state dead")
                 e.th.set_scenario([])
                 batch.launch_job(path)
                 self.wait(lambda: batch.job_state(e.run, job) == "done", 120, "state done after relaunch")
                 self.assertGreaterEqual(batch.relaunch_count(e.run, job), 1)
-                self.assertFalse(os.path.exists(marker), "the worker deletes its marker on exit")
+                # "done" holds as soon as the meta is written; the worker deletes its marker right after that
+                self.wait(lambda: not os.path.exists(marker), 30, "the worker to delete its marker on exit")
 
 
 if __name__ == "__main__":

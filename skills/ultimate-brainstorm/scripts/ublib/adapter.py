@@ -188,32 +188,59 @@ def _write_failed(path, reason, meta, errors=None, last_output=None):
     textio.write_text_atomic(path, redact.redact("\n".join(lines)) + "\n")
 
 
+WRITE_ATTEMPTS = 3  # local retries when valid output cannot be written (an OSError here, never a model call)
+
+
 def _validate_and_write(text, job, run_dir, out_path):
-    """Validate against the contract; on success write <out> (and split files). Returns (ok, errors)."""
+    """Validate against the contract; on success write <out> (and split files).
+
+    Returns (ok, errors, io_error). errors are faults of the output (they earn the one repair call, 4.5). io_error is
+    set when the output is valid but writing it failed on this machine even after WRITE_ATTEMPTS local tries: a
+    repair call would only repeat a model call whose answer was fine (and record a second "ok" call for the job).
+    """
     contract = job.get("contract") or {"type": "text"}
     ok, errors, parsed = validate.check_contract(text, contract, run_dir)
     if not ok:
-        return False, errors
+        return False, errors, None
+    io_error = None
+    for n in range(WRITE_ATTEMPTS):
+        if n:
+            time.sleep(0.25 * n)
+        errors, io_error = _write_outputs(text, parsed, job, contract, run_dir, out_path)
+        if errors:
+            return False, errors, None
+        if not io_error:
+            return True, [], None
+    return False, [], io_error
+
+
+def _write_outputs(text, parsed, job, contract, run_dir, out_path):
+    """Write the split files (FILE protocol) and <out>. Returns (output errors, io error text or None)."""
     split = job.get("split") if isinstance(job.get("split"), dict) else None
     if contract.get("type") == "files" and split and split.get("root"):
         root = os.path.join(run_dir, split["root"])
         if not _inside(run_dir, root):
-            return False, ["split.root must stay inside the run folder"]
+            return ["split.root must stay inside the run folder"], None
         allowed = split.get("allowed") or contract.get("allowed") or None
         status_out = os.path.join(run_dir, split["status_out"]) if split.get("status_out") else None
         if status_out and not _inside(run_dir, status_out):
-            return False, ["split.status_out must stay inside the run folder"]
+            return ["split.status_out must stay inside the run folder"], None
         res = filesproto.split_output(text, root, allowed, status_out=status_out,
                                       required=contract.get("required"),
                                       status_required=bool(contract.get("status_trailer")))
+        if res.get("io_error"):
+            return [], "; ".join(res["errors"]) or "could not write the files"
         if not res["ok"]:
-            return False, res["errors"]
+            return res["errors"], None
     if contract.get("type") == "json" and parsed is not None:
         body = json.dumps(parsed, indent=1, ensure_ascii=False) + "\n"
     else:
         body = text
-    textio.write_text_atomic(out_path, body)
-    return True, []
+    try:
+        textio.write_text_atomic(out_path, body)
+    except OSError as e:
+        return [], "could not write %s: %s" % (textio.to_posix(out_path), e.__class__.__name__)
+    return [], None
 
 
 def _attempt_secrets(cfg, bcfg, environ=None):
@@ -407,20 +434,28 @@ def execute_job(job, detect_result=None, log=True, progress=None, job_file=None)
                     if n < retries:
                         continue
                     break
-                ok, errors = _validate_and_write(text, job, run_dir, out_path)
+                ok, errors, io_error = _validate_and_write(text, job, run_dir, out_path)
                 if ok:
                     meta["usage"] = usage
                     return finish("ok")
+                if io_error:  # the answer is valid; only writing it failed: no repair call (it would call again)
+                    meta["usage"] = usage
+                    return finish("failed", "valid output could not be written: %s" % io_error[:300], "internal",
+                                  None, text)
                 # one repair call on the same backend (4.5)
                 rep = attempt(bid, validate.repair_prompt(errors, text))
                 if rep.get("status") == "ok" and (rep.get("text") or "").strip():
                     rtext = rep["text"]
                     if len(rtext.encode("utf-8")) <= validate.OUTPUT_CAP_BYTES:
-                        ok2, errors2 = _validate_and_write(rtext, job, run_dir, out_path)
+                        ok2, errors2, io_error2 = _validate_and_write(rtext, job, run_dir, out_path)
                         if ok2:
                             meta["repaired"] = True
                             meta["usage"] = _estimate(rep.get("usage") or usage_block(), prompt, rtext)
                             return finish("ok")
+                        if io_error2:
+                            meta["usage"] = _estimate(rep.get("usage") or usage_block(), prompt, rtext)
+                            return finish("failed", "valid output could not be written: %s" % io_error2[:300],
+                                          "internal", None, rtext)
                         errors, text = errors2, rtext
                 meta["usage"] = usage
                 return finish("invalid", "output invalid after repair: %s" % "; ".join(errors)[:300], "bad_output",

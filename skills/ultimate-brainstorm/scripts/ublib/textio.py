@@ -7,10 +7,19 @@ Frozen API (4.8):
     extract_json(text) -> object
     sha256_text(text) -> str ; sha256_file(path) -> str ; is_ascii(text) -> bool
 
-Extras (not frozen, safe to use): decode_bytes, normalize_newlines, read_json, append_line, now_iso, to_posix.
+Extras (not frozen, safe to use): decode_bytes, normalize_newlines, read_json, read_bytes, read_json_or,
+append_line, now_iso, to_posix, real_path.
+
+Reads and concurrent replaces (Windows). Workers and drivers replace markers, heartbeats, job and result files with
+os.replace while other processes read them. On Windows an open() that lands inside another process's replace (or
+delete) fails with PermissionError for a moment, and a reader that holds the file open makes the writer's replace fail
+the same way. Every read here (read_bytes, read_text, read_json, read_json_or, sha256_file) therefore retries a
+transient PermissionError briefly (READ_RETRY_S in total) instead of reporting a file that is only mid-replace as
+unreadable; atomic writes retry their replace. FileNotFoundError is never retried: a missing file is a real state.
 """
 
 import datetime
+import errno
 import hashlib
 import json
 import os
@@ -21,10 +30,18 @@ import time
 __all__ = [
     "read_text", "write_text_atomic", "write_json_atomic", "extract_json",
     "sha256_text", "sha256_file", "is_ascii",
-    "decode_bytes", "normalize_newlines", "read_json", "append_line", "now_iso", "to_posix",
+    "decode_bytes", "normalize_newlines", "read_json", "read_bytes", "read_json_or", "append_line", "now_iso",
+    "to_posix", "real_path",
 ]
 
 _UTF8_BOM = b"\xef\xbb\xbf"
+
+# Transient read errors are retried on Windows only: there a file being replaced or deleted by another process is
+# briefly unopenable (sharing violation / delete pending). On POSIX a rename never blocks readers, so a
+# PermissionError there is real and is raised at once.
+RETRY_TRANSIENT_READS = os.name == "nt"
+READ_RETRY_S = 1.0
+_TRANSIENT_WINERRORS = (5, 32, 33)  # ACCESS_DENIED (also: delete pending), SHARING_VIOLATION, LOCK_VIOLATION
 
 
 def normalize_newlines(text):
@@ -76,14 +93,49 @@ def decode_bytes(raw, normalize=True):
     return normalize_newlines(text) if normalize else text
 
 
+def _transient_read_error(exc):
+    """True for the errors a concurrent replace or delete causes on Windows (never for a missing file)."""
+    if not RETRY_TRANSIENT_READS or isinstance(exc, FileNotFoundError):
+        return False
+    if isinstance(exc, PermissionError):
+        return True
+    return getattr(exc, "winerror", None) in _TRANSIENT_WINERRORS or getattr(exc, "errno", None) == errno.EACCES
+
+
+def _retrying(fn, path):
+    """fn(path), retried while it fails with a transient read error, for at most READ_RETRY_S seconds."""
+    deadline = time.monotonic() + READ_RETRY_S
+    delay = 0.005
+    while True:
+        try:
+            return fn(path)
+        except OSError as e:
+            if not _transient_read_error(e) or time.monotonic() >= deadline or os.path.isdir(path):
+                raise  # (opening a folder also raises PermissionError on Windows: that one is final)
+        time.sleep(delay)
+        delay = min(delay * 2, 0.05)
+
+
+def _read_all(path):
+    with open(path, "rb") as f:
+        return f.read()
+
+
+def read_bytes(path):
+    """The raw bytes of a file that another process may be replacing right now (see the module note).
+
+    Raises OSError when the file cannot be read (FileNotFoundError at once when it does not exist).
+    """
+    return _retrying(_read_all, os.fspath(path))
+
+
 def read_text(path, normalize=True):
     """Read a text file: UTF-8 (with or without BOM) or UTF-16 (PowerShell 5.1 '>' writes UTF-16).
 
-    Line endings are normalized to LF unless normalize=False. Raises OSError when the file cannot be read.
+    Line endings are normalized to LF unless normalize=False. Raises OSError when the file cannot be read. A read
+    that collides with another process replacing the file is retried (module note).
     """
-    with open(os.fspath(path), "rb") as f:
-        raw = f.read()
-    return decode_bytes(raw, normalize=normalize)
+    return decode_bytes(read_bytes(path), normalize=normalize)
 
 
 def _replace_with_retry(src, dst, attempts=10):
@@ -219,18 +271,30 @@ def read_json(path):
         return extract_json(text)
 
 
+def read_json_or(path, default=None):
+    """read_json, or `default` when the file is missing, unreadable after the transient retries, or not JSON."""
+    try:
+        return read_json(path)
+    except (OSError, ValueError):
+        return default
+
+
 def sha256_text(text):
     """SHA-256 hex of the UTF-8 encoding of text."""
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
-def sha256_file(path):
-    """SHA-256 hex of the raw file bytes."""
+def _sha256_of(path):
     h = hashlib.sha256()
-    with open(os.fspath(path), "rb") as f:
+    with open(path, "rb") as f:
         for chunk in iter(lambda: f.read(1 << 16), b""):
             h.update(chunk)
     return h.hexdigest()
+
+
+def sha256_file(path):
+    """SHA-256 hex of the raw file bytes (a read colliding with a concurrent replace is retried)."""
+    return _retrying(_sha256_of, os.fspath(path))
 
 
 def is_ascii(text):
@@ -304,3 +368,25 @@ def now_iso():
 def to_posix(path):
     """Absolute path with forward slashes, for JSON, cards and docs (3.1 item 5)."""
     return os.path.abspath(os.fspath(path)).replace("\\", "/")
+
+
+_LONG_PREFIX = "\\\\?\\"
+_LONG_UNC_PREFIX = "\\\\?\\UNC\\"
+
+
+def real_path(path):
+    """os.path.realpath without a stray Windows extended-length prefix.
+
+    On Windows, realpath() resolves the path twice and keeps the \\\\?\\ prefix when the two attempts fail with
+    different errors. That happens when another process creates a missing parent folder in between (parallel workers
+    writing into the same new folder), so the same path sometimes comes back as \\\\?\\C:\\... and sometimes as C:\\...,
+    and a prefix comparison against the root wrongly says "outside". The prefix is dropped unless the caller passed
+    it in.
+    """
+    path = os.fspath(path)
+    real = os.path.realpath(path)
+    if isinstance(real, str) and real.startswith(_LONG_PREFIX) and not path.startswith(_LONG_PREFIX):
+        if real.startswith(_LONG_UNC_PREFIX):
+            return "\\\\" + real[len(_LONG_UNC_PREFIX):]
+        return real[len(_LONG_PREFIX):]
+    return real

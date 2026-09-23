@@ -14,7 +14,7 @@ process or backend code.
 
 import os
 
-KIT_VERSION = "2.0.1"
+KIT_VERSION = "2.0.2"
 __version__ = KIT_VERSION
 
 # ublib/ -> scripts/ -> SK (skills/ultimate-brainstorm)

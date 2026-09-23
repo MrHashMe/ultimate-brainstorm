@@ -10,6 +10,7 @@ import os
 import threading
 
 import paths
+from ublib import textio  # paths puts SK/scripts on sys.path
 
 TOPIC = "shift-swap app for nurses"
 
@@ -80,13 +81,14 @@ def the_run(tc, root):
 
 
 def read(path):
-    with open(path, "r", encoding="utf-8") as f:
-        return f.read()
+    """A run file's text. Workers and the engine replace run files atomically; textio retries a read that lands in
+    such a replace (Windows: PermissionError) instead of failing the test on it."""
+    return textio.read_text(path)
 
 
 def read_json(path):
-    with open(path, "r", encoding="utf-8") as f:
-        return json.load(f)
+    """Strict JSON (a corrupt file fails the test), read like read()."""
+    return json.loads(read(path))
 
 
 def run_json(run):
@@ -102,14 +104,13 @@ def calls(run):
     out = []
     if not os.path.isfile(path):
         return out
-    with open(path, "r", encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if line:
-                try:
-                    out.append(json.loads(line))
-                except ValueError:
-                    pass
+    for line in read(path).split("\n"):
+        line = line.strip()
+        if line:
+            try:
+                out.append(json.loads(line))
+            except ValueError:
+                pass
     return out
 
 

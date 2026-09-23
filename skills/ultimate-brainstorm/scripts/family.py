@@ -36,6 +36,9 @@ from ublib import textio  # noqa: E402
 
 EXIT_USAGE = 2
 TOOLS = ("none", "web", "read", "read+web")
+_SKIPPED = {"done": "already done for this prompt (the cached result stands; no call)",
+            "running": "another worker holds this job (no call)",
+            "finished": "another worker ran this job while this one waited (its result stands; no call)"}
 
 
 def _utf8_stdout():
@@ -106,7 +109,13 @@ def cmd_job(args):
         return EXIT_USAGE
     job["_path"] = path
     _graceful_signals()
-    with batch.WorkerMarker(run_dir, job["id"]) as marker:
+    # One worker per job (4.7): the marker takes the job's execution lock and re-checks the done rule first. A job
+    # that another worker holds, or that is already done for this prompt, is not called again: exit 0, no outputs.
+    with batch.WorkerMarker(run_dir, job["id"], job=job) as marker:
+        if marker.skipped:
+            sys.stdout.write("%s skipped job=%s: %s\n" % (textio.now_iso(), job["id"], _SKIPPED.get(
+                marker.skipped, marker.skipped)))
+            return 0
         try:
             meta = adapter.execute_job(job, progress=marker.update, job_file=path)
         except adapter.JobError as e:

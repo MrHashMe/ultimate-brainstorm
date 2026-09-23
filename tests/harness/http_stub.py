@@ -3,7 +3,7 @@
     with HttpStub([{"status": 429, "headers": {"Retry-After": "1"}}, {"text": "hello"}]) as hs:
         url = hs.url("/v1/chat/completions")
         ...
-        hs.requests   # [{"path", "method", "header_names", "has_auth", "body"}]
+        hs.requests   # [{"path", "method", "header_names", "has_auth", "body", "ts", "mono"}]
 
 A ThreadingHTTPServer on 127.0.0.1:0 serves POST /v1/chat/completions (OpenAI chat shape) and /v1/messages
 (Anthropic shape); any path ending in one of those works too (e.g. /api/paas/v4/chat/completions). Each request
@@ -60,7 +60,7 @@ class HttpStub(object):
                 names = sorted(k.lower() for k in self.headers.keys())
                 rec = {"path": self.path, "method": "POST", "header_names": names,
                        "has_auth": "authorization" in names or "x-api-key" in names, "body": body,
-                       "ts": time.time()}
+                       "ts": time.time(), "mono": time.monotonic()}
                 with stub._lock:
                     stub.requests.append(rec)
                     item = stub.script.pop(0) if stub.script else {}

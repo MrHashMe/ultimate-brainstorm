@@ -1,6 +1,29 @@
-# Changelog 2.0.1
+# Changelog 2.0.2
 
 All notable changes to ultimate-brainstorm are listed here, newest first.
+
+## 2.0.2 - 2026-09-23
+
+Bug-fix release for two timing-dependent failures seen on Windows.
+
+### Fixed
+
+- The same model call could run twice for one job. When the three proposal-section workers (13.2) created the same
+  new folder at the same moment, Windows sometimes reported the target path in a long `\\?\` form. The kit then
+  wrongly rejected the valid answer as "outside the output root" and asked the model again. The path is now
+  normalized first, and an answer that is valid but cannot be written is retried on disk instead of asking the model
+  again.
+- Only one worker can run a job at a time. Each worker now holds a lock file for its job (`.ub/jobs/<id>.lock`),
+  which the operating system releases when the worker ends, even if it is killed. A job that is running, finished,
+  or was just run by another worker is never called again, whoever starts it. The launcher and its worker recognize
+  each other by a launch token, so this also works in a Windows virtual environment, where the launcher sees a
+  different process id than the worker's. A late heartbeat no longer makes a live worker look dead.
+- Reading a worker's status file on Windows could fail with "Permission denied" when it was read at the moment the
+  worker was updating it. Reads now retry for up to a second, so the kit no longer mistakes a running or finished job
+  for a stopped one, and `ub stop` no longer misses a live worker.
+- A dead job whose old worker process cannot be stopped now shows a BLOCKED card that suggests `ub stop`, instead of
+  waiting forever.
+- Tests: the Retry-After check uses a monotonic clock, so wall-clock steps (seen under WSL2) no longer fail it.
 
 ## 2.0.1 - 2026-09-23
 

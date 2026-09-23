@@ -380,7 +380,7 @@ The sections below are the manual route, **without the installer**.
 
 ```text
 # Shell: the kit as a native plugin (Claude Code 2.1.268+) from a local copy or the GitHub repo; this replaces the
-# skill copy below. After a release: claude plugin marketplace add MrHashMe/ultimate-brainstorm@v2.0.1
+# skill copy below. After a release: claude plugin marketplace add MrHashMe/ultimate-brainstorm@v2.0.2
 claude plugin marketplace add <abs path to kit>
 claude plugin install ultimate-brainstorm@ultimate-brainstorm --scope user
 
@@ -425,7 +425,7 @@ Start: `/ultimate-brainstorm standard product "<your topic>"`. Resume later with
 
 ```text
 # Shell: the kit as a native plugin (Codex 0.156+), then restart Codex; this replaces the skill copy below.
-# After a release: codex plugin marketplace add MrHashMe/ultimate-brainstorm@v2.0.1
+# After a release: codex plugin marketplace add MrHashMe/ultimate-brainstorm@v2.0.2
 codex plugin marketplace add <abs path to kit> --json
 codex plugin add ultimate-brainstorm@ultimate-brainstorm --json
 

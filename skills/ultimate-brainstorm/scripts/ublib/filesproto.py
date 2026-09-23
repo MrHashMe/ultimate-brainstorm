@@ -11,8 +11,8 @@ Frozen API (4.8):
     parse_file_blocks(text) -> ({relpath: content}, status_dict_or_None, warnings)
     write_file_blocks(files, root, allowed_globs) -> list of written absolute paths; raises PathError
 
-Extras: PathError, ALLOWED_EXTS, STATUS_VALUES, check_relpath, glob_match, validate_files, structural_errors,
-split_output.
+Extras: PathError, WriteError, ALLOWED_EXTS, STATUS_VALUES, check_relpath, glob_match, validate_files,
+structural_errors, split_output.
 """
 
 import json
@@ -24,7 +24,7 @@ import time
 from . import textio
 
 __all__ = [
-    "PathError", "ALLOWED_EXTS", "STATUS_VALUES",
+    "PathError", "WriteError", "ALLOWED_EXTS", "STATUS_VALUES",
     "parse_file_blocks", "write_file_blocks", "check_relpath", "glob_match", "validate_files", "split_output",
     "structural_errors",
 ]
@@ -45,6 +45,13 @@ _RESERVED = ({"con", "prn", "aux", "nul", "conin$", "conout$"} | {"com%d" % i fo
 
 class PathError(ValueError):
     """A FILE-protocol path or content that must not be written."""
+
+
+class WriteError(PathError):
+    """Valid FILE-protocol output that could not be written (an OSError on this machine, not a fault of the output).
+
+    A subclass of PathError so existing handlers keep working; callers that retry model output tell the two apart:
+    a write error is retried locally, never answered with a repair call."""
 
 
 # ---------------------------------------------------------------- parsing
@@ -251,11 +258,14 @@ def write_file_blocks(files, root, allowed_globs):
     errors = validate_files(files, allowed_globs)
     if errors:
         raise PathError("; ".join(errors))
-    root_abs = os.path.realpath(os.path.abspath(os.fspath(root)))
+    # textio.real_path, not os.path.realpath: parallel workers create the same new sub-folder (13.2-A/B/C all write
+    # 11_PROPOSAL/sections/), and realpath() of a file in a folder that appears mid-call can come back with a \\?\
+    # prefix on Windows, which the prefix comparison below would report as "outside the output root".
+    root_abs = textio.real_path(os.path.abspath(os.fspath(root)))
     plan = []
     for rel, content in files.items():
         norm = check_relpath(rel, allowed_globs)
-        target = os.path.realpath(os.path.join(root_abs, *norm.split("/")))
+        target = textio.real_path(os.path.join(root_abs, *norm.split("/")))
         if not _inside(root_abs, target):
             raise PathError("%s: resolves outside the output root" % rel)
         plan.append((target, content))
@@ -292,15 +302,17 @@ def write_file_blocks(files, root, allowed_globs):
                     os.unlink(tmp)
             except OSError:
                 pass
-        raise PathError("could not write the files: %s" % e)
+        raise WriteError("could not write the files: %s" % e)
     return [target for target, _c in plan]
 
 
 def split_output(text, root, allowed_globs, status_out=None, required=None, status_required=False):
     """Parse FILE-protocol output and write it: the shared core of `bs.py split` and the adapter's `files` jobs.
 
-    Returns {"ok": bool, "errors": [...], "warnings": [...], "written": [abs...], "status": dict|None}.
-    Nothing is written unless all checks pass. The STATUS object goes to status_out (when given and present).
+    Returns {"ok": bool, "errors": [...], "warnings": [...], "written": [abs...], "status": dict|None,
+    "io_error": bool}. Nothing is written unless all checks pass. The STATUS object goes to status_out (when given and
+    present). io_error is True when the output was valid but writing it failed (an OSError here): a local, retryable
+    problem, not a fault of the output.
     """
     files, status, warnings = parse_file_blocks(text)
     errors = structural_errors(warnings) + validate_files(files, allowed_globs)
@@ -309,15 +321,21 @@ def split_output(text, root, allowed_globs, status_out=None, required=None, stat
             errors.append("%s: required file missing" % req)
     if status_required and (status is None or status.get("status") not in STATUS_VALUES):
         errors.append("STATUS trailer missing or invalid")
-    result = {"ok": False, "errors": errors, "warnings": warnings, "written": [], "status": status}
+    result = {"ok": False, "errors": errors, "warnings": warnings, "written": [], "status": status, "io_error": False}
     if errors:
         return result
     try:
         result["written"] = write_file_blocks(files, root, allowed_globs)
-    except (PathError, OSError) as e:
+        if status_out and status is not None:
+            textio.write_json_atomic(status_out, status)
+    except WriteError as e:
+        result["errors"], result["io_error"] = [str(e)], True
+        return result
+    except PathError as e:
         result["errors"] = [str(e)]
         return result
-    if status_out and status is not None:
-        textio.write_json_atomic(status_out, status)
+    except OSError as e:
+        result["errors"], result["io_error"] = ["could not write the files: %s" % e], True
+        return result
     result["ok"] = True
     return result

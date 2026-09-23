@@ -809,7 +809,25 @@ def dispatch(ctx, steps, step, launch_only=False):
                         ctx.state, ctx.run_dir)], step=step), False
             ctx.state["interrupt"] = {"gate": "GB", "step": sid}
             return human_card(ctx, step, "GB"), False
-        ctx.deps.batch.launch_job(ctx.path("jobs", jid + ".json"))
+        info = ctx.deps.batch.launch_job(ctx.path("jobs", jid + ".json")) or {}
+        if info.get("launched") is False and info.get("state") == "stuck":
+            # the dead job's old worker still runs and could not be stopped: waiting would never end
+            st.set_step(ctx.state, sid, "blocked", note="job %s: old worker (pid %s) could not be stopped" % (
+                jid, info.get("pid")))
+            return cards.blocked(ctx, "Job %s has an old worker (pid %s) that is still running and could not be "
+                                 "stopped, so it cannot be relaunched." % (jid, info.get("pid")), fix=[
+                                     '%s stop "%s"' % (cards.runner_of(ctx.state), textio.to_posix(ctx.run_dir)),
+                                     '%s run --continue "%s"' % (cards.runner_of(ctx.state),
+                                                                 textio.to_posix(ctx.run_dir))], step=step), False
+        if info.get("launched") is False:
+            # launch_job re-checks under the job's execution lock: the job finished or another worker holds it since
+            # the states above were read. Nothing started, so nothing is counted against the budget.
+            states[jid] = "done" if info.get("state") == "done" else "running"
+            if states[jid] == "running":
+                running_total += 1
+                fam_running[fb] = fam_running.get(fb, 0) + 1
+            st.append_event(ctx.run_dir, "launch_skipped", job=jid, state=states[jid])
+            continue
         c = ctx.state.setdefault("counters", {})
         c["launched"] = int(c.get("launched", 0)) + 1
         states[jid] = "running"

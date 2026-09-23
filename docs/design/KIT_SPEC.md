@@ -636,6 +636,11 @@ A JSON job whose output fails validation gets one repair call on the same backen
 
 followed by the previous output. The repair uses the same contract.
 
+The repair call is only for output that fails validation. Valid output that cannot be written (an `OSError` while
+writing `<out>` or the FILE-protocol files) is retried locally, 3 tries in all. If it still fails, the job ends with
+status `failed` and `error_class` `internal`. It never costs a repair call, because a repair repeats a model call whose
+answer was fine and records a second `ok` call for the same job and prompt.
+
 ### 4.6 FILE protocol and STATUS trailer
 
 ```
@@ -659,6 +664,10 @@ Rules, enforced by `ublib.filesproto` (B2):
    blocks is ignored.
 4. Files are written atomically. Nothing is written unless the whole output validates.
 5. The STATUS block is saved to `split.status_out`. `status` is one of `complete`, `partial`, `blocked`.
+6. Every target must resolve inside `split.root` after symlinks and junctions are resolved. On Windows,
+   `os.path.realpath()` sometimes returns the `\\?\` extended-length form, for example when a parallel worker creates
+   the same new folder mid-call (13.2-A/B/C all write `11_PROPOSAL/sections/`). That prefix is dropped before the
+   comparison (`textio.real_path`), so a sibling's `mkdir` is never reported as "resolves outside the output root".
 
 ### 4.7 Worker protocol (B2 implements, B3 drives, B4 tests)
 
@@ -668,16 +677,53 @@ process:
 - Windows: `creationflags = CREATE_NEW_PROCESS_GROUP | DETACHED_PROCESS | CREATE_BREAKAWAY_FROM_JOB`. If this raises
   `OSError` (breakaway not allowed), retry without `CREATE_BREAKAWAY_FROM_JOB`.
 - When `UB_NO_DETACH=1`, the worker runs attached (tests, and terminal mode on request).
+- `launch_job` decides under the job's execution lock (below). It does not launch a job that is done (4.4), whose lock
+  another process holds, or whose running marker is live. In that case it returns
+  `{"pid": <holder or null>, "job_id": ..., "launched": false, "state": "done"|"running"}`, and the driver counts
+  nothing against `budget.max_calls`. A dead marker is removed and the relaunch is counted. If its pid still runs and
+  verifiably is its worker (it started no later than the marker), that process is stopped first. If it cannot be
+  stopped (for example, access denied), nothing is launched, the state is `"stuck"`, and the driver returns a BLOCKED
+  card that suggests `ub stop`. The detached launch writes the running marker with the child's pid and a random launch
+  `token` (`attempt` 0, `backend` null) before it releases the lock, and passes the same token to the child in
+  `UB_LAUNCH_TOKEN`. The child needs the lock to start, so nothing races that write. The worker recognizes that marker
+  as its own by the token, not by the pid: in a Windows venv `sys.executable` is a redirector, so the pid the launcher
+  sees belongs to the redirector and the worker is its child.
+
+**Execution lock (one worker per job).** `.ub/jobs/<job-id>.lock` is an OS file lock: `msvcrt.locking` (LockFile) on
+Windows, `fcntl.flock` on POSIX. It sits on a byte beyond EOF, so the file stays empty. The file is never deleted.
+- The worker (`family.py job`) takes the lock before it writes its marker. It holds the lock until after it has
+  deleted the marker. The OS releases the lock when the worker ends, also when it is killed, so a dead worker never
+  leaves a stale claim behind.
+- A starting worker waits up to 30 s for its launcher to let go. It stops waiting at once when the marker names
+  another live worker (not its own launch marker). If it cannot take the lock, it exits 0 without a call, printing
+  `skipped ... another worker holds this job`.
+- Holding the lock, the worker re-checks the done rule (4.4). If the job is already done for the current prompt, it
+  exits 0 without a call (`skipped ... already done`), and the cached result stands. It also exits 0 without a call
+  when a meta for the current prompt appeared or changed while it waited for the lock (another worker ran the job,
+  even if that run failed; `skipped ... another worker ran this job`).
+- So a running or finished job is never called twice, whoever launches it: a second driver, `family.py batch`, or a
+  manual `family.py job`.
+- On a file system without file locks the lock is a no-op, and the marker rules alone apply.
+- Known limit: on POSIX a backend CLI runs in its own session. When a worker is killed hard (SIGKILL), its backend
+  process can keep running; neither the lock nor `stop_all` stops it, so a relaunch may overlap with it. That costs a
+  call but never records a second result: only the worker writes outputs and meta.
 
 **Running marker.** The worker writes `.ub/jobs/<job-id>.running.json`:
 
 ```json
-{"pid": 1234, "started_at": "...", "heartbeat_at": "...", "attempt": 1, "backend": "codex-cli"}
+{"pid": 1234, "started_at": "...", "heartbeat_at": "...", "attempt": 1, "backend": "codex-cli", "token": "..."}
 ```
 
 - It refreshes `heartbeat_at` every 10 s from a thread.
 - It deletes the file on exit, success or failure.
-- A heartbeat older than 60 s means the worker is dead.
+- A heartbeat older than 60 s means the worker is dead, unless its execution lock is held.
+
+**Concurrent reads.** Markers, heartbeats, job, meta and result files are replaced atomically (`os.replace`) while
+other processes read them. On Windows, an `open()` that lands inside a replace fails with `PermissionError` for a
+moment. Every `textio` read (`read_text`, `read_json`, `read_json_or`, `read_bytes`, `sha256_file`) retries that for up
+to 1 s. A missing file (`FileNotFoundError`) is never retried: it is a real state, and a replace never causes it. No
+job state is decided on a file that was only mid-replace. Tests and harness code that read these files use the same
+helpers.
 
 **Outputs, all written atomically:**
 - `<out>`, only when valid.
@@ -715,10 +761,14 @@ process:
 | State | Condition |
 |---|---|
 | `done` | the done rule in 4.4 holds |
-| `running` | a live running marker exists |
-| `dead` | a stale marker exists and no done output |
+| `running` | a process holds the job's execution lock (whatever the heartbeat says), or a live running marker exists |
+| `dead` | a stale marker exists, no process holds the lock, and no done output |
 | `failed` | meta status is not `ok` and no running marker |
 | `pending` | none of the above |
+
+`job_state` reads the marker and the lock before it checks the done rule. A worker writes `<out>` and its meta, then
+deletes its marker, then releases its lock. So "no marker and no lock holder" means that a finished worker's outputs are
+already on disk.
 
 The driver relaunches `dead` jobs up to 3 times per prompt hash, counted in `.ub/jobs/<id>.relaunch`. After that it
 returns a BLOCKED card (6.3).
@@ -742,7 +792,8 @@ exit codes: as in 4.7 (0, 2, 3, 4, 5, 6, 7)
 
 ```python
 # ublib/textio.py
-read_text(path) -> str                          # UTF-8 / BOM / UTF-16 tolerant
+read_text(path) -> str                          # UTF-8 / BOM / UTF-16 tolerant; retries a read that lands in a
+                                                # concurrent replace (Windows PermissionError, up to 1 s; 4.7)
 write_text_atomic(path, text) -> None           # UTF-8 no BOM, LF; tmp file in same dir + os.replace
 write_json_atomic(path, obj) -> None            # indent=1, ensure_ascii=False, trailing newline
 extract_json(text) -> object                    # fenced / preamble tolerant; ValueError if none
@@ -765,7 +816,8 @@ detect(cfg=None, live=False, only=None) -> dict          # shape below
 # ublib/adapter.py
 execute_job(job: dict) -> dict                  # runs the chain in-process; returns meta dict; writes outputs
 # ublib/batch.py
-launch_job(job_path) -> dict                    # {"pid": int, "job_id": str}
+launch_job(job_path) -> dict                    # {"pid": int, "job_id": str}; + "launched": false and "state"
+                                                # when the job is done, held by another process or stuck (4.7)
 job_state(run_dir, job) -> str                  # done|running|dead|failed|pending
 running_jobs(run_dir) -> list                   # job ids with live markers
 stop_all(run_dir) -> int                        # tree-kills live workers; returns count
