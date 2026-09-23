@@ -1,0 +1,2 @@
+{"type":"system","subtype":"init","session_id":"fixture"}
+{"type":"result","subtype":"success","is_error":false,"result":"Streamed final answer text.","total_cost_usd":0}

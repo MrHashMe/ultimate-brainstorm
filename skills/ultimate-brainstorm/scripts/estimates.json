@@ -1,0 +1,19 @@
+{
+ "_about": "Per-job-kind priors for `ub plan` and ETAs (KIT_SPEC 6.9): input tokens, output tokens and wall seconds per call. Estimates only; ub plan recalibrates time from logs/calls.jsonl once calls are observed.",
+ "ping": {"in_tokens": 50, "out_tokens": 10, "seconds": 20},
+ "frame": {"in_tokens": 3000, "out_tokens": 3000, "seconds": 120},
+ "generator": {"in_tokens": 6000, "out_tokens": 8000, "seconds": 180},
+ "researcher": {"in_tokens": 5000, "out_tokens": 4000, "seconds": 360},
+ "curator": {"in_tokens": 30000, "out_tokens": 12000, "seconds": 300},
+ "judge": {"in_tokens": 9000, "out_tokens": 3000, "seconds": 120},
+ "checker": {"in_tokens": 5000, "out_tokens": 3000, "seconds": 240},
+ "normalizer": {"in_tokens": 8000, "out_tokens": 4000, "seconds": 150},
+ "reviewer": {"in_tokens": 6000, "out_tokens": 3000, "seconds": 180},
+ "synthesis": {"in_tokens": 15000, "out_tokens": 5000, "seconds": 200},
+ "writer": {"in_tokens": 15000, "out_tokens": 8000, "seconds": 360},
+ "arch-author": {"in_tokens": 8000, "out_tokens": 9000, "seconds": 360},
+ "arch-judge": {"in_tokens": 20000, "out_tokens": 4000, "seconds": 200},
+ "rubric": {"in_tokens": 25000, "out_tokens": 3000, "seconds": 150},
+ "redteam": {"in_tokens": 25000, "out_tokens": 4000, "seconds": 200},
+ "fixer": {"in_tokens": 30000, "out_tokens": 12000, "seconds": 400}
+}

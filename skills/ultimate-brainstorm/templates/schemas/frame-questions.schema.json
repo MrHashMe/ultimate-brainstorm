@@ -1,0 +1,73 @@
+{
+ "$id": "frame-questions",
+ "description": "Question-only framing round (FRAME-QUESTIONS)",
+ "type": "object",
+ "additionalProperties": false,
+ "required": [
+  "questions",
+  "solution_type_named",
+  "assumed"
+ ],
+ "properties": {
+  "questions": {
+   "type": "array",
+   "items": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "id",
+     "topic",
+     "text",
+     "why",
+     "default"
+    ],
+    "properties": {
+     "id": {
+      "type": "string",
+      "description": "Q01, Q02, ... in asking order"
+     },
+     "topic": {
+      "type": "string",
+      "enum": [
+       "goal",
+       "audience",
+       "success",
+       "constraint",
+       "scope",
+       "timeline",
+       "non-goal",
+       "premise",
+       "part-of-problem",
+       "solution-type",
+       "variant"
+      ],
+      "description": "what the question is about"
+     },
+     "text": {
+      "type": "string",
+      "description": "the question, one sentence, no solution, example or idea category"
+     },
+     "why": {
+      "type": "string",
+      "description": "why the answer matters for the brief, max 15 words"
+     },
+     "default": {
+      "type": "string",
+      "description": "a suggested answer ONLY when topic is constraint, scope or timeline; otherwise empty string"
+     }
+    }
+   }
+  },
+  "solution_type_named": {
+   "type": "string",
+   "description": "the solution type, technology or business model the topic names, or empty string"
+  },
+  "assumed": {
+   "type": "array",
+   "items": {
+    "type": "string"
+   },
+   "description": "what you would otherwise have to assume; each item starts with ASSUMED:"
+  }
+ }
+}

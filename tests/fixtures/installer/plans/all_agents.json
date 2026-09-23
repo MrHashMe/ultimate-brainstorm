@@ -1,0 +1,100 @@
+{
+ "description": "all four agents detected: Claude and Codex native, Kimi and ZCode copies (10.3)",
+ "tools": [
+  "claude",
+  "codex",
+  "kimi",
+  "npx",
+  "node"
+ ],
+ "zcode": true,
+ "args": [
+  "--components",
+  "none"
+ ],
+ "exit": 0,
+ "agents": {
+  "claude-code": {
+   "detected": true,
+   "route": "native",
+   "version": "2.1.280"
+  },
+  "codex": {
+   "detected": true,
+   "route": "native",
+   "version": "0.156.1"
+  },
+  "kimi": {
+   "detected": true,
+   "route": "copy"
+  },
+  "zcode": {
+   "detected": true,
+   "route": "copy"
+  }
+ },
+ "rows": [
+  {
+   "agent": "all",
+   "action": "create",
+   "how": "copy",
+   "path": "{kit_dir}"
+  },
+  {
+   "agent": "claude-code",
+   "action": "install",
+   "how": "native",
+   "commands": [
+    [
+     "claude",
+     "plugin",
+     "marketplace",
+     "add",
+     "{kit_dir}"
+    ],
+    [
+     "claude",
+     "plugin",
+     "install",
+     "ultimate-brainstorm@ultimate-brainstorm",
+     "--scope",
+     "user"
+    ]
+   ]
+  },
+  {
+   "agent": "codex",
+   "action": "install",
+   "how": "native",
+   "commands": [
+    [
+     "codex",
+     "plugin",
+     "marketplace",
+     "add",
+     "{kit_dir}",
+     "--json"
+    ],
+    [
+     "codex",
+     "plugin",
+     "add",
+     "ultimate-brainstorm@ultimate-brainstorm",
+     "--json"
+    ]
+   ]
+  },
+  {
+   "agent": "kimi",
+   "action": "create",
+   "how": "copy",
+   "path": "{kimi_home}/skills/ultimate-brainstorm"
+  },
+  {
+   "agent": "zcode",
+   "action": "create",
+   "how": "copy",
+   "path": "{home}/.zcode/skills/ultimate-brainstorm"
+  }
+ ]
+}

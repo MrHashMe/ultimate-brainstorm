@@ -1,0 +1,15 @@
+{"product_goal": "Night-shift nurses swap shifts in minutes without calling the ward manager.",
+ "quality_goals": [
+  {"id": "QG1", "name": "Availability at night", "weight": 30, "why": "Swaps happen between 22:00 and 06:00", "source": "STATED"},
+  {"id": "QG2", "name": "Privacy of staff data", "weight": 25, "why": "Rosters hold personal data", "source": "STATED"},
+  {"id": "QG3", "name": "Fast response on phones", "weight": 15, "why": "Nurses use phones on breaks", "source": "ASSUMPTION"}],
+ "hard_constraints": [{"id": "HC-1", "text": "Data stays in the EU", "source": "FRAME"}],
+ "soft_constraints": ["Prefer managed services"],
+ "not_in_scope": ["Payroll"],
+ "qas": [],
+ "context": {"system": {"name": "Swap app", "description": "Shift swap board"},
+             "actors": [{"id": "ACT-1", "name": "Nurse", "description": "Works nights"}],
+             "external": [{"id": "EXT-1", "name": "Rostering system", "description": "Hospital roster", "relationship": "reads shifts"},
+                          {"id": "EXT-2", "name": "SMS gateway", "description": "Sends texts", "relationship": "sends alerts"}]},
+ "planning_assumptions": [{"id": "AS-1", "item": "Team", "value": "2 developers", "source": "ASSUMPTION"}],
+ "open_questions": [{"q": "Which roster export exists?", "default": "CSV"}]}

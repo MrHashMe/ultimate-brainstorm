@@ -1,0 +1,10 @@
+{
+ "family": "gpt",
+ "order": "rev",
+ "pairs": {
+  "P01": {
+   "first": "I-003",
+   "second": "I-002"
+  }
+ }
+}

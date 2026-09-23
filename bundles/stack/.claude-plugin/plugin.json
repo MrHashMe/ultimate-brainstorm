@@ -1,0 +1,12 @@
+{
+  "name": "ultimate-brainstorm-stack",
+  "version": "2.0.0",
+  "description": "Installs ultimate-brainstorm and mattpocock-skills.",
+  "dependencies": [
+    "ultimate-brainstorm",
+    {
+      "name": "mattpocock-skills",
+      "marketplace": "claude-plugins-official"
+    }
+  ]
+}

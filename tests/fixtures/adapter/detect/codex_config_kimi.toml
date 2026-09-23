@@ -1,0 +1,8 @@
+model = "kimi-k3"
+model_provider = "kimi"
+
+[model_providers.kimi]
+name = "Kimi"
+base_url = "https://api.moonshot.ai/v1"
+env_key = "KIMI_API_KEY"
+wire_api = "responses"

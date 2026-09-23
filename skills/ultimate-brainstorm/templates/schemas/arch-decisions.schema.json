@@ -1,0 +1,203 @@
+{
+ "$id": "arch-decisions",
+ "description": "ARCH-DECISIONS output (decisions.json)",
+ "type": "object",
+ "additionalProperties": false,
+ "required": [
+  "adrs",
+  "risks",
+  "debt"
+ ],
+ "properties": {
+  "adrs": {
+   "type": "array",
+   "items": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "title",
+     "context",
+     "drivers",
+     "options",
+     "chosen",
+     "justification",
+     "good",
+     "bad",
+     "confirmation",
+     "more_info"
+    ],
+    "properties": {
+     "title": {
+      "type": "string"
+     },
+     "context": {
+      "type": "string"
+     },
+     "drivers": {
+      "type": "array",
+      "items": {
+       "type": "string",
+       "description": "QG id"
+      }
+     },
+     "options": {
+      "type": "array",
+      "items": {
+       "type": "object",
+       "additionalProperties": false,
+       "required": [
+        "name",
+        "pros",
+        "cons"
+       ],
+       "properties": {
+        "name": {
+         "type": "string"
+        },
+        "pros": {
+         "type": "array",
+         "items": {
+          "type": "string"
+         }
+        },
+        "cons": {
+         "type": "array",
+         "items": {
+          "type": "string"
+         }
+        }
+       }
+      },
+      "description": "at least 2 options"
+     },
+     "chosen": {
+      "type": "string",
+      "description": "the name of one option, exactly"
+     },
+     "justification": {
+      "type": "string"
+     },
+     "good": {
+      "type": "array",
+      "items": {
+       "type": "string"
+      }
+     },
+     "bad": {
+      "type": "array",
+      "items": {
+       "type": "object",
+       "additionalProperties": false,
+       "required": [
+        "text",
+        "risk_ids"
+       ],
+       "properties": {
+        "text": {
+         "type": "string"
+        },
+        "risk_ids": {
+         "type": "array",
+         "items": {
+          "type": "string",
+          "description": "R-NNN"
+         }
+        }
+       }
+      }
+     },
+     "confirmation": {
+      "type": "string",
+      "description": "how compliance with this decision is checked"
+     },
+     "more_info": {
+      "type": "string"
+     }
+    }
+   }
+  },
+  "risks": {
+   "type": "array",
+   "items": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "id",
+     "text",
+     "likelihood",
+     "impact",
+     "mitigation",
+     "owner",
+     "early_warning",
+     "source"
+    ],
+    "properties": {
+     "id": {
+      "type": "string",
+      "description": "R-001, R-002, ..."
+     },
+     "text": {
+      "type": "string"
+     },
+     "likelihood": {
+      "type": "string",
+      "enum": [
+       "H",
+       "M",
+       "L"
+      ]
+     },
+     "impact": {
+      "type": "string",
+      "enum": [
+       "H",
+       "M",
+       "L"
+      ]
+     },
+     "mitigation": {
+      "type": "string"
+     },
+     "owner": {
+      "type": "string",
+      "description": "a role"
+     },
+     "early_warning": {
+      "type": "string"
+     },
+     "source": {
+      "type": "string"
+     }
+    }
+   }
+  },
+  "debt": {
+   "type": "array",
+   "items": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "id",
+     "text",
+     "why",
+     "payoff_trigger"
+    ],
+    "properties": {
+     "id": {
+      "type": "string",
+      "description": "TD-01, TD-02, ..."
+     },
+     "text": {
+      "type": "string"
+     },
+     "why": {
+      "type": "string"
+     },
+     "payoff_trigger": {
+      "type": "string"
+     }
+    }
+   }
+  }
+ }
+}

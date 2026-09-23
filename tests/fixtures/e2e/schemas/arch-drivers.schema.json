@@ -1,0 +1,280 @@
+{
+ "$id": "arch-drivers",
+ "type": "object",
+ "additionalProperties": false,
+ "required": [
+  "product_goal",
+  "quality_goals",
+  "hard_constraints",
+  "soft_constraints",
+  "not_in_scope",
+  "qas",
+  "context",
+  "planning_assumptions",
+  "open_questions"
+ ],
+ "properties": {
+  "product_goal": {
+   "type": "string"
+  },
+  "quality_goals": {
+   "type": "array",
+   "items": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "id",
+     "name",
+     "weight",
+     "why",
+     "source"
+    ],
+    "properties": {
+     "id": {
+      "type": "string"
+     },
+     "name": {
+      "type": "string"
+     },
+     "weight": {
+      "type": "number"
+     },
+     "why": {
+      "type": "string"
+     },
+     "source": {
+      "type": "string",
+      "enum": [
+       "STATED",
+       "ASSUMPTION"
+      ]
+     }
+    }
+   }
+  },
+  "hard_constraints": {
+   "type": "array",
+   "items": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "id",
+     "text",
+     "source"
+    ],
+    "properties": {
+     "id": {
+      "type": "string"
+     },
+     "text": {
+      "type": "string"
+     },
+     "source": {
+      "type": "string",
+      "enum": [
+       "FRAME",
+       "DECISION",
+       "ASSUMPTION"
+      ]
+     }
+    }
+   }
+  },
+  "soft_constraints": {
+   "type": "array",
+   "items": {
+    "type": "string"
+   }
+  },
+  "not_in_scope": {
+   "type": "array",
+   "items": {
+    "type": "string"
+   }
+  },
+  "qas": {
+   "type": "array",
+   "items": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "id",
+     "qg",
+     "source",
+     "stimulus",
+     "artifact",
+     "environment",
+     "response",
+     "measure",
+     "importance",
+     "difficulty"
+    ],
+    "properties": {
+     "id": {
+      "type": "string"
+     },
+     "qg": {
+      "type": "string"
+     },
+     "source": {
+      "type": "string"
+     },
+     "stimulus": {
+      "type": "string"
+     },
+     "artifact": {
+      "type": "string"
+     },
+     "environment": {
+      "type": "string"
+     },
+     "response": {
+      "type": "string"
+     },
+     "measure": {
+      "type": "string"
+     },
+     "importance": {
+      "type": "string",
+      "enum": [
+       "H",
+       "M",
+       "L"
+      ]
+     },
+     "difficulty": {
+      "type": "string",
+      "enum": [
+       "H",
+       "M",
+       "L"
+      ]
+     }
+    }
+   }
+  },
+  "context": {
+   "type": "object",
+   "additionalProperties": false,
+   "required": [
+    "system",
+    "actors",
+    "external"
+   ],
+   "properties": {
+    "system": {
+     "type": "object",
+     "additionalProperties": false,
+     "required": [
+      "name",
+      "description"
+     ],
+     "properties": {
+      "name": {
+       "type": "string"
+      },
+      "description": {
+       "type": "string"
+      }
+     }
+    },
+    "actors": {
+     "type": "array",
+     "items": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+       "id",
+       "name",
+       "description"
+      ],
+      "properties": {
+       "id": {
+        "type": "string"
+       },
+       "name": {
+        "type": "string"
+       },
+       "description": {
+        "type": "string"
+       }
+      }
+     }
+    },
+    "external": {
+     "type": "array",
+     "items": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+       "id",
+       "name",
+       "description",
+       "relationship"
+      ],
+      "properties": {
+       "id": {
+        "type": "string"
+       },
+       "name": {
+        "type": "string"
+       },
+       "description": {
+        "type": "string"
+       },
+       "relationship": {
+        "type": "string"
+       }
+      }
+     }
+    }
+   }
+  },
+  "planning_assumptions": {
+   "type": "array",
+   "items": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "id",
+     "item",
+     "value",
+     "source"
+    ],
+    "properties": {
+     "id": {
+      "type": "string"
+     },
+     "item": {
+      "type": "string"
+     },
+     "value": {
+      "type": "string"
+     },
+     "source": {
+      "type": "string"
+     }
+    }
+   }
+  },
+  "open_questions": {
+   "type": "array",
+   "items": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "q",
+     "default"
+    ],
+    "properties": {
+     "q": {
+      "type": "string"
+     },
+     "default": {
+      "type": "string"
+     }
+    }
+   }
+  }
+ }
+}

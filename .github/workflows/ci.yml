@@ -1,0 +1,87 @@
+# CI (KIT_SPEC 11.8): every suite on 3 OSes x Python {3.9 where available, 3.12, 3.14}, plus the Windows bootstrap
+# jobs in Git Bash and PowerShell 5.1, plus an optional `claude plugin validate` job [U-17].
+name: ci
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: tests (${{ matrix.os }}, py ${{ matrix.python }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        python: ["3.9", "3.12", "3.14"]
+        exclude:
+          # setup-python has no 3.9 build for the arm64 macOS runners
+          - os: macos-latest
+            python: "3.9"
+    env:
+      UB_CI_STRICT: "1"
+      PYTHONIOENCODING: utf-8
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+          allow-prereleases: true
+
+      - name: Run every suite
+        run: python tools/ci.py all
+
+  windows-git-bash:
+    name: bootstrap install.sh (Windows, Git Bash)
+    runs-on: windows-latest
+    env:
+      UB_CI_STRICT: "1"
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: install.sh bootstrap test
+        run: python tools/ci.py integration --pattern test_bootstrap.py
+
+  windows-powershell:
+    name: bootstrap install.ps1 (Windows PowerShell 5.1)
+    runs-on: windows-latest
+    env:
+      UB_CI_STRICT: "1"
+    defaults:
+      run:
+        shell: powershell
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: install.ps1 bootstrap test
+        run: python tools/ci.py integration --pattern test_bootstrap.py
+
+  claude-plugin-validate:
+    name: claude plugin validate (optional) [U-17]
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Install Claude Code
+        run: npm install -g @anthropic-ai/claude-code
+      - name: Validate the plugin
+        run: claude plugin validate . --strict

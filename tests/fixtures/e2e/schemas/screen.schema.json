@@ -1,0 +1,69 @@
+{
+ "type": "object",
+ "additionalProperties": false,
+ "required": [
+  "scores"
+ ],
+ "properties": {
+  "scores": {
+   "type": "array",
+   "items": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "id",
+     "g1",
+     "g2",
+     "g3",
+     "c",
+     "risk"
+    ],
+    "properties": {
+     "id": {
+      "type": "string"
+     },
+     "g1": {
+      "type": "boolean"
+     },
+     "g2": {
+      "type": "boolean"
+     },
+     "g3": {
+      "type": "boolean"
+     },
+     "risk": {
+      "type": "string"
+     },
+     "c": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+       "Value",
+       "Feasibility",
+       "Fit",
+       "Distinctiveness",
+       "Evidence"
+      ],
+      "properties": {
+       "Value": {
+        "type": "integer"
+       },
+       "Feasibility": {
+        "type": "integer"
+       },
+       "Fit": {
+        "type": "integer"
+       },
+       "Distinctiveness": {
+        "type": "integer"
+       },
+       "Evidence": {
+        "type": "integer"
+       }
+      }
+     }
+    }
+   }
+  }
+ }
+}

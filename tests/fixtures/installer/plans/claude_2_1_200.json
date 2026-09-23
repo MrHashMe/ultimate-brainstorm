@@ -1,0 +1,36 @@
+{
+ "description": "Claude Code 2.1.200 is below the native minimum 2.1.268: copy to {claude_home}/skills",
+ "tools": [
+  "claude",
+  "npx",
+  "node"
+ ],
+ "versions": {
+  "claude": "2.1.200 (Claude Code)"
+ },
+ "args": [
+  "--components",
+  "none"
+ ],
+ "exit": 0,
+ "agents": {
+  "claude-code": {
+   "detected": true,
+   "route": "copy"
+  }
+ },
+ "rows": [
+  {
+   "agent": "claude-code",
+   "action": "create",
+   "how": "copy",
+   "path": "{claude_home}/skills/ultimate-brainstorm"
+  }
+ ],
+ "absent_rows": [
+  {
+   "agent": "claude-code",
+   "how": "native"
+  }
+ ]
+}

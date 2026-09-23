@@ -1,0 +1,49 @@
+{
+ "$id": "frame-questions",
+ "type": "object",
+ "additionalProperties": false,
+ "required": [
+  "questions"
+ ],
+ "properties": {
+  "questions": {
+   "type": "array",
+   "items": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "id",
+     "q",
+     "why",
+     "kind",
+     "default"
+    ],
+    "properties": {
+     "id": {
+      "type": "string"
+     },
+     "q": {
+      "type": "string"
+     },
+     "why": {
+      "type": "string"
+     },
+     "kind": {
+      "type": "string",
+      "enum": [
+       "goal",
+       "audience",
+       "success",
+       "constraint",
+       "scope",
+       "timeline"
+      ]
+     },
+     "default": {
+      "type": "string"
+     }
+    }
+   }
+  }
+ }
+}

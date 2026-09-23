@@ -1,0 +1,42 @@
+{
+  "schema": 1,
+  "verified": "2026-09-23: claude-code 2.1.280, codex rust-v0.156.1, kimi-code 2.0.2, skills 1.7.0, ZCode docs 3.4.0",
+  "kit": {"name": "ultimate-brainstorm", "repo": "MrHashMe/ultimate-brainstorm", "skill": "ultimate-brainstorm",
+          "marker": ".ub-owned", "marketplace": "ultimate-brainstorm", "plugin": "ultimate-brainstorm"},
+  "runtime_paths": [".claude-plugin", ".codex-plugin", ".agents", ".kimi-plugin", "bundles", "skills", "profiles",
+                    "install", "docs", "README.md", "LICENSE", "NOTICE.md", "VERSION", "CHANGELOG.md"],
+  "agents": {
+    "claude-code": {
+      "detect": {"bin": "claude", "home": ["$CLAUDE_CONFIG_DIR", "~/.claude"]},
+      "native": {"min": "2.1.268",
+        "marketplace_add": ["claude", "plugin", "marketplace", "add", "{kit_dir}"],
+        "install": ["claude", "plugin", "install", "ultimate-brainstorm@ultimate-brainstorm", "--scope", "{claude_scope}"],
+        "list": ["claude", "plugin", "list", "--json"],
+        "uninstall": ["claude", "plugin", "uninstall", "ultimate-brainstorm@ultimate-brainstorm"],
+        "marketplace_remove": ["claude", "plugin", "marketplace", "remove", "ultimate-brainstorm"]},
+      "copy": {"user": "{claude_home}/skills", "project": "{project}/.claude/skills"},
+      "invoke": "/ultimate-brainstorm <topic>", "reload": "start a new session or run /reload-plugins"},
+    "codex": {
+      "detect": {"bin": "codex", "home": ["$CODEX_HOME", "~/.codex"]},
+      "native": {"min": "0.156.0",
+        "marketplace_add": ["codex", "plugin", "marketplace", "add", "{kit_dir}", "--json"],
+        "install": ["codex", "plugin", "add", "ultimate-brainstorm@ultimate-brainstorm", "--json"],
+        "list": ["codex", "plugin", "list", "--json"],
+        "uninstall": ["codex", "plugin", "remove", "ultimate-brainstorm@ultimate-brainstorm", "--json"],
+        "marketplace_remove": ["codex", "plugin", "marketplace", "remove", "ultimate-brainstorm", "--json"]},
+      "copy": {"user": "~/.agents/skills", "project": "{project}/.agents/skills"},
+      "invoke": "$ultimate-brainstorm <topic>", "reload": "restart Codex"},
+    "kimi": {
+      "detect": {"bin": "kimi", "min": "2.0.0", "home": ["$KIMI_CODE_HOME", "~/.kimi-code"], "legacy_home": "~/.kimi",
+                 "windows_requires": "git-bash"},
+      "copy": {"user": "{kimi_home}/skills", "project": "{project}/.agents/skills"},
+      "manual_native": "/plugins install {kit_dir}   then /reload",
+      "invoke": "/skill:ultimate-brainstorm <topic>", "reload": "/reload or /new"},
+    "zcode": {
+      "detect": {"home": ["~/.zcode"], "apps": ["/Applications/ZCode.app", "%LOCALAPPDATA%/Programs/ZCode",
+                                                    "~/.local/share/applications/zcode.desktop"]},
+      "copy": {"user": "~/.zcode/skills", "project": "{project}/.zcode/skills"},
+      "manual_native": "ZCode > Settings > Plugins > add a local directory or GitHub marketplace: {kit_dir}",
+      "invoke": "$ultimate-brainstorm <topic>", "reload": "restart ZCode"}
+  }
+}

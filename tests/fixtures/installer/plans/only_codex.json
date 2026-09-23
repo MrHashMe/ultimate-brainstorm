@@ -1,0 +1,69 @@
+{
+ "description": "only Codex detected: native route, nothing for the other agents",
+ "tools": [
+  "codex",
+  "npx",
+  "node"
+ ],
+ "args": [
+  "--components",
+  "none"
+ ],
+ "exit": 0,
+ "agents": {
+  "codex": {
+   "detected": true,
+   "route": "native"
+  },
+  "claude-code": {
+   "detected": false
+  },
+  "kimi": {
+   "detected": false
+  },
+  "zcode": {
+   "detected": false
+  }
+ },
+ "rows": [
+  {
+   "agent": "all",
+   "action": "create",
+   "how": "copy",
+   "path": "{kit_dir}"
+  },
+  {
+   "agent": "codex",
+   "action": "install",
+   "how": "native",
+   "commands": [
+    [
+     "codex",
+     "plugin",
+     "marketplace",
+     "add",
+     "{kit_dir}",
+     "--json"
+    ],
+    [
+     "codex",
+     "plugin",
+     "add",
+     "ultimate-brainstorm@ultimate-brainstorm",
+     "--json"
+    ]
+   ]
+  }
+ ],
+ "absent_rows": [
+  {
+   "agent": "claude-code"
+  },
+  {
+   "agent": "kimi"
+  },
+  {
+   "agent": "zcode"
+  }
+ ]
+}

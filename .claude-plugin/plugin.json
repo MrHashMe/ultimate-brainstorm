@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
+  "name": "ultimate-brainstorm",
+  "displayName": "Ultimate Brainstorm",
+  "version": "2.0.0",
+  "description": "Your ideas -> decided idea -> architecture package -> full proposal, across Claude, GPT, Kimi and GLM.",
+  "author": {
+    "name": "MrHashMe"
+  },
+  "homepage": "https://github.com/MrHashMe/ultimate-brainstorm",
+  "repository": "https://github.com/MrHashMe/ultimate-brainstorm",
+  "license": "MIT",
+  "keywords": [
+    "brainstorming",
+    "ideation",
+    "architecture",
+    "proposal",
+    "multi-model",
+    "kimi",
+    "glm"
+  ]
+}

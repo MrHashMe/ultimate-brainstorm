@@ -1,0 +1,74 @@
+{
+ "$id": "stack-verify",
+ "description": "STACK-VERIFY output (stack.json)",
+ "type": "object",
+ "additionalProperties": false,
+ "required": [
+  "rows"
+ ],
+ "properties": {
+  "rows": {
+   "type": "array",
+   "items": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "layer",
+     "component",
+     "choice",
+     "version",
+     "release_date",
+     "source_url",
+     "status",
+     "license",
+     "eol_note",
+     "alternatives",
+     "innovation_token"
+    ],
+    "properties": {
+     "layer": {
+      "type": "string"
+     },
+     "component": {
+      "type": "string"
+     },
+     "choice": {
+      "type": "string"
+     },
+     "version": {
+      "type": "string",
+      "description": "current stable version found, or UNVERIFIED"
+     },
+     "release_date": {
+      "type": "string",
+      "description": "YYYY-MM-DD or empty"
+     },
+     "source_url": {
+      "type": "string",
+      "description": "vendor release page or package registry URL, or empty"
+     },
+     "status": {
+      "type": "string",
+      "enum": [
+       "VERIFIED",
+       "UNVERIFIED",
+       "NOT SEARCHED"
+      ]
+     },
+     "license": {
+      "type": "string"
+     },
+     "eol_note": {
+      "type": "string"
+     },
+     "alternatives": {
+      "type": "string"
+     },
+     "innovation_token": {
+      "type": "boolean"
+     }
+    }
+   }
+  }
+ }
+}

@@ -1,0 +1,35 @@
+{
+  "schema": 1,
+  "verified": "2026-09-23",
+  "core": ["compound-engineering", "mattpocock-grilling"],
+  "components": {
+    "compound-engineering": {
+      "ref": "compound-engineering-v3.28.2",
+      "claude-code": {"steps": [["claude","plugin","marketplace","add","EveryInc/compound-engineering-plugin@compound-engineering-v3.28.2"]],
+                      "install_resolve": {"plugin": "compound-engineering", "source_match": "EveryInc/compound-engineering-plugin"},
+                      "manual": "/plugin marketplace add EveryInc/compound-engineering-plugin  then  /plugin install compound-engineering"},
+      "codex": {"steps": [["codex","plugin","marketplace","add","EveryInc/compound-engineering-plugin@compound-engineering-v3.28.2","--json"],
+                          ["codex","plugin","add","compound-engineering@compound-engineering-plugin","--json"]]},
+      "kimi": {"manual": "/plugins install https://github.com/EveryInc/compound-engineering-plugin/releases/tag/compound-engineering-v3.28.2  then /reload"},
+      "zcode": {"manual": "ZCode > Settings > Plugins > add marketplace EveryInc/compound-engineering-plugin"}},
+    "mattpocock-grilling": {
+      "needs": {"node": "22.20.0"}, "env": {"DISABLE_TELEMETRY": "1"},
+      "claude-code": {"steps": [["npx","-y","skills@1.7.0","add","mattpocock/skills","--skill","grilling","--skill","domain-modeling","-g","-a","claude-code","--copy","-y"]]},
+      "codex":       {"cwd": "~", "steps": [["npx","-y","skills@1.7.0","add","mattpocock/skills","--skill","grilling","--skill","domain-modeling","-a","codex","-y"]]},
+      "kimi":        {"steps": [["npx","-y","skills@1.7.0","add","mattpocock/skills","--skill","grilling","--skill","domain-modeling","-g","-a","kimi-code-cli","--copy","-y"]],
+                      "skip_if_codex_step_ran": true},
+      "zcode":       {"steps": [["npx","-y","skills@1.7.0","add","mattpocock/skills","--skill","grilling","--skill","domain-modeling","-g","-a","zcode","--copy","-y"]]}},
+    "pm-skills": {"extra": true, "claude-code": {"steps": [["claude","plugin","marketplace","add","phuryn/pm-skills"],["claude","plugin","install","pm-product-discovery@pm-skills"],["claude","plugin","install","pm-execution@pm-skills"]]},
+                  "codex": {"steps": [["codex","plugin","marketplace","add","phuryn/pm-skills","--json"],["codex","plugin","add","pm-product-discovery@pm-skills","--json"],["codex","plugin","add","pm-execution@pm-skills","--json"]]}},
+    "speckit": {"extra": true, "all": {"steps": [["uv","tool","install","specify-cli"]]}},
+    "bmad": {"extra": true, "all": {"manual": "npx bmad-method install  (pick your tool; needs Node 20.12+, uv, Python 3.10+)"}},
+    "claude-council": {"extra": true, "claude-code": {"manual": "/plugin marketplace add hex/claude-marketplace  then  /plugin install claude-council"}},
+    "idea-reality": {"extra": true, "claude-code": {"manual": "claude mcp add --env GITHUB_TOKEN=<token> --transport stdio idea-reality -- uvx idea-reality-mcp"}}
+  },
+  "clis": {
+    "codex":  {"npm": "@openai/codex", "login": ["codex", "login"]},
+    "claude": {"npm": "@anthropic-ai/claude-code", "login_hint": "run `claude` once and sign in"},
+    "kimi":   {"npm": "@moonshot-ai/kimi-code", "node": "22.19.0", "login": ["kimi", "login"],
+               "windows_requires": "Git for Windows (Git Bash) or KIMI_SHELL_PATH"}
+  }
+}

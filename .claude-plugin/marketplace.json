@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-marketplace.json",
+  "name": "ultimate-brainstorm",
+  "owner": {
+    "name": "MrHashMe",
+    "url": "https://github.com/MrHashMe"
+  },
+  "description": "Evidence-based idea -> decision -> architecture -> proposal pipeline",
+  "allowCrossMarketplaceDependenciesOn": [
+    "claude-plugins-official"
+  ],
+  "plugins": [
+    {
+      "name": "ultimate-brainstorm",
+      "source": "./",
+      "category": "productivity",
+      "description": "Pipeline driver skill and scripts. Works alone; uses Compound Engineering and mattpocock skills when installed."
+    },
+    {
+      "name": "ultimate-brainstorm-stack",
+      "source": "./bundles/stack",
+      "category": "productivity",
+      "description": "EXPERIMENTAL: ultimate-brainstorm + mattpocock-skills in one install."
+    }
+  ]
+}

@@ -1,0 +1,134 @@
+{
+ "$id": "rubric",
+ "description": "PROPOSAL-RUBRIC output (review/rubric_<fam>.json)",
+ "type": "object",
+ "additionalProperties": false,
+ "required": [
+  "scores",
+  "evidence",
+  "must_fix",
+  "top_fixes",
+  "overall_comment"
+ ],
+ "properties": {
+  "scores": {
+   "type": "object",
+   "additionalProperties": false,
+   "required": [
+    "decision_readiness",
+    "substance_over_theater",
+    "strategic_coherence",
+    "doneness_clarity",
+    "scope_honesty",
+    "downstream_usability",
+    "shape_fit"
+   ],
+   "properties": {
+    "decision_readiness": {
+     "type": "integer",
+     "description": "1-5"
+    },
+    "substance_over_theater": {
+     "type": "integer",
+     "description": "1-5"
+    },
+    "strategic_coherence": {
+     "type": "integer",
+     "description": "1-5"
+    },
+    "doneness_clarity": {
+     "type": "integer",
+     "description": "1-5"
+    },
+    "scope_honesty": {
+     "type": "integer",
+     "description": "1-5"
+    },
+    "downstream_usability": {
+     "type": "integer",
+     "description": "1-5"
+    },
+    "shape_fit": {
+     "type": "integer",
+     "description": "1-5"
+    }
+   }
+  },
+  "evidence": {
+   "type": "object",
+   "additionalProperties": false,
+   "required": [
+    "decision_readiness",
+    "substance_over_theater",
+    "strategic_coherence",
+    "doneness_clarity",
+    "scope_honesty",
+    "downstream_usability",
+    "shape_fit"
+   ],
+   "properties": {
+    "decision_readiness": {
+     "type": "string",
+     "description": "quote or section reference"
+    },
+    "substance_over_theater": {
+     "type": "string",
+     "description": "quote or section reference"
+    },
+    "strategic_coherence": {
+     "type": "string",
+     "description": "quote or section reference"
+    },
+    "doneness_clarity": {
+     "type": "string",
+     "description": "quote or section reference"
+    },
+    "scope_honesty": {
+     "type": "string",
+     "description": "quote or section reference"
+    },
+    "downstream_usability": {
+     "type": "string",
+     "description": "quote or section reference"
+    },
+    "shape_fit": {
+     "type": "string",
+     "description": "quote or section reference"
+    }
+   }
+  },
+  "must_fix": {
+   "type": "array",
+   "items": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "section",
+     "issue",
+     "fix"
+    ],
+    "properties": {
+     "section": {
+      "type": "string",
+      "description": "section number or file"
+     },
+     "issue": {
+      "type": "string"
+     },
+     "fix": {
+      "type": "string"
+     }
+    }
+   }
+  },
+  "top_fixes": {
+   "type": "array",
+   "items": {
+    "type": "string"
+   }
+  },
+  "overall_comment": {
+   "type": "string"
+  }
+ }
+}

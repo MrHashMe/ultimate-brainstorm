@@ -1,0 +1,60 @@
+{
+ "$id": "quick-probe",
+ "description": "QUICK-PROBE output",
+ "type": "object",
+ "additionalProperties": false,
+ "required": [
+  "riskiest_assumption",
+  "criticality",
+  "uncertainty",
+  "probe",
+  "metric",
+  "pass_threshold",
+  "sample",
+  "deadline",
+  "kill_criterion",
+  "next_action"
+ ],
+ "properties": {
+  "riskiest_assumption": {
+   "type": "string",
+   "description": "Fails if ... (falsifiable)"
+  },
+  "criticality": {
+   "type": "integer",
+   "description": "1-5"
+  },
+  "uncertainty": {
+   "type": "integer",
+   "description": "1-5"
+  },
+  "probe": {
+   "type": "string",
+   "description": "the cheapest behavior test, one or two sentences"
+  },
+  "metric": {
+   "type": "string",
+   "description": "what is counted"
+  },
+  "pass_threshold": {
+   "type": "string",
+   "description": "written now: At least X of Y will do Z by the deadline"
+  },
+  "sample": {
+   "type": "string",
+   "description": "sample or test size"
+  },
+  "deadline": {
+   "type": "string",
+   "description": "relative, for example 14 days after start"
+  },
+  "kill_criterion": {
+   "type": "string",
+   "description": "the result that makes you stop (the inverse of the pass threshold)"
+  },
+  "next_action": {
+   "type": "string",
+   "description": "the first concrete step"
+  }
+ }
+}

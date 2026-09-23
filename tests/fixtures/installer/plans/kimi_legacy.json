@@ -1,0 +1,30 @@
+{
+ "description": "Kimi 1.x is the archived legacy CLI: warning, and no kit install for Kimi",
+ "tools": [
+  "kimi",
+  "npx",
+  "node"
+ ],
+ "versions": {
+  "kimi": "kimi, version 1.4.0"
+ },
+ "args": [
+  "--components",
+  "none"
+ ],
+ "exit": 0,
+ "agents": {
+  "kimi": {
+   "detected": true
+  }
+ },
+ "warnings": [
+  "(?i)kimi.*(legacy|1\\.4|migrate|upgrade)"
+ ],
+ "absent_rows": [
+  {
+   "agent": "kimi",
+   "action": "create"
+  }
+ ]
+}

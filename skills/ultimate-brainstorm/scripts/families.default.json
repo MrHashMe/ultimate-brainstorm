@@ -1,0 +1,62 @@
+{
+  "schema": 1,
+  "verified": "2026-09-23: Claude Code 2.1.280, Codex rust-v0.156.1, Kimi Code 2.0.2, Z.ai devpack docs, Moonshot platform docs",
+  "order": ["claude", "gpt", "kimi", "glm"],
+  "region": "global",
+  "defaults": {
+    "parallel": 4,
+    "retries": 1,
+    "timeouts_s": {"ping": 60, "frame": 420, "generator": 420, "curator": 480, "judge": 300, "researcher": 600,
+                   "checker": 480, "normalizer": 300, "reviewer": 420, "synthesis": 420, "writer": 720,
+                   "arch-author": 600, "arch-judge": 420, "rubric": 300, "redteam": 420, "fixer": 600}
+  },
+  "families": {
+    "claude": {"vendor": "anthropic", "limit": 3, "alt_model": "sonnet",
+               "backends": ["claude-cli", "anthropic-http"]},
+    "gpt":    {"vendor": "openai", "limit": 3, "alt_model": null,
+               "backends": ["codex-cli", "openai-http"]},
+    "kimi":   {"vendor": "moonshot", "limit": 3, "alt_model": null,
+               "backends": ["kimi-cli", "claude-cli@kimi", "claude-cli@kimi-code", "codex-cli@kimi", "openai-http@kimi"]},
+    "glm":    {"vendor": "zhipu", "limit": 2, "alt_model": null, "allow_scripted_plan_use": true,
+               "backends": ["claude-cli@glm", "codex-cli@glm", "openai-http@glm-payg"]}
+  },
+  "backends": {
+    "claude-cli":           {"type": "claude-cli", "exe": "claude", "min_version": null, "web": true, "native_schema": false},
+    "claude-cli@glm":       {"type": "claude-cli", "exe": "claude", "provider": "glm", "web": false, "native_schema": false},
+    "claude-cli@kimi":      {"type": "claude-cli", "exe": "claude", "provider": "kimi", "web": false, "native_schema": false},
+    "claude-cli@kimi-code": {"type": "claude-cli", "exe": "claude", "provider": "kimi-code", "web": false, "native_schema": false},
+    "codex-cli":            {"type": "codex-cli", "exe": "codex", "min_version": null, "codex_home": null, "model": null,
+                             "web": true, "native_schema": true},
+    "codex-cli@glm":        {"type": "codex-cli", "exe": "codex", "codex_home": "~/.ultimate-brainstorm/codex-homes/glm",
+                             "token_env": "ZAI_API_KEY", "model": null, "web": false, "native_schema": false},
+    "codex-cli@kimi":       {"type": "codex-cli", "exe": "codex", "codex_home": "~/.ultimate-brainstorm/codex-homes/kimi",
+                             "token_env": "KIMI_API_KEY", "model": null, "web": false, "native_schema": false},
+    "kimi-cli":             {"type": "kimi-cli", "exe": "kimi", "min_version": "2.0.0", "model": null, "fast_model": null,
+                             "web": false, "env_model": false},
+    "anthropic-http":       {"type": "anthropic-http", "url": "https://api.anthropic.com/v1/messages",
+                             "key_env": "ANTHROPIC_API_KEY", "model": null, "enabled": true},
+    "openai-http":          {"type": "openai-chat-http", "url": "https://api.openai.com/v1/chat/completions",
+                             "key_env": "OPENAI_API_KEY", "model": null, "enabled": true},
+    "openai-http@kimi":     {"type": "openai-chat-http", "url": "https://api.moonshot.ai/v1/chat/completions",
+                             "key_env": "KIMI_API_KEY", "model": "kimi-k3", "enabled": false},
+    "openai-http@glm-payg": {"type": "openai-chat-http", "url": "https://api.z.ai/api/paas/v4/chat/completions",
+                             "key_env": "ZAI_PAYG_API_KEY", "model": "glm-5.3", "policy": "payg-only", "enabled": false}
+  },
+  "providers": {
+    "glm": {"token_env": "ZAI_API_KEY", "token_var": "ANTHROPIC_AUTH_TOKEN",
+            "base_url": {"global": "https://api.z.ai/api/anthropic", "cn": "https://open.bigmodel.cn/api/anthropic"},
+            "models": {"default": "glm-5.3[1m]", "fast": "glm-5.3-flash[1m]"},
+            "env": {"API_TIMEOUT_MS": "3000000", "CLAUDE_CODE_AUTO_COMPACT_WINDOW": "1000000",
+                    "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1"}},
+    "kimi": {"token_env": "KIMI_API_KEY", "token_var": "ANTHROPIC_AUTH_TOKEN",
+             "base_url": {"global": "https://api.moonshot.ai/anthropic"},
+             "models": {"default": "kimi-k3[1m]", "fast": "kimi-k2.7-code"},
+             "env": {"CLAUDE_CODE_AUTO_COMPACT_WINDOW": "1000000", "CLAUDE_CODE_EFFORT_LEVEL": "max",
+                     "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1"}},
+    "kimi-code": {"token_env": "KIMI_CODE_API_KEY", "token_var": "ANTHROPIC_API_KEY",
+                  "base_url": {"global": "https://api.kimi.ai/coding/", "cn": "https://api.kimi.com/coding/"},
+                  "models": {"default": "k3-256k", "fast": "k3-256k"},
+                  "env": {"CLAUDE_CODE_AUTO_COMPACT_WINDOW": "262144", "CLAUDE_CODE_MAX_CONTEXT_TOKENS": "262144",
+                          "CLAUDE_CODE_EFFORT_LEVEL": "high", "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1"}}
+  }
+}

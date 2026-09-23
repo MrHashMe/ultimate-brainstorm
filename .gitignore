@@ -1,0 +1,17 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Release output (tools/release.py --out dist/)
+dist/
+
+# Builder notes stay local (not published)
+.build/
+
+# Scratch files
+*.tmp
+
+# OS and editor noise
+.DS_Store
+Thumbs.db

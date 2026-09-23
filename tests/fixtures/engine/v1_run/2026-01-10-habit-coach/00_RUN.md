@@ -1,0 +1,13 @@
+# Run: habit-coach
+- mode: standard
+- variant: product
+- topic: habit coach for shift workers
+- host family: claude   other family: gpt via codex exec
+- privacy: (a) web + second vendor: yes   (b) code facts / repo files to other vendors: no
+- python: py -3
+- detected tools: mattpocock-skills:grilling
+- strategy -> family map: S1=claude S2=claude S3=gpt S4=claude S5=gpt
+- human saw S1 ranking: n/a
+- session plan: A = stages 0-3 | B (fresh session) = 4 | C (fresh) = 5-7 | D (fresh) = 8-10 | E (fresh) = 11-12
+- stage log:
+  - 2026-01-10 stage 5 done

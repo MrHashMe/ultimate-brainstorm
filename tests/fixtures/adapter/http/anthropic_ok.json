@@ -1,0 +1,1 @@
+{"id":"msg_fixture","type":"message","role":"assistant","content":[{"type":"text","text":"Anthropic "},{"type":"tool_use","id":"x","name":"n","input":{}},{"type":"text","text":"answer."}],"usage":{"input_tokens":9,"output_tokens":4}}

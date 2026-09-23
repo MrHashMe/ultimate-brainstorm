@@ -1,0 +1,6 @@
+interface:
+  display_name: "Ultimate Brainstorm"
+  short_description: "Idea -> decision -> architecture -> proposal across model families"
+  default_prompt: "$ultimate-brainstorm standard general <your topic>"
+policy:
+  allow_implicit_invocation: false

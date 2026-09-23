@@ -1,0 +1,122 @@
+{
+ "$id": "arch-judge",
+ "description": "ARCH-JUDGE output (review/judge_<fam>.out.json)",
+ "type": "object",
+ "additionalProperties": false,
+ "required": [
+  "candidates",
+  "steal",
+  "confidence"
+ ],
+ "properties": {
+  "candidates": {
+   "type": "array",
+   "items": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "label",
+     "veto",
+     "veto_reason",
+     "scores",
+     "sensitivity_points",
+     "tradeoff_points",
+     "risks",
+     "non_risks"
+    ],
+    "properties": {
+     "label": {
+      "type": "string",
+      "description": "the neutral label exactly as shown"
+     },
+     "veto": {
+      "type": "boolean",
+      "description": "true only when a hard constraint is violated"
+     },
+     "veto_reason": {
+      "type": "string",
+      "description": "empty string when veto is false"
+     },
+     "scores": {
+      "type": "array",
+      "items": {
+       "type": "object",
+       "additionalProperties": false,
+       "required": [
+        "criterion",
+        "score",
+        "reason"
+       ],
+       "properties": {
+        "criterion": {
+         "type": "string",
+         "description": "criterion id exactly as given"
+        },
+        "score": {
+         "type": "integer",
+         "description": "1-5"
+        },
+        "reason": {
+         "type": "string",
+         "description": "max 20 words"
+        }
+       }
+      }
+     },
+     "sensitivity_points": {
+      "type": "array",
+      "items": {
+       "type": "string"
+      }
+     },
+     "tradeoff_points": {
+      "type": "array",
+      "items": {
+       "type": "string"
+      }
+     },
+     "risks": {
+      "type": "array",
+      "items": {
+       "type": "string"
+      }
+     },
+     "non_risks": {
+      "type": "array",
+      "items": {
+       "type": "string"
+      }
+     }
+    }
+   }
+  },
+  "steal": {
+   "type": "array",
+   "items": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "from",
+     "element",
+     "why"
+    ],
+    "properties": {
+     "from": {
+      "type": "string",
+      "description": "label"
+     },
+     "element": {
+      "type": "string"
+     },
+     "why": {
+      "type": "string"
+     }
+    }
+   }
+  },
+  "confidence": {
+   "type": "number",
+   "description": "0-1"
+  }
+ }
+}

@@ -1,0 +1,123 @@
+{
+ "$id": "merges",
+ "type": "object",
+ "additionalProperties": false,
+ "required": [
+  "axes",
+  "ideas",
+  "notes"
+ ],
+ "properties": {
+  "axes": {
+   "type": "array",
+   "items": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "name",
+     "values"
+    ],
+    "properties": {
+     "name": {
+      "type": "string"
+     },
+     "values": {
+      "type": "array",
+      "items": {
+       "type": "string"
+      }
+     }
+    }
+   }
+  },
+  "ideas": {
+   "type": "array",
+   "items": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "key",
+     "title",
+     "pitch",
+     "mechanism",
+     "aliases",
+     "cluster",
+     "cell",
+     "siblings",
+     "baseline",
+     "primary"
+    ],
+    "properties": {
+     "key": {
+      "type": "string"
+     },
+     "title": {
+      "type": "string"
+     },
+     "pitch": {
+      "type": "string"
+     },
+     "mechanism": {
+      "type": "string"
+     },
+     "aliases": {
+      "type": "array",
+      "items": {
+       "type": "string"
+      }
+     },
+     "cluster": {
+      "type": "string"
+     },
+     "cell": {
+      "type": "array",
+      "items": {
+       "type": "string"
+      }
+     },
+     "siblings": {
+      "type": "array",
+      "items": {
+       "type": "string"
+      }
+     },
+     "baseline": {
+      "type": "boolean"
+     },
+     "primary": {
+      "type": "boolean"
+     }
+    }
+   }
+  },
+  "notes": {
+   "type": "object",
+   "additionalProperties": false,
+   "required": [
+    "rerun",
+    "leak_check",
+    "merge_log"
+   ],
+   "properties": {
+    "rerun": {
+     "type": "array",
+     "items": {
+      "type": "string"
+     }
+    },
+    "leak_check": {
+     "type": "array",
+     "items": {
+      "type": "string"
+     }
+    },
+    "merge_log": {
+     "type": "array",
+     "items": {
+      "type": "string"
+     }
+    }
+   }
+  }
+ }
+}

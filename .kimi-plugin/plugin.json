@@ -1,0 +1,15 @@
+{
+  "name": "ultimate-brainstorm",
+  "version": "2.0.0",
+  "license": "MIT",
+  "description": "Idea -> decision -> architecture -> proposal across model families.",
+  "homepage": "https://github.com/MrHashMe/ultimate-brainstorm",
+  "skills": "./skills/",
+  "systemPrompt": "The ultimate-brainstorm plugin is installed. When the user wants to brainstorm, decide what to build, or turn an idea into an architecture and a proposal, use the ultimate-brainstorm skill (/skill:ultimate-brainstorm <topic>).",
+  "interface": {
+    "displayName": "Ultimate Brainstorm",
+    "shortDescription": "Idea -> architecture -> proposal",
+    "developerName": "MrHashMe",
+    "websiteURL": "https://github.com/MrHashMe/ultimate-brainstorm"
+  }
+}

@@ -1,0 +1,70 @@
+{
+ "$id": "stack-verify",
+ "type": "object",
+ "additionalProperties": false,
+ "required": [
+  "rows"
+ ],
+ "properties": {
+  "rows": {
+   "type": "array",
+   "items": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "layer",
+     "component",
+     "choice",
+     "version",
+     "release_date",
+     "source_url",
+     "status",
+     "license",
+     "eol_note",
+     "alternatives",
+     "innovation_token"
+    ],
+    "properties": {
+     "layer": {
+      "type": "string"
+     },
+     "component": {
+      "type": "string"
+     },
+     "choice": {
+      "type": "string"
+     },
+     "version": {
+      "type": "string"
+     },
+     "release_date": {
+      "type": "string"
+     },
+     "source_url": {
+      "type": "string"
+     },
+     "status": {
+      "type": "string",
+      "enum": [
+       "VERIFIED",
+       "UNVERIFIED",
+       "NOT SEARCHED"
+      ]
+     },
+     "license": {
+      "type": "string"
+     },
+     "eol_note": {
+      "type": "string"
+     },
+     "alternatives": {
+      "type": "string"
+     },
+     "innovation_token": {
+      "type": "boolean"
+     }
+    }
+   }
+  }
+ }
+}

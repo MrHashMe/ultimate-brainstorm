@@ -1,0 +1,36 @@
+{
+ "description": "Codex 0.140 is below the native minimum 0.156.0: copy to ~/.agents/skills",
+ "tools": [
+  "codex",
+  "npx",
+  "node"
+ ],
+ "versions": {
+  "codex": "codex-cli 0.140.0"
+ },
+ "args": [
+  "--components",
+  "none"
+ ],
+ "exit": 0,
+ "agents": {
+  "codex": {
+   "detected": true,
+   "route": "copy"
+  }
+ },
+ "rows": [
+  {
+   "agent": "codex",
+   "action": "create",
+   "how": "copy",
+   "path": "{home}/.agents/skills/ultimate-brainstorm"
+  }
+ ],
+ "absent_rows": [
+  {
+   "agent": "codex",
+   "how": "native"
+  }
+ ]
+}

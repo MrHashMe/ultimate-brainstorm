@@ -1,0 +1,54 @@
+{
+ "description": "CLAUDE_CONFIG_DIR, CODEX_HOME and KIMI_CODE_HOME are honored",
+ "tools": [
+  "claude",
+  "codex",
+  "kimi",
+  "npx",
+  "node"
+ ],
+ "versions": {
+  "claude": "2.1.200 (Claude Code)"
+ },
+ "env": {
+  "CLAUDE_CONFIG_DIR": "{root}/cfg/claude home",
+  "CODEX_HOME": "{root}/cfg/codex home",
+  "KIMI_CODE_HOME": "{root}/cfg/kimi home"
+ },
+ "args": [
+  "--components",
+  "none"
+ ],
+ "exit": 0,
+ "agents": {
+  "claude-code": {
+   "detected": true,
+   "route": "copy",
+   "home": "{root}/cfg/claude home"
+  },
+  "codex": {
+   "detected": true,
+   "route": "native",
+   "home": "{root}/cfg/codex home"
+  },
+  "kimi": {
+   "detected": true,
+   "route": "copy",
+   "home": "{root}/cfg/kimi home"
+  }
+ },
+ "rows": [
+  {
+   "agent": "claude-code",
+   "action": "create",
+   "how": "copy",
+   "path": "{root}/cfg/claude home/skills/ultimate-brainstorm"
+  },
+  {
+   "agent": "kimi",
+   "action": "create",
+   "how": "copy",
+   "path": "{root}/cfg/kimi home/skills/ultimate-brainstorm"
+  }
+ ]
+}

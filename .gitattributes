@@ -1,0 +1,29 @@
+# Line endings (KIT_SPEC 3.1): UTF-8, LF everywhere; CRLF for Windows batch and PowerShell files.
+# Later lines win in .gitattributes, so generic patterns come first.
+* text=auto eol=lf
+
+*.py text eol=lf
+*.md text eol=lf
+*.json text eol=lf
+*.toml text eol=lf
+*.yaml text eol=lf
+*.yml text eol=lf
+*.sh text eol=lf
+*.tpl text eol=lf
+
+*.cmd text eol=crlf
+*.bat text eol=crlf
+*.ps1 text eol=crlf
+# Launcher templates rendered into .cmd / .ps1 files keep the same endings as their output.
+*.cmd.tpl text eol=crlf
+*.ps1.tpl text eol=crlf
+
+# Binary files: never normalized.
+*.png binary
+*.jpg binary
+*.gif binary
+*.ico binary
+*.zip binary
+*.gz binary
+*.tgz binary
+*.pdf binary

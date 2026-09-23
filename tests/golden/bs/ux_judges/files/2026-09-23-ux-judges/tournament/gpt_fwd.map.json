@@ -1,0 +1,46 @@
+{
+ "family": "gpt",
+ "order": "fwd",
+ "pairs": {
+  "P01": {
+   "first": "I-001",
+   "second": "I-002"
+  },
+  "P02": {
+   "first": "I-001",
+   "second": "I-003"
+  },
+  "P03": {
+   "first": "I-002",
+   "second": "I-003"
+  },
+  "P04": {
+   "first": "I-004",
+   "second": "I-005"
+  },
+  "P05": {
+   "first": "I-003",
+   "second": "I-005"
+  },
+  "P06": {
+   "first": "I-002",
+   "second": "I-005"
+  },
+  "P07": {
+   "first": "I-003",
+   "second": "I-004"
+  },
+  "P08": {
+   "first": "I-001",
+   "second": "I-005"
+  },
+  "P09": {
+   "first": "I-001",
+   "second": "I-004"
+  },
+  "P10": {
+   "first": "I-002",
+   "second": "I-004"
+  }
+ }
+}

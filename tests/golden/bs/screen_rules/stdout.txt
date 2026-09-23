@@ -1,0 +1,45 @@
+=== screen (rc=0) ===
+| id | cluster | origin | score | rank (range, weights +/-25%) | gates | floor | shortlist | top risk |
+|---|---|---|---|---|---|---|---|---|
+| I-001 | Alpha | claude | 3.83 | 1 (1-3) | ok | ok | best of cluster | risk claude I-001 / risk gpt I-001 |
+| I-006 | Beta | claude | 3.80 | 2 (1-2) | KILL | ok |  | risk claude I-006 / risk gpt I-006 |
+| I-002 | Beta | gpt | 3.75 | 3 (1-3) | ok | ok | best of cluster | risk claude I-002 / risk gpt I-002 |
+| I-003 | Gamma | human-mixed | 3.55 | 4 (4-5) | ok | ok | best of cluster | risk claude I-003 / risk gpt I-003 |
+| I-012 | Alpha | gpt | 3.38 | 5 (4-8) | flag | ok |  | risk claude I-012 / risk gpt I-012 |
+| I-009 | Beta | gpt | 3.33 | 6 (5-8) | flag | ok |  | risk claude I-009 / risk gpt I-009 |
+| I-013 | Beta | claude | 3.33 | 7 (5-8) | ok | ok |  | risk claude I-013 / risk gpt I-013 |
+| I-010 | Gamma | human-mixed | 3.27 | 8 (6-9) | ok | ok |  | risk claude I-010 / risk gpt I-010 |
+| I-014 | Gamma | human | 3.25 | 9 (6-11) | ok | ok |  | risk claude I-014 |
+| I-005 | Alpha | gpt | 3.17 | 10 (9-11) | ok | ok |  | risk claude I-005 / risk gpt I-005 |
+| I-008 | Alpha | claude | 3.15 | 11 (9-11) | ok | ok |  | risk claude I-008 / risk gpt I-008 |
+| I-011 | Delta | ai-mixed | 3.00 | 12 (12-12) | ok | FAIL | primary idea (floor FAIL: human decides) | risk claude I-011 / risk gpt I-011 |
+| I-007 | Gamma | human | 2.70 | 13 (13-14) | ok | ok | tail slot | risk claude I-007 / risk gpt I-007 |
+| I-004 | Delta | ai-mixed | 2.65 | 14 (13-14) | KILL | ok | primary idea (gate KILL: human confirms) | risk claude I-004 / risk gpt I-004 |
+
+Auto-shortlist: 6 ideas. Judge files read: 2.
+Borderline (rank range reaches the shortlist size): I-012, I-009, I-013, I-010, I-014
+WARNING: only one judge scored ['I-014'] (second family missing or failed)
+
+=== screen (rc=0) ===
+| id | cluster | origin | score | rank (range, weights +/-25%) | gates | floor | shortlist | top risk |
+|---|---|---|---|---|---|---|---|---|
+| I-006 | Beta | claude | 3.95 | 1 (1-2) | KILL | ok |  | risk claude I-006 / risk gpt I-006 |
+| I-001 | Alpha | claude | 3.85 | 2 (1-4) | ok | ok | best of cluster | risk claude I-001 / risk gpt I-001 |
+| I-003 | Gamma | human-mixed | 3.85 | 3 (2-4) | ok | ok | best of cluster | risk claude I-003 / risk gpt I-003 |
+| I-014 | Gamma | human | 3.80 | 4 (2-4) | ok | ok |  | risk claude I-014 |
+| I-002 | Beta | gpt | 3.65 | 5 (5-5) | ok | ok | best of cluster | risk claude I-002 / risk gpt I-002 |
+| I-009 | Beta | gpt | 3.50 | 6 (6-6) | flag | ok |  | risk claude I-009 / risk gpt I-009 |
+| I-010 | Gamma | human-mixed | 3.15 | 7 (7-8) | ok | ok |  | risk claude I-010 / risk gpt I-010 |
+| I-013 | Beta | claude | 3.15 | 8 (7-8) | ok | ok |  | risk claude I-013 / risk gpt I-013 |
+| I-008 | Alpha | claude | 2.95 | 9 (9-10) | ok | ok |  | risk claude I-008 / risk gpt I-008 |
+| I-012 | Alpha | gpt | 2.95 | 10 (9-10) | flag | ok |  | risk claude I-012 / risk gpt I-012 |
+| I-005 | Alpha | gpt | 2.80 | 11 (11-11) | ok | ok |  | risk claude I-005 / risk gpt I-005 |
+| I-004 | Delta | ai-mixed | 2.65 | 12 (12-12) | KILL | ok | primary idea (gate KILL: human confirms) | risk claude I-004 / risk gpt I-004 |
+| I-011 | Delta | ai-mixed | 2.45 | 13 (13-13) | ok | FAIL | primary idea (floor FAIL: human decides) | risk claude I-011 / risk gpt I-011 |
+| I-007 | Gamma | human | 2.00 | 14 (14-14) | ok | ok |  | risk claude I-007 / risk gpt I-007 |
+
+Auto-shortlist: 5 ideas. Judge files read: 2.
+Borderline (rank range reaches the shortlist size): I-014
+WARNING: only one judge scored ['I-014'] (second family missing or failed)
+no criteria named like 'Distinctiveness' and 'Feasibility': tail slot skipped
+

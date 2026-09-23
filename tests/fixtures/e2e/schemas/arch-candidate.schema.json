@@ -1,0 +1,252 @@
+{
+ "$id": "arch-candidate",
+ "type": "object",
+ "additionalProperties": false,
+ "required": [
+  "paradigm",
+  "summary",
+  "containers",
+  "external",
+  "qas_mechanisms",
+  "stack",
+  "data",
+  "deployment",
+  "security_threats",
+  "cost_monthly_usd",
+  "build_person_weeks",
+  "tradeoffs",
+  "rejected",
+  "risks",
+  "innovation_tokens"
+ ],
+ "properties": {
+  "paradigm": {
+   "type": "string"
+  },
+  "summary": {
+   "type": "string"
+  },
+  "containers": {
+   "type": "array",
+   "items": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "id",
+     "name",
+     "tech",
+     "responsibility",
+     "data_owned",
+     "interface"
+    ],
+    "properties": {
+     "id": {
+      "type": "string"
+     },
+     "name": {
+      "type": "string"
+     },
+     "tech": {
+      "type": "string"
+     },
+     "responsibility": {
+      "type": "string"
+     },
+     "data_owned": {
+      "type": "string"
+     },
+     "interface": {
+      "type": "string"
+     }
+    }
+   }
+  },
+  "external": {
+   "type": "array",
+   "items": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "id",
+     "name"
+    ],
+    "properties": {
+     "id": {
+      "type": "string"
+     },
+     "name": {
+      "type": "string"
+     }
+    }
+   }
+  },
+  "qas_mechanisms": {
+   "type": "array",
+   "items": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "qas",
+     "mechanism",
+     "residual_risk"
+    ],
+    "properties": {
+     "qas": {
+      "type": "string"
+     },
+     "mechanism": {
+      "type": "string"
+     },
+     "residual_risk": {
+      "type": "string"
+     }
+    }
+   }
+  },
+  "stack": {
+   "type": "array",
+   "items": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "layer",
+     "component",
+     "choice",
+     "version"
+    ],
+    "properties": {
+     "layer": {
+      "type": "string"
+     },
+     "component": {
+      "type": "string"
+     },
+     "choice": {
+      "type": "string"
+     },
+     "version": {
+      "type": "string"
+     }
+    }
+   }
+  },
+  "data": {
+   "type": "object",
+   "additionalProperties": false,
+   "required": [
+    "entities",
+    "storage"
+   ],
+   "properties": {
+    "entities": {
+     "type": "array",
+     "items": {
+      "type": "string"
+     }
+    },
+    "storage": {
+     "type": "string"
+    }
+   }
+  },
+  "deployment": {
+   "type": "string"
+  },
+  "security_threats": {
+   "type": "array",
+   "items": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "threat",
+     "mitigation"
+    ],
+    "properties": {
+     "threat": {
+      "type": "string"
+     },
+     "mitigation": {
+      "type": "string"
+     }
+    }
+   }
+  },
+  "cost_monthly_usd": {
+   "type": "object",
+   "additionalProperties": false,
+   "required": [
+    "mvp_low",
+    "mvp_high",
+    "x10_low",
+    "x10_high"
+   ],
+   "properties": {
+    "mvp_low": {
+     "type": "number"
+    },
+    "mvp_high": {
+     "type": "number"
+    },
+    "x10_low": {
+     "type": "number"
+    },
+    "x10_high": {
+     "type": "number"
+    }
+   }
+  },
+  "build_person_weeks": {
+   "type": "object",
+   "additionalProperties": false,
+   "required": [
+    "low",
+    "high"
+   ],
+   "properties": {
+    "low": {
+     "type": "number"
+    },
+    "high": {
+     "type": "number"
+    }
+   }
+  },
+  "tradeoffs": {
+   "type": "array",
+   "items": {
+    "type": "string"
+   }
+  },
+  "rejected": {
+   "type": "array",
+   "items": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "approach",
+     "why"
+    ],
+    "properties": {
+     "approach": {
+      "type": "string"
+     },
+     "why": {
+      "type": "string"
+     }
+    }
+   }
+  },
+  "risks": {
+   "type": "array",
+   "items": {
+    "type": "string"
+   }
+  },
+  "innovation_tokens": {
+   "type": "array",
+   "items": {
+    "type": "string"
+   }
+  }
+ }
+}

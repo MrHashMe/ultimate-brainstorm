@@ -1,0 +1,33 @@
+{
+  "name": "ultimate-brainstorm",
+  "version": "2.0.0",
+  "description": "Idea -> decision -> architecture -> proposal across model families.",
+  "author": {
+    "name": "MrHashMe"
+  },
+  "homepage": "https://github.com/MrHashMe/ultimate-brainstorm",
+  "repository": "https://github.com/MrHashMe/ultimate-brainstorm",
+  "license": "MIT",
+  "keywords": [
+    "brainstorming",
+    "architecture",
+    "proposal"
+  ],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Ultimate Brainstorm",
+    "shortDescription": "Idea -> architecture -> proposal with several model families",
+    "longDescription": "Human ideas first, isolated multi-strategy generation, debiased both-order judging across model families, prior-art checks, a human decision, competing architectures judged blind, and a cited proposal.",
+    "developerName": "MrHashMe",
+    "category": "Productivity",
+    "capabilities": [
+      "Interactive",
+      "Read",
+      "Write"
+    ],
+    "defaultPrompt": [
+      "$ultimate-brainstorm standard product <your topic>",
+      "$ultimate-brainstorm proposal <your idea>"
+    ]
+  }
+}

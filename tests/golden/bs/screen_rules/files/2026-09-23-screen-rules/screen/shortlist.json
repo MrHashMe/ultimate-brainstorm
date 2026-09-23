@@ -1,0 +1,43 @@
+{
+ "shortlist": [
+  {
+   "id": "I-001",
+   "reason": "best of cluster",
+   "score": 3.85
+  },
+  {
+   "id": "I-003",
+   "reason": "best of cluster",
+   "score": 3.85
+  },
+  {
+   "id": "I-002",
+   "reason": "best of cluster",
+   "score": 3.65
+  },
+  {
+   "id": "I-004",
+   "reason": "primary idea (gate KILL: human confirms)",
+   "score": 2.65
+  },
+  {
+   "id": "I-011",
+   "reason": "primary idea (floor FAIL: human decides)",
+   "score": 2.45
+  }
+ ],
+ "killed_gate": [
+  "I-004",
+  "I-006"
+ ],
+ "floor_fail": [
+  "I-011"
+ ],
+ "flagged_gate": [
+  "I-009",
+  "I-012"
+ ],
+ "borderline": [
+  "I-014"
+ ]
+}

@@ -1,0 +1,34 @@
+{
+ "shortlist": [
+  {
+   "id": "I-001",
+   "reason": "best of cluster",
+   "score": 4.05
+  },
+  {
+   "id": "I-003",
+   "reason": "best of cluster",
+   "score": 3.925
+  },
+  {
+   "id": "I-006",
+   "reason": "best of cluster + tail slot",
+   "score": 3.9
+  },
+  {
+   "id": "I-004",
+   "reason": "best of cluster",
+   "score": 2.9
+  }
+ ],
+ "killed_gate": [],
+ "floor_fail": [
+  "I-008"
+ ],
+ "flagged_gate": [
+  "I-006"
+ ],
+ "borderline": [
+  "I-005"
+ ]
+}

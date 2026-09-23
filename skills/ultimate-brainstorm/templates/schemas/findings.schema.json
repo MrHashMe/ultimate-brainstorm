@@ -1,0 +1,60 @@
+{
+ "$id": "findings",
+ "description": "ARCH-REVIEW output (review/<lens>_<fam>.json)",
+ "type": "object",
+ "additionalProperties": false,
+ "required": [
+  "findings"
+ ],
+ "properties": {
+  "findings": {
+   "type": "array",
+   "items": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "id",
+     "lens",
+     "severity",
+     "file",
+     "issue",
+     "fix",
+     "evidence"
+    ],
+    "properties": {
+     "id": {
+      "type": "string",
+      "description": "L1-01, L1-02, ... (lens id + number)"
+     },
+     "lens": {
+      "type": "string",
+      "description": "L1, L2, L3 or L4"
+     },
+     "severity": {
+      "type": "string",
+      "enum": [
+       "P0",
+       "P1",
+       "P2",
+       "P3"
+      ]
+     },
+     "file": {
+      "type": "string",
+      "description": "path relative to 10_ARCHITECTURE/"
+     },
+     "issue": {
+      "type": "string"
+     },
+     "fix": {
+      "type": "string"
+     },
+     "evidence": {
+      "type": "string",
+      "description": "URL, file reference or reasoning"
+     }
+    }
+   }
+  }
+ }
+}

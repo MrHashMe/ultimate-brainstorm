@@ -1,0 +1,4 @@
+{
+ "S-001": {"url": "https://example.org/nurse-survey", "title": "Night nurse survey", "accessed": "2026-09-23", "used_in": ["02_CONTEXT.md"]},
+ "S-002": {"url": "https://example.org/swap-tools", "title": "Shift swap tools", "accessed": "2026-09-23", "used_in": ["checks/I-001.md"]}
+}

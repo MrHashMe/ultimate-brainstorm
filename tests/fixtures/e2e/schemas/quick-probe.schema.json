@@ -1,0 +1,33 @@
+{
+ "$id": "quick-probe",
+ "type": "object",
+ "additionalProperties": false,
+ "required": [
+  "riskiest_assumption",
+  "probe",
+  "method",
+  "success_signal",
+  "kill_criterion",
+  "days"
+ ],
+ "properties": {
+  "riskiest_assumption": {
+   "type": "string"
+  },
+  "probe": {
+   "type": "string"
+  },
+  "method": {
+   "type": "string"
+  },
+  "success_signal": {
+   "type": "string"
+  },
+  "kill_criterion": {
+   "type": "string"
+  },
+  "days": {
+   "type": "integer"
+  }
+ }
+}

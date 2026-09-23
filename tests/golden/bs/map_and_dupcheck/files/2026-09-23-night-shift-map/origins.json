@@ -1,0 +1,8 @@
+{
+ "I-001": "claude",
+ "I-002": "human",
+ "I-003": "claude",
+ "I-004": "human-mixed",
+ "I-005": "ai-mixed",
+ "I-006": "gpt"
+}

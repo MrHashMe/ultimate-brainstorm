@@ -1,0 +1,3 @@
+{"role":"assistant","content":"Let me search first.","tool_calls":[{"id":"t1","type":"function","function":{"name":"WebSearch","arguments":"{}"}}]}
+{"role":"tool","tool_call_id":"t1","content":"search results with noise"}
+{"role":"assistant","content":[{"type":"text","text":"Final answer after tools."}]}

@@ -1,0 +1,11 @@
+---
+name: ultimate-brainstorm
+description: "v1 of the ultimate-brainstorm skill (fixture for the installer migrate-v1 tests)."
+license: MIT
+metadata:
+  version: "1.0"
+---
+
+# Ultimate Brainstorm (v1 fixture)
+
+This folder imitates a v1 install of the skill: no .ub-owned marker, metadata.version 1.0.

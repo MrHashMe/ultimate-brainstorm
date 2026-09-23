@@ -1,0 +1,166 @@
+=== status (rc=0) ===
+run: <RUN>   mode: standard
+  [ ] stage  1 Sealed human seeds: @seeds  (file missing)
+  [ ] stage  2 Frame: 01_FRAME.md, criteria.json
+  [ ] stage  3 Ground: 02_CONTEXT.md
+  [ ] stage  4 Diverge: @pool  (missing pool files for S1, S2, S3, S4, S5)
+  [ ] stage  5 Merge and map: 03_POOL.md, clusters.json, origins.json, screen/ideas.md
+  [ ] stage  6 Screen: 04_SHORTLIST.md, screen/shortlist.json
+  [ ] stage  7 Reality checks: @checks  (screen/shortlist.json missing)
+  [ ] stage  8 Evolve: 05_EVOLVED.md, @evolved-checks
+  [ ] stage  9 Tournament: tournament/result.md, 06_TOURNAMENT.md
+  [ ] stage 10 Red-team and decide: 07_REDTEAM.md, 08_DECISION.md
+  [ ] stage 11 Probe: 09_PROBE.md, @probe-result  (no 'RESULT:' line yet (probe designed but not reported))
+  [ ] stage 12 Handoff: 10_HANDOFF.md
+next: stage 1 (Sealed human seeds)
+=== status (rc=0) ===
+run: <RUN>   mode: standard
+  [ ] stage  1 Sealed human seeds: @seeds  (Ideas section empty (write ideas or 'SKIPPED: <reason>'))
+  [ ] stage  2 Frame: 01_FRAME.md, criteria.json
+  [ ] stage  3 Ground: 02_CONTEXT.md
+  [ ] stage  4 Diverge: @pool  (missing pool files for S1, S2, S3, S4, S5)
+  [ ] stage  5 Merge and map: 03_POOL.md, clusters.json, origins.json, screen/ideas.md
+  [ ] stage  6 Screen: 04_SHORTLIST.md, screen/shortlist.json
+  [ ] stage  7 Reality checks: @checks  (screen/shortlist.json missing)
+  [ ] stage  8 Evolve: 05_EVOLVED.md, @evolved-checks
+  [ ] stage  9 Tournament: tournament/result.md, 06_TOURNAMENT.md
+  [ ] stage 10 Red-team and decide: 07_REDTEAM.md, 08_DECISION.md
+  [ ] stage 11 Probe: 09_PROBE.md, @probe-result  (no 'RESULT:' line yet (probe designed but not reported))
+  [ ] stage 12 Handoff: 10_HANDOFF.md
+next: stage 1 (Sealed human seeds)
+=== status (rc=0) ===
+run: <RUN>   mode: standard
+  [x] stage  1 Sealed human seeds: @seeds
+  [ ] stage  2 Frame: 01_FRAME.md, criteria.json
+  [ ] stage  3 Ground: 02_CONTEXT.md
+  [ ] stage  4 Diverge: @pool  (missing pool files for S1, S2, S3, S4, S5)
+  [ ] stage  5 Merge and map: 03_POOL.md, clusters.json, origins.json, screen/ideas.md
+  [ ] stage  6 Screen: 04_SHORTLIST.md, screen/shortlist.json
+  [ ] stage  7 Reality checks: @checks  (screen/shortlist.json missing)
+  [ ] stage  8 Evolve: 05_EVOLVED.md, @evolved-checks
+  [ ] stage  9 Tournament: tournament/result.md, 06_TOURNAMENT.md
+  [ ] stage 10 Red-team and decide: 07_REDTEAM.md, 08_DECISION.md
+  [ ] stage 11 Probe: 09_PROBE.md, @probe-result  (no 'RESULT:' line yet (probe designed but not reported))
+  [ ] stage 12 Handoff: 10_HANDOFF.md
+next: stage 2 (Frame)
+=== status (rc=0) ===
+run: <RUN>   mode: standard
+  [x] stage  1 Sealed human seeds: @seeds
+  [x] stage  2 Frame: 01_FRAME.md, criteria.json
+  [x] stage  3 Ground: 02_CONTEXT.md
+  [ ] stage  4 Diverge: @pool  (missing pool files for S4, S5)
+  [ ] stage  5 Merge and map: 03_POOL.md, clusters.json, origins.json, screen/ideas.md
+  [ ] stage  6 Screen: 04_SHORTLIST.md, screen/shortlist.json
+  [ ] stage  7 Reality checks: @checks  (screen/shortlist.json missing)
+  [ ] stage  8 Evolve: 05_EVOLVED.md, @evolved-checks
+  [ ] stage  9 Tournament: tournament/result.md, 06_TOURNAMENT.md
+  [ ] stage 10 Red-team and decide: 07_REDTEAM.md, 08_DECISION.md
+  [ ] stage 11 Probe: 09_PROBE.md, @probe-result  (no 'RESULT:' line yet (probe designed but not reported))
+  [ ] stage 12 Handoff: 10_HANDOFF.md
+next: stage 4 (Diverge)
+=== status (rc=0) ===
+run: <RUN>   mode: standard
+  [x] stage  1 Sealed human seeds: @seeds
+  [x] stage  2 Frame: 01_FRAME.md, criteria.json
+  [x] stage  3 Ground: 02_CONTEXT.md
+  [x] stage  4 Diverge: @pool
+  [x] stage  5 Merge and map: 03_POOL.md, clusters.json, origins.json, screen/ideas.md
+  [ ] stage  6 Screen: 04_SHORTLIST.md, screen/shortlist.json
+  [ ] stage  7 Reality checks: @checks  (screen/shortlist.json missing)
+  [ ] stage  8 Evolve: 05_EVOLVED.md, @evolved-checks
+  [ ] stage  9 Tournament: tournament/result.md, 06_TOURNAMENT.md
+  [ ] stage 10 Red-team and decide: 07_REDTEAM.md, 08_DECISION.md
+  [ ] stage 11 Probe: 09_PROBE.md, @probe-result  (no 'RESULT:' line yet (probe designed but not reported))
+  [ ] stage 12 Handoff: 10_HANDOFF.md
+next: stage 6 (Screen)
+=== status (rc=0) ===
+run: <RUN>   mode: standard
+  [x] stage  1 Sealed human seeds: @seeds
+  [x] stage  2 Frame: 01_FRAME.md, criteria.json
+  [x] stage  3 Ground: 02_CONTEXT.md
+  [x] stage  4 Diverge: @pool
+  [x] stage  5 Merge and map: 03_POOL.md, clusters.json, origins.json, screen/ideas.md
+  [x] stage  6 Screen: 04_SHORTLIST.md, screen/shortlist.json
+  [ ] stage  7 Reality checks: @checks  (no check for E-01, I-004, I-009)
+  [ ] stage  8 Evolve: 05_EVOLVED.md, @evolved-checks
+  [ ] stage  9 Tournament: tournament/result.md, 06_TOURNAMENT.md
+  [ ] stage 10 Red-team and decide: 07_REDTEAM.md, 08_DECISION.md
+  [ ] stage 11 Probe: 09_PROBE.md, @probe-result  (no 'RESULT:' line yet (probe designed but not reported))
+  [ ] stage 12 Handoff: 10_HANDOFF.md
+next: stage 7 (Reality checks)
+=== status (rc=0) ===
+run: <RUN>   mode: standard
+  [x] stage  1 Sealed human seeds: @seeds
+  [x] stage  2 Frame: 01_FRAME.md, criteria.json
+  [x] stage  3 Ground: 02_CONTEXT.md
+  [x] stage  4 Diverge: @pool
+  [x] stage  5 Merge and map: 03_POOL.md, clusters.json, origins.json, screen/ideas.md
+  [x] stage  6 Screen: 04_SHORTLIST.md, screen/shortlist.json
+  [x] stage  7 Reality checks: @checks
+  [ ] stage  8 Evolve: 05_EVOLVED.md, @evolved-checks  (no check for E-02)
+  [ ] stage  9 Tournament: tournament/result.md, 06_TOURNAMENT.md
+  [ ] stage 10 Red-team and decide: 07_REDTEAM.md, 08_DECISION.md
+  [ ] stage 11 Probe: 09_PROBE.md, @probe-result  (no 'RESULT:' line yet (probe designed but not reported))
+  [ ] stage 12 Handoff: 10_HANDOFF.md
+next: stage 8 (Evolve)
+=== status (rc=0) ===
+run: <RUN>   mode: standard
+  [x] stage  1 Sealed human seeds: @seeds
+  [x] stage  2 Frame: 01_FRAME.md, criteria.json
+  [x] stage  3 Ground: 02_CONTEXT.md
+  [x] stage  4 Diverge: @pool
+  [x] stage  5 Merge and map: 03_POOL.md, clusters.json, origins.json, screen/ideas.md
+  [x] stage  6 Screen: 04_SHORTLIST.md, screen/shortlist.json
+  [x] stage  7 Reality checks: @checks
+  [x] stage  8 Evolve: 05_EVOLVED.md, @evolved-checks
+  [x] stage  9 Tournament: tournament/result.md, 06_TOURNAMENT.md
+  [x] stage 10 Red-team and decide: 07_REDTEAM.md, 08_DECISION.md
+  [ ] stage 11 Probe: 09_PROBE.md, @probe-result  (no 'RESULT:' line yet (probe designed but not reported))
+  [ ] stage 12 Handoff: 10_HANDOFF.md
+next: stage 11 (Probe)
+=== status (rc=0) ===
+run: <RUN>   mode: standard
+  [x] stage  1 Sealed human seeds: @seeds
+  [x] stage  2 Frame: 01_FRAME.md, criteria.json
+  [x] stage  3 Ground: 02_CONTEXT.md
+  [x] stage  4 Diverge: @pool
+  [x] stage  5 Merge and map: 03_POOL.md, clusters.json, origins.json, screen/ideas.md
+  [x] stage  6 Screen: 04_SHORTLIST.md, screen/shortlist.json
+  [x] stage  7 Reality checks: @checks
+  [x] stage  8 Evolve: 05_EVOLVED.md, @evolved-checks
+  [x] stage  9 Tournament: tournament/result.md, 06_TOURNAMENT.md
+  [x] stage 10 Red-team and decide: 07_REDTEAM.md, 08_DECISION.md
+  [x] stage 11 Probe: 09_PROBE.md, @probe-result
+  [ ] stage 12 Handoff: 10_HANDOFF.md
+next: stage 12 (Handoff)
+=== status (rc=0) ===
+run: <RUN>   mode: standard
+  [x] stage  1 Sealed human seeds: @seeds
+  [x] stage  2 Frame: 01_FRAME.md, criteria.json
+  [x] stage  3 Ground: 02_CONTEXT.md
+  [x] stage  4 Diverge: @pool
+  [x] stage  5 Merge and map: 03_POOL.md, clusters.json, origins.json, screen/ideas.md
+  [x] stage  6 Screen: 04_SHORTLIST.md, screen/shortlist.json
+  [x] stage  7 Reality checks: @checks
+  [x] stage  8 Evolve: 05_EVOLVED.md, @evolved-checks
+  [x] stage  9 Tournament: tournament/result.md, 06_TOURNAMENT.md
+  [x] stage 10 Red-team and decide: 07_REDTEAM.md, 08_DECISION.md
+  [x] stage 11 Probe: 09_PROBE.md, @probe-result
+  [x] stage 12 Handoff: 10_HANDOFF.md
+all stages complete
+=== status (rc=0) ===
+run: <RUN>   mode: quick
+  [x] stage  1 Quick: seeds and criteria: @seeds, criteria.json
+  [x] stage  2 Quick: generate: pool/*
+  [ ] stage  3 Quick: cards: tournament/cards.md
+  [x] stage  4 Quick: other-family check: tournament/result.md
+  [ ] stage  5 Quick: decision: QUICK_DECISION.md
+next: stage 3 (Quick: cards)
+=== status (rc=0) ===
+run: <RUN>   mode: quick
+  [x] stage  1 Quick: seeds and criteria: @seeds, criteria.json
+  [x] stage  2 Quick: generate: pool/*
+  [x] stage  3 Quick: cards: tournament/cards.md
+  [x] stage  4 Quick: other-family check: tournament/result.md
+  [x] stage  5 Quick: decision: QUICK_DECISION.md
+all stages complete

@@ -1,0 +1,138 @@
+{
+ "$id": "merges",
+ "description": "CURATOR output; the engine converts it to the v1 merges.json",
+ "type": "object",
+ "additionalProperties": false,
+ "required": [
+  "axes",
+  "ideas",
+  "notes"
+ ],
+ "properties": {
+  "axes": {
+   "type": "array",
+   "items": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "name",
+     "values"
+    ],
+    "properties": {
+     "name": {
+      "type": "string",
+      "description": "axis name exactly as in the Axes"
+     },
+     "values": {
+      "type": "array",
+      "items": {
+       "type": "string"
+      }
+     }
+    }
+   }
+  },
+  "ideas": {
+   "type": "array",
+   "items": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "key",
+     "title",
+     "pitch",
+     "mechanism",
+     "aliases",
+     "cluster",
+     "cell",
+     "siblings",
+     "baseline",
+     "primary"
+    ],
+    "properties": {
+     "key": {
+      "type": "string",
+      "description": "mechanism key: actor | verb + object | outcome, max 12 words, lowercase, no brand names"
+     },
+     "title": {
+      "type": "string",
+      "description": "max 10 words, neutral"
+     },
+     "pitch": {
+      "type": "string",
+      "description": "max 25 words, neutral"
+     },
+     "mechanism": {
+      "type": "string",
+      "description": "max 25 words, neutral"
+     },
+     "aliases": {
+      "type": "array",
+      "items": {
+       "type": "string"
+      },
+      "description": "every raw alias ID merged into this canonical idea"
+     },
+     "cluster": {
+      "type": "string",
+      "description": "cluster name, a verb phrase"
+     },
+     "cell": {
+      "type": "array",
+      "items": {
+       "type": "string"
+      },
+      "description": "one value per axis, in axis order"
+     },
+     "siblings": {
+      "type": "array",
+      "items": {
+       "type": "string"
+      },
+      "description": "keys of ideas with the same mechanism for a different actor"
+     },
+     "baseline": {
+      "type": "boolean",
+      "description": "true when p >= 0.10 or the idea matches the human Obvious list"
+     },
+     "primary": {
+      "type": "boolean",
+      "description": "true when an HP alias is merged here"
+     }
+    }
+   }
+  },
+  "notes": {
+   "type": "object",
+   "additionalProperties": false,
+   "required": [
+    "rerun",
+    "leak_check",
+    "merge_log"
+   ],
+   "properties": {
+    "rerun": {
+     "type": "array",
+     "items": {
+      "type": "string"
+     },
+     "description": "strategies whose diversify step was skipped, with the reason"
+    },
+    "leak_check": {
+     "type": "array",
+     "items": {
+      "type": "string"
+     },
+     "description": "S1 ideas whose mechanism key matches a human seed"
+    },
+    "merge_log": {
+     "type": "array",
+     "items": {
+      "type": "string"
+     },
+     "description": "one line per merge: aliases and the reason"
+    }
+   }
+  }
+ }
+}

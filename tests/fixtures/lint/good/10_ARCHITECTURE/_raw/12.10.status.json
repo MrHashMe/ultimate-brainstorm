@@ -1,0 +1,1 @@
+{"status": "complete", "assumptions": ["the roster export is a nightly CSV"], "open_questions": ["Who signs the data processing agreement?", {"q": "Which wards join the pilot?", "owner": "ward manager", "decide_by": "Milestone 0"}], "reason": ""}

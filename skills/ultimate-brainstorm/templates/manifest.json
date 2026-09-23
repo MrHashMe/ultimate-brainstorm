@@ -1,0 +1,3734 @@
+{
+ "schema": 1,
+ "kit_version": "2.0.0",
+ "rules": [
+  "Line 1 of every .md/.tpl template is '<!-- ub-template: NAME v1 kind=KIND -->'; the engine removes it when rendering.",
+  "Isolated-call prompts (every prompts/*.md except GEN-HEADER) have line 2 'Do not load or invoke any skill; this prompt is the whole task.'",
+  "Placeholders are {{UPPER_SNAKE}}; every one is listed under placeholders. Templates are ASCII and never contain a dollar sign followed by an opening brace.",
+  "prompts/*.md: the engine also removes every other '<!-- ... -->' block after reading any ub-choices table in it.",
+  "ub-choices block: first line '<!-- ub-choices: PLACEHOLDER key=KEY_NAME', then rows 'KEY | text', then '-->'. PLACEHOLDER takes the text of the row whose KEY equals the engine value KEY_NAME; the text may contain placeholders.",
+  "host/*.md: the host reads the raw file (card task.template). Only the block between '<!-- ub-argument:begin -->' and '<!-- ub-argument:end -->' is filled by the engine and written to task.argument_file.",
+  "A line that consists only of one placeholder whose value is empty is removed; any other empty value renders as ''.",
+  "Every prompt ends with an OUTPUT RULE section whose last line is {{OUTPUT_RULE}}."
+ ],
+ "frame_headings": [
+  "# FRAME:",
+  "## Job statement",
+  "## Problem",
+  "## Audience / boundary",
+  "## Success looks like",
+  "## Hard constraints",
+  "## Soft constraints",
+  "## Non-goals",
+  "## Decision ledger",
+  "## Premises",
+  "## Kill condition for the whole effort",
+  "## Criteria",
+  "## Kill rules",
+  "## Axes",
+  "## Strategy plan",
+  "## Mode, privacy, budget"
+ ],
+ "prompts": {
+  "PING": {
+   "kind": "ping",
+   "isolated": true,
+   "tools": "none",
+   "contract": {
+    "type": "text",
+    "regex": "PONG",
+    "min_chars": 4
+   }
+  },
+  "FRAME-QUESTIONS": {
+   "kind": "frame",
+   "isolated": true,
+   "tools": "none",
+   "contract": {
+    "type": "json",
+    "schema": "SK:templates/schemas/frame-questions.schema.json"
+   },
+   "notes": "engine checks in Python: at most 12 questions; a non-empty default only on constraint, scope or timeline"
+  },
+  "FRAME-FINAL": {
+   "kind": "frame",
+   "isolated": true,
+   "tools": "none",
+   "contract": {
+    "type": "files",
+    "allowed": [
+     "01_FRAME.md",
+     "criteria.json"
+    ],
+    "required": [
+     "01_FRAME.md",
+     "criteria.json"
+    ],
+    "per_file": {
+     "01_FRAME.md": {
+      "headings": [
+       "# FRAME:",
+       "## Job statement",
+       "## Problem",
+       "## Audience / boundary",
+       "## Success looks like",
+       "## Hard constraints",
+       "## Soft constraints",
+       "## Non-goals",
+       "## Decision ledger",
+       "## Premises",
+       "## Kill condition for the whole effort",
+       "## Criteria",
+       "## Kill rules",
+       "## Axes",
+       "## Strategy plan",
+       "## Mode, privacy, budget"
+      ]
+     }
+    },
+    "status_trailer": true
+   },
+   "split_root": ".",
+   "notes": "software/growth also require ## Domain language (after the kill condition)"
+  },
+  "FRAME-DRAFT": {
+   "kind": "frame",
+   "isolated": true,
+   "tools": "none",
+   "contract": {
+    "type": "files",
+    "allowed": [
+     "01_FRAME.md",
+     "criteria.json"
+    ],
+    "required": [
+     "01_FRAME.md",
+     "criteria.json"
+    ],
+    "per_file": {
+     "01_FRAME.md": {
+      "headings": [
+       "# FRAME:",
+       "## Job statement",
+       "## Problem",
+       "## Audience / boundary",
+       "## Success looks like",
+       "## Hard constraints",
+       "## Soft constraints",
+       "## Non-goals",
+       "## Decision ledger",
+       "## Premises",
+       "## Kill condition for the whole effort",
+       "## Criteria",
+       "## Kill rules",
+       "## Axes",
+       "## Strategy plan",
+       "## Mode, privacy, budget"
+      ]
+     }
+    },
+    "status_trailer": true
+   },
+   "split_root": ".",
+   "notes": "full-auto; every inferred item ASSUMED"
+  },
+  "P-GROUND": {
+   "kind": "researcher",
+   "isolated": true,
+   "tools": "web",
+   "contract": {
+    "type": "sections",
+    "headings": [
+     "## A. FACTS",
+     "## B. LANDSCAPE",
+     "## C. SEARCH BOUNDARY"
+    ]
+   },
+   "notes": "software/growth: insert ## A2. DOMAIN TERMS after A; tools read or read+web on the host vendor in software/growth; no web when privacy.web is false"
+  },
+  "GEN-HEADER": {
+   "kind": "partial",
+   "isolated": false,
+   "tools": "none",
+   "contract": null,
+   "notes": "included through {{GEN_HEADER}} after the skill-guard line of every idea-block generator"
+  },
+  "S1F": {
+   "kind": "generator",
+   "isolated": true,
+   "tools": "none",
+   "contract": {
+    "type": "idea-blocks",
+    "prefix": "{{STRATEGY_ID}}",
+    "min": 10
+   }
+  },
+  "S2-VS": {
+   "kind": "generator",
+   "isolated": true,
+   "tools": "none",
+   "contract": {
+    "type": "idea-blocks",
+    "prefix": "{{STRATEGY_ID}}",
+    "min": 10
+   }
+  },
+  "S3-EDE": {
+   "kind": "generator",
+   "isolated": true,
+   "tools": "none",
+   "contract": {
+    "type": "idea-blocks",
+    "prefix": "{{STRATEGY_ID}}",
+    "min": 10
+   },
+   "notes": "the pool file must keep the Step 1/Step 2 table and the Changed: line"
+  },
+  "S4-TRANSFER": {
+   "kind": "generator",
+   "isolated": true,
+   "tools": "web",
+   "contract": {
+    "type": "idea-blocks",
+    "prefix": "{{STRATEGY_ID}}",
+    "min": 10
+   },
+   "notes": "no web when privacy.web is false (reasoned basis)"
+  },
+  "S5-OPS": {
+   "kind": "generator",
+   "isolated": true,
+   "tools": "none",
+   "contract": {
+    "type": "idea-blocks",
+    "prefix": "{{STRATEGY_ID}}",
+    "min": 10
+   }
+  },
+  "S5-RESEARCH": {
+   "kind": "generator",
+   "isolated": true,
+   "tools": "none",
+   "contract": {
+    "type": "idea-blocks",
+    "prefix": "{{STRATEGY_ID}}",
+    "min": 10
+   },
+   "notes": "research variant replaces S5-OPS"
+  },
+  "GAP": {
+   "kind": "generator",
+   "isolated": true,
+   "tools": "none",
+   "contract": {
+    "type": "text",
+    "min_chars": 20,
+    "regex": "^(###\\s+[A-Za-z0-9]+-\\d+|TENSION:)"
+   },
+   "notes": "3 blocks or a TENSION line; a text contract so the TENSION escape validates"
+  },
+  "REOPEN": {
+   "kind": "generator",
+   "isolated": true,
+   "tools": "none",
+   "contract": {
+    "type": "idea-blocks",
+    "prefix": "{{STRATEGY_ID}}",
+    "min": 8
+   }
+  },
+  "LENS": {
+   "kind": "generator",
+   "isolated": true,
+   "tools": "none",
+   "contract": {
+    "type": "json",
+    "schema": "prompts/lens.schema.json"
+   },
+   "notes": "deep only; run bs.py schemas first; LENS_TEXT is picked from the ub-choices block by STRATEGY_ID"
+  },
+  "QUICK-GEN": {
+   "kind": "generator",
+   "isolated": true,
+   "tools": "none",
+   "contract": {
+    "type": "idea-blocks",
+    "prefix": "{{STRATEGY_ID}}",
+    "min": 10
+   }
+  },
+  "CURATOR": {
+   "kind": "curator",
+   "isolated": true,
+   "tools": "none",
+   "contract": {
+    "type": "json",
+    "schema": "SK:templates/schemas/merges.schema.json"
+   },
+   "notes": "the only job allowed to see seeds; the engine converts the output to v1 merges.json"
+  },
+  "QUICK-CURATE": {
+   "kind": "curator",
+   "isolated": true,
+   "tools": "none",
+   "contract": {
+    "type": "json",
+    "schema": "SK:templates/schemas/quick-curated.schema.json"
+   }
+  },
+  "SCREEN-HEADER": {
+   "kind": "partial",
+   "isolated": true,
+   "tools": "none",
+   "contract": {
+    "type": "json",
+    "schema": "screen/screen.schema.json",
+    "cover": {
+     "array": "scores",
+     "key": "id"
+    }
+   },
+   "notes": "rendered to screen/header.md; bs.py prepare-screen appends IDEAS; judge prompt (origin-label check)"
+  },
+  "TOURNAMENT-HEADER": {
+   "kind": "partial",
+   "isolated": true,
+   "tools": "none",
+   "contract": {
+    "type": "json",
+    "schema": "tournament/verdicts.schema.json",
+    "cover": {
+     "array": "verdicts",
+     "key": "pair_id"
+    }
+   },
+   "notes": "rendered to tournament/header.md; bs.py prepare-tournament appends CARDS and PAIRS; judge prompt"
+  },
+  "CHECK": {
+   "kind": "checker",
+   "isolated": true,
+   "tools": "web",
+   "contract": {
+    "type": "sections",
+    "headings": [
+     "## 1. Prior art",
+     "## 2. Steelman",
+     "## 3. Load-bearing claims",
+     "## 4. Kill-assumptions"
+    ],
+    "final_line": "^VERDICT: (CROWDED|ADJACENT|NOT LOCATED|NOT CHECKED); DIFFERENTIATOR: .+$"
+   },
+   "final_example": "VERDICT: ADJACENT; DIFFERENTIATOR: works offline on shared ward tablets",
+   "notes": "software/growth add ## 5. Codebase fit; web off -> NOT CHECKED"
+  },
+  "EVOLVE": {
+   "kind": "generator",
+   "isolated": true,
+   "tools": "none",
+   "contract": {
+    "type": "idea-blocks",
+    "prefix": "E",
+    "min": 4
+   }
+  },
+  "EVOLVE-CONTRAST": {
+   "kind": "generator",
+   "isolated": true,
+   "tools": "none",
+   "contract": {
+    "type": "idea-blocks",
+    "prefix": "E",
+    "min": 2
+   },
+   "notes": "proposal mode; necessarily contains the user's idea, so the seed-leak check must exempt it"
+  },
+  "NORMALIZER": {
+   "kind": "normalizer",
+   "isolated": true,
+   "tools": "none",
+   "contract": {
+    "type": "cards",
+    "lines": [
+     "Title:",
+     "Problem:",
+     "Mechanism:",
+     "For whom:",
+     "First version:",
+     "Main risk:",
+     "Prior art:"
+    ]
+   },
+   "notes": "contract ids = the finalist ids"
+  },
+  "PRECOMMIT": {
+   "kind": "synthesis",
+   "isolated": true,
+   "tools": "none",
+   "contract": {
+    "type": "text",
+    "min_chars": 20,
+    "regex": "(BACK|DON'T BACK)"
+   }
+  },
+  "REVIEWER": {
+   "kind": "reviewer",
+   "isolated": true,
+   "tools": "none",
+   "contract": {
+    "type": "sections",
+    "headings": [
+     "## 1. Steelman",
+     "## 2. Load-bearing claims",
+     "## 3. Kill-assumptions",
+     "## 4. Wrong premise",
+     "## 5. 48-hour test"
+    ],
+    "final_line": "^VERDICT: (BACK IF .+|BACK|DON'T BACK); confidence (0(\\.\\d+)?|1(\\.0+)?)$"
+   },
+   "final_example": "VERDICT: BACK IF two wards agree to a pilot; confidence 0.6"
+  },
+  "REBUTTAL": {
+   "kind": "reviewer",
+   "isolated": true,
+   "tools": "none",
+   "contract": {
+    "type": "text",
+    "min_chars": 20,
+    "regex": "(CONCEDE|HOLD)"
+   },
+   "notes": "deep only"
+  },
+  "SYNTHESIS": {
+   "kind": "synthesis",
+   "isolated": true,
+   "tools": "none",
+   "contract": {
+    "type": "sections",
+    "headings": [
+     "## 1. Per idea",
+     "## 2. Decision brief",
+     "## 3. Whole effort"
+    ],
+    "final_line": "^WHOLE-EFFORT: (CONTINUE|STOP)\\b"
+   },
+   "final_example": "WHOLE-EFFORT: CONTINUE - two ideas survive the red-team with testable kill-assumptions"
+  },
+  "PROBE": {
+   "kind": "writer",
+   "isolated": true,
+   "tools": "none",
+   "contract": {
+    "type": "sections",
+    "headings": [
+     "## 1. Walk-through",
+     "## 2. Riskiest assumption",
+     "## 3. Probe design",
+     "## 4. Kill criterion"
+    ],
+    "final_line": "^RESULT: PENDING$"
+   },
+   "final_example": "RESULT: PENDING"
+  },
+  "QUICK-PROBE": {
+   "kind": "writer",
+   "isolated": true,
+   "tools": "none",
+   "contract": {
+    "type": "json",
+    "schema": "SK:templates/schemas/quick-probe.schema.json"
+   }
+  },
+  "ARCH-DRIVERS": {
+   "kind": "writer",
+   "isolated": true,
+   "tools": "none",
+   "contract": {
+    "type": "json",
+    "schema": "SK:templates/schemas/arch-drivers.schema.json"
+   },
+   "notes": "engine checks: 3-5 QGs with weights summing to 70 (normalize with a warning), 5-10 QAS, id formats"
+  },
+  "ARCH-CANDIDATE": {
+   "kind": "arch-author",
+   "isolated": true,
+   "tools": "none",
+   "contract": {
+    "type": "sections",
+    "headings": [
+     "## 1 Paradigm",
+     "## 2 Container view",
+     "## 3 Stack",
+     "## 4 Quality mechanisms",
+     "## 5 Data",
+     "## 6 Deployment and operations",
+     "## 7 Security and privacy",
+     "## 8 Cost",
+     "## 9 Trade-offs",
+     "## 10 Risks",
+     "## 11 Rejected approaches",
+     "## 12 Innovation tokens"
+    ],
+    "json_tail": "SK:templates/schemas/arch-candidate.schema.json"
+   },
+   "notes": "ARCHETYPE is picked from the ub-choices block by ARCHETYPE_ID; fill OTHER_ARCHETYPES inside it; tools read only for host-vendor authors in software/growth"
+  },
+  "ARCH-JUDGE": {
+   "kind": "arch-judge",
+   "isolated": true,
+   "tools": "none",
+   "contract": {
+    "type": "json",
+    "schema": "SK:templates/schemas/arch-judge.schema.json",
+    "cover": {
+     "array": "candidates",
+     "key": "label"
+    }
+   },
+   "notes": "judge prompt (origin-label check); engine checks scores 1-5 and one score per criterion"
+  },
+  "ARCH-PREMORTEM": {
+   "kind": "reviewer",
+   "isolated": true,
+   "tools": "none",
+   "contract": {
+    "type": "sections",
+    "headings": [
+     "## 1. Technical",
+     "## 2. Cost",
+     "## 3. Team",
+     "## 4. Vendor",
+     "## 5. Scale"
+    ],
+    "final_line": "^TOP RISK: .+$"
+   },
+   "final_example": "TOP RISK: R-P2 - model API costs grow faster than active users"
+  },
+  "ARCH-PACKAGE-STRUCTURE": {
+   "kind": "writer",
+   "isolated": true,
+   "tools": "none",
+   "contract": {
+    "type": "files",
+    "allowed": [
+     "chosen/containers.md",
+     "chosen/runtime.md",
+     "chosen/data-model.md",
+     "chosen/api.md",
+     "chosen/api/openapi.yaml",
+     "chosen/api/cli.md"
+    ],
+    "required": [
+     "chosen/containers.md",
+     "chosen/runtime.md",
+     "chosen/data-model.md",
+     "chosen/api.md"
+    ],
+    "per_file": {
+     "chosen/containers.md": {
+      "headings": [
+       "## Containers",
+       "## How each quality goal is met"
+      ],
+      "mermaid": [
+       "C4Container",
+       "flowchart"
+      ]
+     },
+     "chosen/runtime.md": {
+      "headings": [
+       "## F-1"
+      ],
+      "mermaid": [
+       "sequenceDiagram"
+      ]
+     },
+     "chosen/data-model.md": {
+      "headings": [
+       "## Entities"
+      ],
+      "mermaid": [
+       "erDiagram"
+      ]
+     }
+    },
+    "status_trailer": true
+   },
+   "split_root": "10_ARCHITECTURE"
+  },
+  "ARCH-PACKAGE-CROSSCUT": {
+   "kind": "writer",
+   "isolated": true,
+   "tools": "none",
+   "contract": {
+    "type": "files",
+    "allowed": [
+     "chosen/deployment.md",
+     "chosen/security-privacy.md",
+     "chosen/cost-model.md",
+     "chosen/deferred.md"
+    ],
+    "required": [
+     "chosen/deployment.md",
+     "chosen/security-privacy.md",
+     "chosen/cost-model.md",
+     "chosen/deferred.md"
+    ],
+    "per_file": {
+     "chosen/cost-model.md": {
+      "headings": [
+       "## Assumptions",
+       "## Monthly run cost",
+       "## Per active user",
+       "## LLM and API costs",
+       "## Build cost",
+       "## Sensitivity"
+      ]
+     }
+    },
+    "status_trailer": true
+   },
+   "split_root": "10_ARCHITECTURE"
+  },
+  "ARCH-DECISIONS": {
+   "kind": "writer",
+   "isolated": true,
+   "tools": "none",
+   "contract": {
+    "type": "json",
+    "schema": "SK:templates/schemas/arch-decisions.schema.json"
+   },
+   "notes": "engine checks: at least 2 options per ADR, chosen names an option, R-NNN and TD-NN formats"
+  },
+  "ARCH-PACKAGE-LITE": {
+   "kind": "writer",
+   "isolated": true,
+   "tools": "none",
+   "contract": {
+    "type": "files",
+    "allowed": [
+     "chosen/containers.md",
+     "chosen/data-model.md",
+     "decisions.json"
+    ],
+    "required": [
+     "chosen/containers.md",
+     "chosen/data-model.md",
+     "decisions.json"
+    ],
+    "per_file": {
+     "chosen/containers.md": {
+      "headings": [
+       "## Containers",
+       "## How each quality goal is met"
+      ],
+      "mermaid": [
+       "C4Container",
+       "flowchart"
+      ]
+     },
+     "chosen/data-model.md": {
+      "headings": [
+       "## Entities"
+      ],
+      "mermaid": [
+       "erDiagram"
+      ]
+     }
+    },
+    "status_trailer": true
+   },
+   "split_root": "10_ARCHITECTURE",
+   "notes": "quick mode; the engine validates decisions.json against arch-decisions after the split"
+  },
+  "STACK-VERIFY": {
+   "kind": "researcher",
+   "isolated": true,
+   "tools": "web",
+   "contract": {
+    "type": "json",
+    "schema": "SK:templates/schemas/stack-verify.schema.json"
+   },
+   "notes": "web off -> every row NOT SEARCHED"
+  },
+  "ARCH-REVIEW": {
+   "kind": "reviewer",
+   "isolated": true,
+   "tools": "none",
+   "contract": {
+    "type": "json",
+    "schema": "SK:templates/schemas/findings.schema.json"
+   },
+   "notes": "LENS_QUESTION is picked from the ub-choices block by REVIEW_LENS; tools web only for L1"
+  },
+  "ARCH-FIX": {
+   "kind": "fixer",
+   "isolated": true,
+   "tools": "none",
+   "contract": {
+    "type": "files",
+    "allowed": [
+     "chosen/*.md",
+     "chosen/api/*.yaml",
+     "chosen/api/*.md",
+     "decisions.json",
+     "review/resolution.md"
+    ],
+    "required": [
+     "review/resolution.md"
+    ],
+    "status_trailer": true
+   },
+   "split_root": "10_ARCHITECTURE"
+  },
+  "APPROACH": {
+   "kind": "writer",
+   "isolated": true,
+   "tools": "none",
+   "contract": {
+    "type": "files",
+    "allowed": [
+     "approach.md"
+    ],
+    "required": [
+     "approach.md"
+    ],
+    "per_file": {
+     "approach.md": {
+      "headings": [
+       "## Summary"
+      ]
+     }
+    },
+    "status_trailer": true
+   },
+   "split_root": "10_ARCHITECTURE",
+   "notes": "build type approach; variant headings are listed in the template"
+  },
+  "PROPOSAL-A": {
+   "kind": "writer",
+   "isolated": true,
+   "tools": "none",
+   "contract": {
+    "type": "files",
+    "allowed": [
+     "sections/02.md",
+     "sections/03.md",
+     "sections/04.md",
+     "sections/05.md"
+    ],
+    "required": [
+     "sections/02.md",
+     "sections/03.md",
+     "sections/04.md",
+     "sections/05.md"
+    ],
+    "per_file": {
+     "sections/02.md": {
+      "headings": [
+       "## 2. Problem and Evidence"
+      ]
+     },
+     "sections/03.md": {
+      "headings": [
+       "## 3. Solution"
+      ]
+     },
+     "sections/04.md": {
+      "headings": [
+       "## 4. Users and Market"
+      ]
+     },
+     "sections/05.md": {
+      "headings": [
+       "## 5. Differentiation vs Prior Art"
+      ]
+     }
+    },
+    "status_trailer": true
+   },
+   "split_root": "11_PROPOSAL"
+  },
+  "PROPOSAL-B": {
+   "kind": "writer",
+   "isolated": true,
+   "tools": "none",
+   "contract": {
+    "type": "files",
+    "allowed": [
+     "sections/06.md",
+     "sections/07.md",
+     "sections/08.md",
+     "sections/09.md"
+    ],
+    "required": [
+     "sections/06.md",
+     "sections/07.md",
+     "sections/08.md",
+     "sections/09.md"
+    ],
+    "per_file": {
+     "sections/06.md": {
+      "headings": [
+       "## 6."
+      ]
+     },
+     "sections/07.md": {
+      "headings": [
+       "## 7. Scope and MVP"
+      ]
+     },
+     "sections/08.md": {
+      "headings": [
+       "## 8. Roadmap and Milestones"
+      ]
+     },
+     "sections/09.md": {
+      "headings": [
+       "## 9. Team and Effort"
+      ]
+     }
+    },
+    "status_trailer": true
+   },
+   "split_root": "11_PROPOSAL",
+   "notes": "## 6. Architecture Summary (build type system) or ## 6. Approach (build type approach)"
+  },
+  "PROPOSAL-C": {
+   "kind": "writer",
+   "isolated": true,
+   "tools": "none",
+   "contract": {
+    "type": "files",
+    "allowed": [
+     "sections/10.md",
+     "sections/11.md",
+     "sections/12.md",
+     "sections/13.md"
+    ],
+    "required": [
+     "sections/10.md",
+     "sections/11.md",
+     "sections/12.md",
+     "sections/13.md"
+    ],
+    "per_file": {
+     "sections/10.md": {
+      "headings": [
+       "## 10. Budget and Cost"
+      ]
+     },
+     "sections/11.md": {
+      "headings": [
+       "## 11. Risks and Mitigations"
+      ]
+     },
+     "sections/12.md": {
+      "headings": [
+       "## 12. Success Metrics and Validation Plan"
+      ]
+     },
+     "sections/13.md": {
+      "headings": [
+       "## 13. Open Questions"
+      ]
+     }
+    },
+    "status_trailer": true
+   },
+   "split_root": "11_PROPOSAL"
+  },
+  "EXEC-ONEPAGER": {
+   "kind": "writer",
+   "isolated": true,
+   "tools": "none",
+   "contract": {
+    "type": "files",
+    "allowed": [
+     "sections/01.md",
+     "ONE-PAGER.md"
+    ],
+    "required": [
+     "sections/01.md",
+     "ONE-PAGER.md"
+    ],
+    "per_file": {
+     "sections/01.md": {
+      "headings": [
+       "## 1. Executive Summary"
+      ]
+     },
+     "ONE-PAGER.md": {
+      "headings": [
+       "## Problem",
+       "## Solution",
+       "## Why now",
+       "## Who",
+       "## Differentiation",
+       "## Architecture at a glance",
+       "## MVP",
+       "## Roadmap",
+       "## Budget",
+       "## Top risks",
+       "## Metrics",
+       "## The ask"
+      ],
+      "mermaid": [
+       "flowchart"
+      ]
+     }
+    },
+    "status_trailer": true
+   },
+   "split_root": "11_PROPOSAL"
+  },
+  "PRFAQ": {
+   "kind": "writer",
+   "isolated": true,
+   "tools": "none",
+   "contract": {
+    "type": "files",
+    "allowed": [
+     "PRFAQ.md"
+    ],
+    "required": [
+     "PRFAQ.md"
+    ],
+    "per_file": {
+     "PRFAQ.md": {
+      "headings": [
+       "## Press release",
+       "## Customer FAQ",
+       "## Internal FAQ"
+      ]
+     }
+    },
+    "status_trailer": true
+   },
+   "split_root": "11_PROPOSAL",
+   "notes": "deep only"
+  },
+  "PROPOSAL-LITE": {
+   "kind": "writer",
+   "isolated": true,
+   "tools": "none",
+   "contract": {
+    "type": "files",
+    "allowed": [
+     "sections/01.md",
+     "sections/02.md",
+     "sections/03.md",
+     "sections/06.md",
+     "sections/07.md",
+     "sections/11.md",
+     "sections/12.md",
+     "sections/13.md",
+     "ONE-PAGER.md"
+    ],
+    "required": [
+     "sections/01.md",
+     "sections/02.md",
+     "sections/03.md",
+     "sections/06.md",
+     "sections/07.md",
+     "sections/11.md",
+     "sections/12.md",
+     "sections/13.md",
+     "ONE-PAGER.md"
+    ],
+    "per_file": {
+     "sections/01.md": {
+      "headings": [
+       "## 1. Executive Summary"
+      ]
+     },
+     "sections/02.md": {
+      "headings": [
+       "## 2. Problem and Evidence"
+      ]
+     },
+     "sections/03.md": {
+      "headings": [
+       "## 3. Solution"
+      ]
+     },
+     "sections/06.md": {
+      "headings": [
+       "## 6."
+      ]
+     },
+     "sections/07.md": {
+      "headings": [
+       "## 7. Scope and MVP"
+      ]
+     },
+     "sections/11.md": {
+      "headings": [
+       "## 11. Risks and Mitigations"
+      ]
+     },
+     "sections/12.md": {
+      "headings": [
+       "## 12. Success Metrics and Validation Plan"
+      ]
+     },
+     "sections/13.md": {
+      "headings": [
+       "## 13. Open Questions"
+      ]
+     },
+     "ONE-PAGER.md": {
+      "headings": [
+       "## Problem",
+       "## Solution",
+       "## Why now",
+       "## Who",
+       "## Differentiation",
+       "## Architecture at a glance",
+       "## MVP",
+       "## Roadmap",
+       "## Budget",
+       "## Top risks",
+       "## Metrics",
+       "## The ask"
+      ],
+      "mermaid": [
+       "flowchart"
+      ]
+     }
+    },
+    "status_trailer": true
+   },
+   "split_root": "11_PROPOSAL",
+   "notes": "quick mode"
+  },
+  "PROPOSAL-RUBRIC": {
+   "kind": "rubric",
+   "isolated": true,
+   "tools": "none",
+   "contract": {
+    "type": "json",
+    "schema": "SK:templates/schemas/rubric.schema.json"
+   },
+   "notes": "engine checks every score is 1-5"
+  },
+  "PROPOSAL-REDTEAM": {
+   "kind": "redteam",
+   "isolated": true,
+   "tools": "none",
+   "contract": {
+    "type": "json",
+    "schema": "SK:templates/schemas/redteam.schema.json"
+   },
+   "notes": "at most 8 items; the script ranks by impact x likelihood x cheapness (H/M/L = 3/2/1)"
+  },
+  "PROPOSAL-FIX": {
+   "kind": "fixer",
+   "isolated": true,
+   "tools": "none",
+   "contract": {
+    "type": "files",
+    "allowed": [
+     "sections/*.md",
+     "ONE-PAGER.md",
+     "review/resolution.md"
+    ],
+    "required": [
+     "review/resolution.md"
+    ],
+    "status_trailer": true
+   },
+   "split_root": "11_PROPOSAL"
+  }
+ },
+ "host": [
+  "FRAME-GRILL",
+  "FRAME-GRILL-DOCS",
+  "S1-CE",
+  "BMAD-SEEDS",
+  "FORGE",
+  "CONTEXT-MERGE",
+  "HOST-BATCH",
+  "HANDOFF-RUN"
+ ],
+ "gates": [
+  "G0",
+  "G1",
+  "G2",
+  "G2c",
+  "G2f",
+  "G3",
+  "G4",
+  "G5",
+  "G6",
+  "G7",
+  "G8a",
+  "G8b",
+  "G9",
+  "G10",
+  "G11",
+  "G12",
+  "G13",
+  "G14",
+  "GB",
+  "GX"
+ ],
+ "docs": {
+  "RUN": "00_RUN.md",
+  "PROGRESS": "PROGRESS.md",
+  "SHORTLIST": "04_SHORTLIST.md",
+  "TOURNAMENT": "06_TOURNAMENT.md",
+  "DECISION": "08_DECISION.md",
+  "QUICK-DECISION": "QUICK_DECISION.md",
+  "GOALS-CONSTRAINTS": "10_ARCHITECTURE/goals-constraints.md",
+  "QUALITY-SCENARIOS": "10_ARCHITECTURE/quality-scenarios.md",
+  "CONTEXT-VIEW": "10_ARCHITECTURE/context.md",
+  "ARCH-README": "10_ARCHITECTURE/README.md",
+  "ADR-MADR": "10_ARCHITECTURE/adr/NNNN-<slug>.md",
+  "RISKS": "10_ARCHITECTURE/risks.md",
+  "STACK": "10_ARCHITECTURE/chosen/stack.md",
+  "ARCH-SHEET": "10_ARCHITECTURE/review/sheet_<L>.md",
+  "PROPOSAL-HEAD": "11_PROPOSAL/PROPOSAL.md (title block before the sections)",
+  "PROPOSAL-APPENDICES": "11_PROPOSAL/PROPOSAL.md (after section 13)",
+  "PROPOSAL-README": "11_PROPOSAL/README.md",
+  "HANDOFF": "12_HANDOFF.md",
+  "SEEDS": "00_HUMAN_SEEDS.md",
+  "HANDOFF-CE": "handoff seed (Compound Engineering)",
+  "HANDOFF-SPECKIT": "handoff seed (Spec Kit)",
+  "HANDOFF-SUPERPOWERS": "handoff seed (Superpowers)",
+  "HANDOFF-OPENSPEC": "handoff seed (OpenSpec)",
+  "INDEX-HTML": "11_PROPOSAL/index.html (file index.html.tpl)"
+ },
+ "doc_extras": [
+  "PROPOSAL-HEAD",
+  "ARCH-SHEET",
+  "PROPOSAL-README"
+ ],
+ "schemas": [
+  "frame-questions",
+  "merges",
+  "quick-curated",
+  "quick-probe",
+  "arch-drivers",
+  "arch-candidate",
+  "arch-judge",
+  "arch-decisions",
+  "stack-verify",
+  "findings",
+  "rubric",
+  "redteam"
+ ],
+ "placeholders": {
+  "ACTORS_TABLE": {
+   "standard": false,
+   "desc": "table | id | actor | description |",
+   "used_in": [
+    "CONTEXT-VIEW"
+   ],
+   "source": [
+    "doc_mapping"
+   ]
+  },
+  "ADR_CANDIDATES": {
+   "standard": false,
+   "desc": "ADR-CANDIDATE rows of the frame's Decision ledger plus decisions from 08_DECISION.md, one per line",
+   "used_in": [
+    "CONTEXT-MERGE"
+   ],
+   "source": [
+    "registry"
+   ]
+  },
+  "ADR_CHOSEN": {
+   "standard": false,
+   "desc": "adrs[].chosen",
+   "used_in": [
+    "ADR-MADR"
+   ],
+   "source": [
+    "doc_mapping"
+   ]
+  },
+  "ADR_CONFIRMATION": {
+   "standard": false,
+   "desc": "adrs[].confirmation",
+   "used_in": [
+    "ADR-MADR"
+   ],
+   "source": [
+    "doc_mapping"
+   ]
+  },
+  "ADR_CONSEQUENCES": {
+   "standard": false,
+   "desc": "'* Good, because ...' and '* Bad, because ... (R-NNN)' bullets",
+   "used_in": [
+    "ADR-MADR"
+   ],
+   "source": [
+    "doc_mapping"
+   ]
+  },
+  "ADR_CONTEXT": {
+   "standard": false,
+   "desc": "adrs[].context",
+   "used_in": [
+    "ADR-MADR"
+   ],
+   "source": [
+    "doc_mapping"
+   ]
+  },
+  "ADR_DRIVERS": {
+   "standard": false,
+   "desc": "bullets of QG ids with names",
+   "used_in": [
+    "ADR-MADR"
+   ],
+   "source": [
+    "doc_mapping"
+   ]
+  },
+  "ADR_INDEX": {
+   "standard": false,
+   "desc": "table | ADR | title | status | of the files in adr/",
+   "used_in": [
+    "ARCH-README",
+    "PROPOSAL-APPENDICES"
+   ],
+   "source": [
+    "doc_mapping"
+   ]
+  },
+  "ADR_JUSTIFICATION": {
+   "standard": false,
+   "desc": "adrs[].justification, ending with a period",
+   "used_in": [
+    "ADR-MADR"
+   ],
+   "source": [
+    "doc_mapping"
+   ]
+  },
+  "ADR_MORE_INFO": {
+   "standard": false,
+   "desc": "adrs[].more_info plus pros and cons per option",
+   "used_in": [
+    "ADR-MADR"
+   ],
+   "source": [
+    "doc_mapping"
+   ]
+  },
+  "ADR_NUMBER": {
+   "standard": false,
+   "desc": "four digits, 0001..",
+   "used_in": [
+    "ADR-MADR"
+   ],
+   "source": [
+    "doc_mapping"
+   ]
+  },
+  "ADR_OPTIONS": {
+   "standard": false,
+   "desc": "bullets of option names (at least 2)",
+   "used_in": [
+    "ADR-MADR"
+   ],
+   "source": [
+    "doc_mapping"
+   ]
+  },
+  "ADR_STATUS": {
+   "standard": false,
+   "desc": "proposed or accepted",
+   "used_in": [
+    "ADR-MADR"
+   ],
+   "source": [
+    "doc_mapping"
+   ]
+  },
+  "ADR_TITLE": {
+   "standard": false,
+   "desc": "adrs[].title",
+   "used_in": [
+    "ADR-MADR"
+   ],
+   "source": [
+    "doc_mapping"
+   ]
+  },
+  "ALLOWED_FILES": {
+   "standard": true,
+   "desc": "the job's split allowlist, comma-separated, relative to split.root",
+   "used_in": [
+    "APPROACH",
+    "ARCH-FIX",
+    "ARCH-PACKAGE-CROSSCUT",
+    "ARCH-PACKAGE-LITE",
+    "ARCH-PACKAGE-STRUCTURE",
+    "EXEC-ONEPAGER",
+    "FRAME-DRAFT",
+    "FRAME-FINAL",
+    "PRFAQ",
+    "PROPOSAL-A",
+    "PROPOSAL-B",
+    "PROPOSAL-C",
+    "PROPOSAL-FIX",
+    "PROPOSAL-LITE"
+   ],
+   "source": [
+    "registry"
+   ]
+  },
+  "ALTERNATIVES_TABLE": {
+   "standard": false,
+   "desc": "the other candidates from matrix.json with score, veto and why not chosen",
+   "used_in": [
+    "ARCH-README"
+   ],
+   "source": [
+    "doc_mapping"
+   ]
+  },
+  "ARCHETYPE": {
+   "standard": true,
+   "desc": "the archetype text picked from the ub-choices block of ARCH-CANDIDATE by ARCHETYPE_ID, with OTHER_ARCHETYPES filled inside it",
+   "used_in": [
+    "ARCH-CANDIDATE"
+   ],
+   "source": [
+    "registry"
+   ]
+  },
+  "ARCHETYPE_ID": {
+   "standard": false,
+   "desc": "choice key only (never substituted in text): A, B-local-first, B-buy, B-event, C, D, A-software, B-software (7.3 rules)",
+   "used_in": [
+    "ARCH-CANDIDATE"
+   ],
+   "source": [
+    "registry"
+   ]
+  },
+  "ARCH_BRIEF": {
+   "standard": true,
+   "desc": "10_ARCHITECTURE/00_BRIEF.md (the frozen brief, 12.1)",
+   "used_in": [
+    "APPROACH",
+    "ARCH-CANDIDATE",
+    "ARCH-DECISIONS",
+    "ARCH-DRIVERS",
+    "ARCH-JUDGE",
+    "ARCH-PACKAGE-CROSSCUT",
+    "ARCH-PACKAGE-LITE",
+    "ARCH-PACKAGE-STRUCTURE",
+    "ARCH-PREMORTEM",
+    "ARCH-REVIEW"
+   ],
+   "source": [
+    "registry"
+   ]
+  },
+  "ARCH_CHOICE": {
+   "standard": false,
+   "desc": "the chosen architecture label and paradigm (approach build type: 'approach')",
+   "used_in": [
+    "PROPOSAL-HEAD"
+   ],
+   "source": [
+    "doc_mapping"
+   ]
+  },
+  "ARCH_CRITERIA": {
+   "standard": false,
+   "desc": "one line per criterion: QG ids with name and weight, then time_to_mvp 10, team_fit 5, run_cost 5, reversibility 5, operational_simplicity 5",
+   "used_in": [
+    "ARCH-JUDGE"
+   ],
+   "source": [
+    "registry"
+   ]
+  },
+  "ARCH_LABELS": {
+   "standard": false,
+   "desc": "the candidate labels in sheet order, e.g. 'A, B, C'",
+   "used_in": [
+    "ARCH-JUDGE"
+   ],
+   "source": [
+    "registry"
+   ]
+  },
+  "ARCH_README": {
+   "standard": false,
+   "desc": "brainstorm/<run>/10_ARCHITECTURE/README.md",
+   "source": [
+    "doc_mapping"
+   ],
+   "used_in": [
+    "HANDOFF-CE",
+    "HANDOFF-OPENSPEC",
+    "HANDOFF-SPECKIT",
+    "HANDOFF-SUPERPOWERS"
+   ]
+  },
+  "ARCH_SUMMARY": {
+   "standard": false,
+   "desc": "the chosen candidate summary",
+   "used_in": [
+    "ARCH-README"
+   ],
+   "source": [
+    "doc_mapping"
+   ]
+  },
+  "ARCH_TITLE": {
+   "standard": false,
+   "desc": "the chosen idea title",
+   "used_in": [
+    "ARCH-README"
+   ],
+   "source": [
+    "doc_mapping"
+   ]
+  },
+  "ASSUMPTIONS_INDEX": {
+   "standard": false,
+   "desc": "11_PROPOSAL/assumptions.md table",
+   "used_in": [
+    "PROPOSAL-APPENDICES"
+   ],
+   "source": [
+    "doc_mapping"
+   ]
+  },
+  "AUDIENCE": {
+   "standard": true,
+   "desc": "01_FRAME.md Audience / boundary",
+   "used_in": [
+    "CHECK",
+    "TOURNAMENT-HEADER"
+   ],
+   "source": [
+    "registry"
+   ]
+  },
+  "AUDITS": {
+   "standard": false,
+   "desc": "position consistency, self-preference audit and discount notes from tournament/result.md",
+   "used_in": [
+    "TOURNAMENT"
+   ],
+   "source": [
+    "doc_mapping"
+   ]
+  },
+  "AUTOPILOT": {
+   "standard": false,
+   "desc": "run.json autopilot",
+   "used_in": [
+    "PROGRESS",
+    "RUN"
+   ],
+   "source": [
+    "doc_mapping"
+   ]
+  },
+  "AXES": {
+   "standard": true,
+   "desc": "the Axes section of 01_FRAME.md, one line per axis: '- Axis: v1 | v2 | v3'",
+   "used_in": [
+    "CURATOR",
+    "EVOLVE",
+    "EVOLVE-CONTRAST",
+    "GEN-HEADER",
+    "LENS"
+   ],
+   "source": [
+    "registry"
+   ]
+  },
+  "BADGE": {
+   "standard": false,
+   "desc": "status badge: DRAFT, APPROVED, AUTOPILOT DRAFT or PENDING MILESTONE 0",
+   "source": [
+    "doc_mapping"
+   ],
+   "used_in": [
+    "INDEX-HTML"
+   ]
+  },
+  "BASIS": {
+   "standard": false,
+   "desc": "evidence from checks/<ID>.md",
+   "used_in": [
+    "HANDOFF-CE"
+   ],
+   "source": [
+    "doc_mapping"
+   ]
+  },
+  "BODY": {
+   "standard": false,
+   "desc": "the 13 sections, the architecture part (diagrams, ADR cards, risk table) and appendices A-F as HTML",
+   "source": [
+    "doc_mapping"
+   ],
+   "used_in": [
+    "INDEX-HTML"
+   ]
+  },
+  "BORDERLINE_TABLE": {
+   "standard": false,
+   "desc": "borderline ideas",
+   "used_in": [
+    "SHORTLIST"
+   ],
+   "source": [
+    "doc_mapping"
+   ]
+  },
+  "BRIEF": {
+   "standard": true,
+   "desc": "01_FRAME.md: Job statement, Problem, Audience, Success, Hard constraints, Soft constraints, Non-goals (quick: the G0 3-line brief). Privacy-filtered per target family",
+   "used_in": [
+    "EVOLVE",
+    "EVOLVE-CONTRAST",
+    "GEN-HEADER",
+    "LENS",
+    "PROBE",
+    "QUICK-CURATE",
+    "QUICK-PROBE"
+   ],
+   "source": [
+    "registry"
+   ]
+  },
+  "BUILD_TYPE": {
+   "standard": false,
+   "desc": "run.json build_type: system or approach",
+   "used_in": [
+    "PROPOSAL-B",
+    "PROPOSAL-LITE"
+   ],
+   "source": [
+    "registry"
+   ]
+  },
+  "C4_CONTEXT": {
+   "standard": false,
+   "desc": "mermaid C4Context body generated from drivers.context (first line C4Context; balanced brackets per line; no { blocks)",
+   "used_in": [
+    "CONTEXT-VIEW"
+   ],
+   "source": [
+    "doc_mapping"
+   ]
+  },
+  "CALLS_LINE": {
+   "standard": false,
+   "desc": "'91 done, 0 running, 1 failed, 1 provisional | ~1.1M tokens (est.)'",
+   "used_in": [
+    "PROGRESS"
+   ],
+   "source": [
+    "doc_mapping"
+   ]
+  },
+  "CANDIDATE_COMPARISON": {
+   "standard": false,
+   "desc": "table from matrix.json",
+   "used_in": [
+    "PROPOSAL-APPENDICES"
+   ],
+   "source": [
+    "doc_mapping"
+   ]
+  },
+  "CANDIDATE_SHEETS": {
+   "standard": true,
+   "desc": "every review/sheet_<L>.md, concatenated in label order",
+   "used_in": [
+    "ARCH-DECISIONS",
+    "ARCH-JUDGE"
+   ],
+   "source": [
+    "registry"
+   ]
+  },
+  "CARD": {
+   "standard": true,
+   "desc": "one normalized card from tournament/cards.md (or the quick card)",
+   "used_in": [
+    "FORGE",
+    "QUICK-PROBE",
+    "REBUTTAL",
+    "REVIEWER"
+   ],
+   "source": [
+    "registry"
+   ]
+  },
+  "CELL": {
+   "standard": true,
+   "desc": "the target cell of a GAP job, one value per axis",
+   "used_in": [
+    "GAP"
+   ],
+   "source": [
+    "registry"
+   ]
+  },
+  "CHEAPEST_TEST": {
+   "standard": false,
+   "desc": "quick-probe probe",
+   "used_in": [
+    "QUICK-DECISION"
+   ],
+   "source": [
+    "doc_mapping"
+   ]
+  },
+  "CHECKS": {
+   "standard": true,
+   "desc": "checks/<ID>.md of the idea (privacy-filtered)",
+   "used_in": [
+    "FORGE",
+    "REVIEWER"
+   ],
+   "source": [
+    "registry"
+   ]
+  },
+  "CHOSEN": {
+   "standard": false,
+   "desc": "the chosen idea ID and title",
+   "used_in": [
+    "PROPOSAL-HEAD",
+    "QUICK-DECISION"
+   ],
+   "source": [
+    "doc_mapping"
+   ]
+  },
+  "CHOSEN_CANDIDATE": {
+   "standard": true,
+   "desc": "candidates/<n>.md of the chosen (or leading) candidate, including its JSON tail",
+   "used_in": [
+    "ARCH-DECISIONS",
+    "ARCH-PACKAGE-CROSSCUT",
+    "ARCH-PACKAGE-LITE",
+    "ARCH-PACKAGE-STRUCTURE",
+    "ARCH-PREMORTEM"
+   ],
+   "source": [
+    "registry"
+   ]
+  },
+  "CHOSEN_WHY": {
+   "standard": false,
+   "desc": "label, author family (revealed), matrix score and range, the human's words at G11",
+   "used_in": [
+    "ARCH-README"
+   ],
+   "source": [
+    "doc_mapping"
+   ]
+  },
+  "CLUSTER_NAMES": {
+   "standard": true,
+   "desc": "the cluster names from clusters.json, one per line",
+   "used_in": [
+    "GAP"
+   ],
+   "source": [
+    "registry"
+   ]
+  },
+  "COMPONENT_NAME": {
+   "standard": true,
+   "desc": "the exact installed name of the component the template names (FRAME-GRILL-DOCS: the domain-modeling skill; HANDOFF: the downstream tool, or 'none')",
+   "used_in": [
+    "FRAME-GRILL-DOCS"
+   ],
+   "source": [
+    "registry"
+   ]
+  },
+  "CONTESTED": {
+   "standard": false,
+   "desc": "contested pairs, one per line, or 'none'",
+   "used_in": [
+    "TOURNAMENT"
+   ],
+   "source": [
+    "doc_mapping"
+   ]
+  },
+  "CONTEXT_FLOWCHART": {
+   "standard": false,
+   "desc": "mermaid flowchart body with the same elements (first line 'flowchart LR')",
+   "used_in": [
+    "CONTEXT-VIEW"
+   ],
+   "source": [
+    "doc_mapping"
+   ]
+  },
+  "CRITERIA_ANCHORS": {
+   "standard": true,
+   "desc": "one line per criterion from the Criteria table: 'Name: 1 = ...; 3 = ...; 5 = ...'",
+   "used_in": [
+    "QUICK-CURATE",
+    "SCREEN-HEADER"
+   ],
+   "source": [
+    "registry"
+   ]
+  },
+  "CRITERIA_WEIGHTS": {
+   "standard": true,
+   "desc": "one line per criterion: 'Name weight: anchor for 5'",
+   "used_in": [
+    "PRECOMMIT",
+    "SYNTHESIS",
+    "TOURNAMENT-HEADER"
+   ],
+   "source": [
+    "registry"
+   ]
+  },
+  "DATE": {
+   "standard": true,
+   "desc": "today, YYYY-MM-DD",
+   "used_in": [
+    "ADR-MADR",
+    "APPROACH",
+    "ARCH-DECISIONS",
+    "ARCH-FIX",
+    "ARCH-PACKAGE-CROSSCUT",
+    "ARCH-PACKAGE-LITE",
+    "ARCH-PACKAGE-STRUCTURE",
+    "CHECK",
+    "EXEC-ONEPAGER",
+    "FRAME-DRAFT",
+    "FRAME-FINAL",
+    "FRAME-QUESTIONS",
+    "HANDOFF-CE",
+    "INDEX-HTML",
+    "P-GROUND",
+    "PRFAQ",
+    "PROBE",
+    "PROPOSAL-A",
+    "PROPOSAL-B",
+    "PROPOSAL-C",
+    "PROPOSAL-FIX",
+    "PROPOSAL-HEAD",
+    "PROPOSAL-LITE",
+    "STACK-VERIFY"
+   ],
+   "source": [
+    "doc_mapping",
+    "registry"
+   ]
+  },
+  "DEBT_TABLE": {
+   "standard": false,
+   "desc": "table | id | debt | why accepted | payoff trigger |",
+   "used_in": [
+    "RISKS"
+   ],
+   "source": [
+    "doc_mapping"
+   ]
+  },
+  "DECISION": {
+   "standard": true,
+   "desc": "08_DECISION.md (quick: the chosen idea and why, from G8b)",
+   "used_in": [
+    "APPROACH",
+    "CONTEXT-MERGE",
+    "PROBE",
+    "QUICK-PROBE"
+   ],
+   "source": [
+    "registry"
+   ]
+  },
+  "DECISION_BODY": {
+   "standard": false,
+   "desc": "the 08_DECISION.md body written by the engine (choice in the user's words, runner-up, parked, killed, not doing, AUTO-DECISION stamp, LEDGER rows)",
+   "source": [
+    "doc_mapping"
+   ],
+   "used_in": [
+    "DECISION"
+   ]
+  },
+  "DECISION_MAKERS": {
+   "standard": false,
+   "desc": "the role that decides (default 'the proposal owner')",
+   "used_in": [
+    "ADR-MADR"
+   ],
+   "source": [
+    "doc_mapping"
+   ]
+  },
+  "DECISION_STAMP": {
+   "standard": false,
+   "desc": "'AUTO-DECISION: chosen by rule; no human decision was made.' in full-auto; empty otherwise",
+   "used_in": [
+    "QUICK-DECISION"
+   ],
+   "source": [
+    "doc_mapping"
+   ]
+  },
+  "DESCRIPTION": {
+   "standard": false,
+   "desc": "the chosen idea's pitch",
+   "source": [
+    "doc_mapping"
+   ],
+   "used_in": [
+    "HANDOFF-CE",
+    "HANDOFF-SPECKIT"
+   ]
+  },
+  "DETECTED_TOOLS": {
+   "standard": false,
+   "desc": "installed components with their exact names",
+   "used_in": [
+    "RUN"
+   ],
+   "source": [
+    "doc_mapping"
+   ]
+  },
+  "DOMAIN_CLAUSE": {
+   "standard": false,
+   "desc": "v1 domain-language clause from the Domain docs line (merged: 'Domain language: use the terms in CONTEXT.md.'; deferred: adds the approved terms; declined: the NOT accepted clause; no CONTEXT files: empty)",
+   "used_in": [
+    "HANDOFF-CE"
+   ],
+   "source": [
+    "doc_mapping"
+   ]
+  },
+  "DRIVERS_JSON": {
+   "standard": true,
+   "desc": "drivers.json, pretty-printed",
+   "used_in": [
+    "ARCH-DECISIONS",
+    "ARCH-FIX",
+    "ARCH-PACKAGE-CROSSCUT",
+    "ARCH-PACKAGE-LITE",
+    "ARCH-PACKAGE-STRUCTURE",
+    "ARCH-REVIEW"
+   ],
+   "source": [
+    "registry"
+   ]
+  },
+  "DUPCHECK_PAIRS": {
+   "standard": false,
+   "desc": "bs.py dupcheck candidate pairs for the second curator pass (deep), or 'none'",
+   "used_in": [
+    "CURATOR"
+   ],
+   "source": [
+    "registry"
+   ]
+  },
+  "EXTERNAL_TABLE": {
+   "standard": false,
+   "desc": "table | id | external system | description | relationship |",
+   "used_in": [
+    "CONTEXT-VIEW"
+   ],
+   "source": [
+    "doc_mapping"
+   ]
+  },
+  "FACTS": {
+   "standard": true,
+   "desc": "02_CONTEXT.md sections A and A2 (A2 only in software/growth; for other vendors with privacy.code=false: paths kept, contents and fenced code dropped, A2 keeps only 'proposed' terms). Empty before grounding",
+   "used_in": [
+    "EVOLVE-CONTRAST",
+    "FRAME-DRAFT",
+    "FRAME-QUESTIONS",
+    "GEN-HEADER",
+    "LENS"
+   ],
+   "source": [
+    "registry"
+   ]
+  },
+  "FAMILIES_LINE": {
+   "standard": false,
+   "desc": "per family: status, backend, web, host marker, e.g. 'claude OK (host) | gpt OK (web) | kimi PROVISIONAL->kimi-alt | glm not set up'",
+   "used_in": [
+    "PROGRESS"
+   ],
+   "source": [
+    "doc_mapping"
+   ]
+  },
+  "FAMILY_MAP": {
+   "standard": false,
+   "desc": "pool/_families.json rendered as 'prefix = family' lines",
+   "used_in": [
+    "CURATOR",
+    "QUICK-CURATE"
+   ],
+   "source": [
+    "registry"
+   ]
+  },
+  "FILES_LINE": {
+   "standard": false,
+   "desc": "the key output files so far, ' | '-separated",
+   "used_in": [
+    "PROGRESS"
+   ],
+   "source": [
+    "doc_mapping"
+   ]
+  },
+  "FILE_MAP": {
+   "standard": false,
+   "desc": "table of the package files with one line each",
+   "used_in": [
+    "ARCH-README",
+    "PROPOSAL-README"
+   ],
+   "source": [
+    "doc_mapping"
+   ]
+  },
+  "FINALISTS": {
+   "standard": false,
+   "desc": "each finalist's canonical entry plus its check's top kill-assumption and verdict line (NORMALIZER)",
+   "used_in": [
+    "NORMALIZER"
+   ],
+   "source": [
+    "registry"
+   ]
+  },
+  "FINALISTS_TABLE": {
+   "standard": false,
+   "desc": "finalist IDs with titles",
+   "used_in": [
+    "TOURNAMENT"
+   ],
+   "source": [
+    "doc_mapping"
+   ]
+  },
+  "FINDINGS": {
+   "standard": true,
+   "desc": "P0 and P1 findings from review/*.json, one line each: id | severity | file | issue | fix",
+   "used_in": [
+    "ARCH-FIX"
+   ],
+   "source": [
+    "registry"
+   ]
+  },
+  "FLAGS_TABLE": {
+   "standard": false,
+   "desc": "single-judge flags",
+   "used_in": [
+    "SHORTLIST"
+   ],
+   "source": [
+    "doc_mapping"
+   ]
+  },
+  "FRAME_FULL": {
+   "standard": true,
+   "desc": "the whole 01_FRAME.md",
+   "used_in": [
+    "P-GROUND",
+    "SYNTHESIS"
+   ],
+   "source": [
+    "registry"
+   ]
+  },
+  "FRAME_QA": {
+   "standard": false,
+   "desc": "frame/questions.json with the answers from frame/answers.json: 'N. question / Default: x / Answer: y'",
+   "used_in": [
+    "FRAME-FINAL"
+   ],
+   "source": [
+    "registry"
+   ]
+  },
+  "GATE": {
+   "standard": false,
+   "desc": "the gate id (G0 ... GX)",
+   "source": [
+    "gate_context"
+   ],
+   "used_in": [
+    "G0",
+    "G1",
+    "G10",
+    "G11",
+    "G12",
+    "G13",
+    "G14",
+    "G2",
+    "G2c",
+    "G2f",
+    "G3",
+    "G4",
+    "G5",
+    "G6",
+    "G7",
+    "G8a",
+    "G8b",
+    "G9",
+    "GB",
+    "GX"
+   ]
+  },
+  "GEN_HEADER": {
+   "standard": false,
+   "desc": "the rendered GEN-HEADER partial (its header comment removed)",
+   "used_in": [
+    "GAP",
+    "QUICK-GEN",
+    "REOPEN",
+    "S1F",
+    "S2-VS",
+    "S3-EDE",
+    "S4-TRANSFER",
+    "S5-OPS",
+    "S5-RESEARCH"
+   ],
+   "source": [
+    "registry"
+   ]
+  },
+  "GLOSSARY": {
+   "standard": false,
+   "desc": "FRAME Domain language plus terms, or 'none'",
+   "used_in": [
+    "PROPOSAL-APPENDICES"
+   ],
+   "source": [
+    "doc_mapping"
+   ]
+  },
+  "GUT_PICK": {
+   "standard": false,
+   "desc": "tournament/precommit.md content, or 'skipped'",
+   "used_in": [
+    "TOURNAMENT"
+   ],
+   "source": [
+    "doc_mapping"
+   ]
+  },
+  "HANDOFF_BODY": {
+   "standard": false,
+   "desc": "the 12_HANDOFF.md body written by the engine (what was handed to which tool, with paths)",
+   "source": [
+    "doc_mapping"
+   ],
+   "used_in": [
+    "HANDOFF"
+   ]
+  },
+  "HARD_CONSTRAINTS": {
+   "standard": true,
+   "desc": "01_FRAME.md Hard constraints, as a list",
+   "used_in": [
+    "CHECK",
+    "QUICK-CURATE",
+    "REVIEWER",
+    "SCREEN-HEADER",
+    "TOURNAMENT-HEADER"
+   ],
+   "source": [
+    "registry"
+   ]
+  },
+  "HC_TABLE": {
+   "standard": false,
+   "desc": "table | id | constraint | source |",
+   "used_in": [
+    "GOALS-CONSTRAINTS"
+   ],
+   "source": [
+    "doc_mapping"
+   ]
+  },
+  "HMW": {
+   "standard": true,
+   "desc": "the How-might-we sentence from 01_FRAME.md Problem",
+   "used_in": [
+    "CHECK",
+    "PRECOMMIT",
+    "REVIEWER",
+    "S1-CE",
+    "SCREEN-HEADER",
+    "TOURNAMENT-HEADER"
+   ],
+   "source": [
+    "registry"
+   ]
+  },
+  "HOST_AGENT": {
+   "standard": false,
+   "desc": "run.json host.agent",
+   "used_in": [
+    "RUN"
+   ],
+   "source": [
+    "doc_mapping"
+   ]
+  },
+  "HOST_FAMILY": {
+   "standard": false,
+   "desc": "run.json host.family",
+   "used_in": [
+    "RUN"
+   ],
+   "source": [
+    "doc_mapping"
+   ]
+  },
+  "HOW_TO_REPLY": {
+   "standard": false,
+   "desc": "the reply syntax the engine's deterministic parser accepts for this gate",
+   "source": [
+    "gate_context"
+   ],
+   "used_in": [
+    "G0",
+    "G1",
+    "G10",
+    "G11",
+    "G12",
+    "G13",
+    "G14",
+    "G2",
+    "G2c",
+    "G2f",
+    "G3",
+    "G4",
+    "G5",
+    "G6",
+    "G7",
+    "G8a",
+    "G8b",
+    "G9",
+    "GB",
+    "GX"
+   ]
+  },
+  "IDEA": {
+   "standard": true,
+   "desc": "the canonical entry of one idea (CHECK: from 03_POOL.md; EVOLVE-CONTRAST: the user's idea as I-001)",
+   "used_in": [
+    "CHECK",
+    "EVOLVE-CONTRAST"
+   ],
+   "source": [
+    "registry"
+   ]
+  },
+  "IDEA_ID": {
+   "standard": false,
+   "desc": "prompts: the idea id of this job (I-NNN, E-NN, Q-NN); handoff seeds: the chosen idea id",
+   "source": [
+    "doc_mapping"
+   ],
+   "used_in": [
+    "HANDOFF-CE"
+   ]
+  },
+  "JUDGES_LINE": {
+   "standard": false,
+   "desc": "judge families, with PROVISIONAL labels",
+   "used_in": [
+    "SHORTLIST",
+    "TOURNAMENT"
+   ],
+   "source": [
+    "doc_mapping"
+   ]
+  },
+  "KILLED_TABLE": {
+   "standard": false,
+   "desc": "KILL/FAIL rows",
+   "used_in": [
+    "SHORTLIST"
+   ],
+   "source": [
+    "doc_mapping"
+   ]
+  },
+  "KILL_ASSUMPTIONS": {
+   "standard": false,
+   "desc": "the kill-assumptions of the chosen idea from checks/<ID>.md and 07_REDTEAM.md",
+   "used_in": [
+    "PROBE"
+   ],
+   "source": [
+    "registry"
+   ]
+  },
+  "KILL_CRITERION": {
+   "standard": false,
+   "desc": "quick-probe kill_criterion",
+   "used_in": [
+    "QUICK-DECISION"
+   ],
+   "source": [
+    "doc_mapping"
+   ]
+  },
+  "LANDSCAPE": {
+   "standard": true,
+   "desc": "02_CONTEXT.md section B (never given to blind generators; only REOPEN and CHECK)",
+   "used_in": [
+    "CHECK",
+    "REOPEN"
+   ],
+   "source": [
+    "registry"
+   ]
+  },
+  "LANG": {
+   "standard": true,
+   "desc": "the run language code (en unless the user writes in another language)",
+   "used_in": [
+    "APPROACH",
+    "ARCH-CANDIDATE",
+    "ARCH-DECISIONS",
+    "ARCH-DRIVERS",
+    "ARCH-FIX",
+    "ARCH-JUDGE",
+    "ARCH-PACKAGE-CROSSCUT",
+    "ARCH-PACKAGE-LITE",
+    "ARCH-PACKAGE-STRUCTURE",
+    "ARCH-PREMORTEM",
+    "ARCH-REVIEW",
+    "CHECK",
+    "EVOLVE",
+    "EVOLVE-CONTRAST",
+    "EXEC-ONEPAGER",
+    "FRAME-DRAFT",
+    "FRAME-FINAL",
+    "FRAME-QUESTIONS",
+    "GEN-HEADER",
+    "INDEX-HTML",
+    "LENS",
+    "NORMALIZER",
+    "P-GROUND",
+    "PRECOMMIT",
+    "PRFAQ",
+    "PROBE",
+    "PROPOSAL-A",
+    "PROPOSAL-B",
+    "PROPOSAL-C",
+    "PROPOSAL-FIX",
+    "PROPOSAL-LITE",
+    "PROPOSAL-REDTEAM",
+    "PROPOSAL-RUBRIC",
+    "QUICK-PROBE",
+    "REBUTTAL",
+    "REVIEWER",
+    "SYNTHESIS"
+   ],
+   "source": [
+    "doc_mapping",
+    "registry"
+   ]
+  },
+  "LEDGER_TITLES": {
+   "standard": true,
+   "desc": "titles of killed and parked ideas from brainstorm/LEDGER.md (earlier runs), one per line, or 'none'",
+   "used_in": [
+    "GAP"
+   ],
+   "source": [
+    "registry"
+   ]
+  },
+  "LENS_QUESTION": {
+   "standard": false,
+   "desc": "the lens question picked from the ub-choices block of ARCH-REVIEW by REVIEW_LENS",
+   "used_in": [
+    "ARCH-REVIEW"
+   ],
+   "source": [
+    "registry"
+   ]
+  },
+  "LENS_TEXT": {
+   "standard": false,
+   "desc": "the lens text picked from the ub-choices block of LENS by STRATEGY_ID (L1..L6)",
+   "used_in": [
+    "LENS"
+   ],
+   "source": [
+    "registry"
+   ]
+  },
+  "LINT_REPORT": {
+   "standard": true,
+   "desc": "lint.md of the stage (FAIL and WARN items), or 'none'",
+   "used_in": [
+    "ARCH-FIX",
+    "ARCH-REVIEW",
+    "PROPOSAL-FIX",
+    "PROPOSAL-RUBRIC"
+   ],
+   "source": [
+    "registry"
+   ]
+  },
+  "MERMAID_CDN": {
+   "standard": false,
+   "desc": "render.py constant MERMAID_CDN [U-26]",
+   "used_in": [
+    "INDEX-HTML"
+   ],
+   "source": [
+    "doc_mapping"
+   ]
+  },
+  "MODE": {
+   "standard": true,
+   "desc": "run.json mode",
+   "used_in": [
+    "ARCH-DRIVERS",
+    "CURATOR",
+    "EVOLVE",
+    "FRAME-DRAFT",
+    "FRAME-FINAL",
+    "FRAME-QUESTIONS",
+    "P-GROUND",
+    "PROBE",
+    "PROGRESS",
+    "PROPOSAL-HEAD",
+    "RUN",
+    "S3-EDE"
+   ],
+   "source": [
+    "doc_mapping",
+    "registry"
+   ]
+  },
+  "NEXT_ACTION": {
+   "standard": false,
+   "desc": "quick-probe next_action",
+   "used_in": [
+    "QUICK-DECISION"
+   ],
+   "source": [
+    "doc_mapping"
+   ]
+  },
+  "NOT_IN_SCOPE_LIST": {
+   "standard": false,
+   "desc": "bullets",
+   "used_in": [
+    "GOALS-CONSTRAINTS"
+   ],
+   "source": [
+    "doc_mapping"
+   ]
+  },
+  "ONE_PAGER": {
+   "standard": false,
+   "desc": "ONE-PAGER.md rendered to HTML (title line dropped)",
+   "source": [
+    "doc_mapping"
+   ],
+   "used_in": [
+    "INDEX-HTML"
+   ]
+  },
+  "OPEN_QUESTIONS_LIST": {
+   "standard": false,
+   "desc": "bullets 'question (default: x)'",
+   "used_in": [
+    "GOALS-CONSTRAINTS"
+   ],
+   "source": [
+    "doc_mapping"
+   ]
+  },
+  "OTHER_ARCHETYPES": {
+   "standard": true,
+   "desc": "the one-line stances of the other candidates in this bake-off (used inside archetype C)",
+   "used_in": [
+    "ARCH-CANDIDATE"
+   ],
+   "source": [
+    "registry"
+   ]
+  },
+  "OTHER_FAMILIES": {
+   "standard": false,
+   "desc": "'gpt via codex-cli, kimi via kimi-cli' or 'none -> PROVISIONAL (<fam>-alt)'",
+   "used_in": [
+    "RUN"
+   ],
+   "source": [
+    "doc_mapping"
+   ]
+  },
+  "OTHER_REVIEW": {
+   "standard": false,
+   "desc": "the other reviewer's sections 3 and 4 for the same idea (REBUTTAL)",
+   "used_in": [
+    "REBUTTAL"
+   ],
+   "source": [
+    "registry"
+   ]
+  },
+  "OUTPUT_RULE": {
+   "standard": true,
+   "desc": "worker jobs: 'Print only the result.'; HOST_BATCH variants: 'Write only the requested output to the file on the next line.' followed by 'OUTPUT FILE: <abs out>' as the last line",
+   "used_in": [
+    "APPROACH",
+    "ARCH-CANDIDATE",
+    "ARCH-DECISIONS",
+    "ARCH-DRIVERS",
+    "ARCH-FIX",
+    "ARCH-JUDGE",
+    "ARCH-PACKAGE-CROSSCUT",
+    "ARCH-PACKAGE-LITE",
+    "ARCH-PACKAGE-STRUCTURE",
+    "ARCH-PREMORTEM",
+    "ARCH-REVIEW",
+    "CHECK",
+    "CURATOR",
+    "EVOLVE",
+    "EVOLVE-CONTRAST",
+    "EXEC-ONEPAGER",
+    "FRAME-DRAFT",
+    "FRAME-FINAL",
+    "FRAME-QUESTIONS",
+    "GAP",
+    "LENS",
+    "NORMALIZER",
+    "P-GROUND",
+    "PING",
+    "PRECOMMIT",
+    "PRFAQ",
+    "PROBE",
+    "PROPOSAL-A",
+    "PROPOSAL-B",
+    "PROPOSAL-C",
+    "PROPOSAL-FIX",
+    "PROPOSAL-LITE",
+    "PROPOSAL-REDTEAM",
+    "PROPOSAL-RUBRIC",
+    "QUICK-CURATE",
+    "QUICK-GEN",
+    "QUICK-PROBE",
+    "REBUTTAL",
+    "REOPEN",
+    "REVIEWER",
+    "S1F",
+    "S2-VS",
+    "S3-EDE",
+    "S4-TRANSFER",
+    "S5-OPS",
+    "S5-RESEARCH",
+    "SCREEN-HEADER",
+    "STACK-VERIFY",
+    "SYNTHESIS",
+    "TOURNAMENT-HEADER"
+   ],
+   "source": [
+    "registry"
+   ]
+  },
+  "PACK_A": {
+   "standard": true,
+   "desc": "evidence pack A (13.1): FRAME, 02_CONTEXT A+B, checks of the chosen idea, 08_DECISION, the card",
+   "used_in": [
+    "PROPOSAL-A",
+    "PROPOSAL-LITE"
+   ],
+   "source": [
+    "registry"
+   ]
+  },
+  "PACK_B": {
+   "standard": true,
+   "desc": "evidence pack B (13.1): architecture README, container view block, top ADRs, matrix summary, deferred, 09_PROBE, drivers (approach build type: approach.md)",
+   "used_in": [
+    "PROPOSAL-B",
+    "PROPOSAL-LITE"
+   ],
+   "source": [
+    "registry"
+   ]
+  },
+  "PACK_C": {
+   "standard": true,
+   "desc": "evidence pack C (13.1): cost-model, risks, premortem, red-team kill-assumptions, FRAME success, open questions",
+   "used_in": [
+    "PROPOSAL-C",
+    "PROPOSAL-LITE"
+   ],
+   "source": [
+    "registry"
+   ]
+  },
+  "PARKED_TABLE": {
+   "standard": false,
+   "desc": "K4 candidates parked (guided/full-auto) with their named matches",
+   "used_in": [
+    "SHORTLIST"
+   ],
+   "source": [
+    "doc_mapping"
+   ]
+  },
+  "PASS_THRESHOLD": {
+   "standard": false,
+   "desc": "quick-probe pass_threshold",
+   "used_in": [
+    "QUICK-DECISION"
+   ],
+   "source": [
+    "doc_mapping"
+   ]
+  },
+  "PITCH": {
+   "standard": false,
+   "desc": "the chosen idea pitch (HTML-escaped)",
+   "used_in": [
+    "INDEX-HTML"
+   ],
+   "source": [
+    "doc_mapping"
+   ]
+  },
+  "PLANNING_ASSUMPTIONS_TABLE": {
+   "standard": false,
+   "desc": "table | id | item | value | source |",
+   "used_in": [
+    "GOALS-CONSTRAINTS"
+   ],
+   "source": [
+    "doc_mapping"
+   ]
+  },
+  "POOL_BUNDLE": {
+   "standard": true,
+   "desc": "every pool file inlined, each under a '--- FILE: pool/<name> ---' line (curator jobs only)",
+   "used_in": [
+    "CURATOR",
+    "QUICK-CURATE"
+   ],
+   "source": [
+    "registry"
+   ]
+  },
+  "PRECOMMIT_NOTE": {
+   "standard": false,
+   "desc": "redteam/00_precommit.md",
+   "used_in": [
+    "SYNTHESIS"
+   ],
+   "source": [
+    "registry"
+   ]
+  },
+  "PREMORTEM": {
+   "standard": true,
+   "desc": "premortem.md",
+   "used_in": [
+    "ARCH-DECISIONS",
+    "ARCH-PACKAGE-CROSSCUT",
+    "ARCH-PACKAGE-STRUCTURE"
+   ],
+   "source": [
+    "registry"
+   ]
+  },
+  "PRIVACY_A": {
+   "standard": false,
+   "desc": "yes or no",
+   "used_in": [
+    "RUN"
+   ],
+   "source": [
+    "doc_mapping"
+   ]
+  },
+  "PRIVACY_B": {
+   "standard": false,
+   "desc": "yes or no",
+   "used_in": [
+    "RUN"
+   ],
+   "source": [
+    "doc_mapping"
+   ]
+  },
+  "PRIVACY_LINE": {
+   "standard": false,
+   "desc": "one line: '(a) web + other vendors: yes|no; (b) code facts / repo files to other vendors: yes|no; web search: allowed|not allowed'",
+   "used_in": [
+    "FRAME-DRAFT",
+    "FRAME-FINAL",
+    "FRAME-GRILL",
+    "FRAME-GRILL-DOCS"
+   ],
+   "source": [
+    "registry"
+   ]
+  },
+  "PRIVACY_NOTE": {
+   "standard": false,
+   "desc": "one sentence for the job: 'Web search is allowed for this job.' or 'Web search is NOT allowed for this job: ...' (P-GROUND: section B NOT SEARCHED; CHECK: NOT CHECKED; STACK-VERIFY: NOT SEARCHED)",
+   "used_in": [
+    "ARCH-REVIEW",
+    "CHECK",
+    "P-GROUND",
+    "S4-TRANSFER",
+    "STACK-VERIFY"
+   ],
+   "source": [
+    "registry"
+   ]
+  },
+  "PROBE": {
+   "standard": true,
+   "desc": "09_PROBE.md",
+   "used_in": [
+    "APPROACH"
+   ],
+   "source": [
+    "registry"
+   ]
+  },
+  "PROBE_RESULT": {
+   "standard": false,
+   "desc": "RESULT line of 09_PROBE.md, or 'PENDING (riskiest assumption untested)'",
+   "source": [
+    "doc_mapping"
+   ],
+   "used_in": [
+    "HANDOFF-CE",
+    "HANDOFF-OPENSPEC",
+    "HANDOFF-SPECKIT",
+    "HANDOFF-SUPERPOWERS"
+   ]
+  },
+  "PROBE_WARNING": {
+   "standard": false,
+   "desc": "'Riskiest assumption untested: 09_PROBE.md has no RESULT: PASSED.' or empty",
+   "used_in": [
+    "HANDOFF-CE",
+    "HANDOFF-OPENSPEC",
+    "HANDOFF-SPECKIT",
+    "HANDOFF-SUPERPOWERS"
+   ],
+   "source": [
+    "doc_mapping"
+   ]
+  },
+  "PRODUCT_GOAL": {
+   "standard": false,
+   "desc": "drivers.json product_goal",
+   "used_in": [
+    "GOALS-CONSTRAINTS"
+   ],
+   "source": [
+    "doc_mapping"
+   ]
+  },
+  "PROGRESS_LINE": {
+   "standard": false,
+   "desc": "'71% | stage 10/14 Decision | ETA 40-70 min | NEXT: ...'",
+   "used_in": [
+    "PROGRESS"
+   ],
+   "source": [
+    "doc_mapping"
+   ]
+  },
+  "PROPOSAL": {
+   "standard": false,
+   "desc": "brainstorm/<run>/11_PROPOSAL/PROPOSAL.md",
+   "source": [
+    "doc_mapping"
+   ],
+   "used_in": [
+    "HANDOFF-CE",
+    "HANDOFF-SPECKIT"
+   ]
+  },
+  "PROPOSAL_TITLE": {
+   "standard": false,
+   "desc": "the chosen idea title",
+   "used_in": [
+    "PROPOSAL-HEAD"
+   ],
+   "source": [
+    "doc_mapping"
+   ]
+  },
+  "PROVENANCE": {
+   "standard": false,
+   "desc": "authors (revealed), judges, PROVISIONAL badges, lint and review status",
+   "used_in": [
+    "ARCH-README"
+   ],
+   "source": [
+    "doc_mapping"
+   ]
+  },
+  "PROVISIONAL_BANNER": {
+   "standard": false,
+   "desc": "'PROVISIONAL: <reason>' when any seat runs as <family>-alt or was re-seated; empty otherwise (the line is removed)",
+   "used_in": [
+    "ARCH-README",
+    "PROGRESS",
+    "PROPOSAL-HEAD",
+    "RUN",
+    "SHORTLIST",
+    "TOURNAMENT"
+   ],
+   "source": [
+    "doc_mapping"
+   ]
+  },
+  "PYTHON": {
+   "standard": false,
+   "desc": "the python command recorded in run.json",
+   "used_in": [
+    "RUN"
+   ],
+   "source": [
+    "doc_mapping"
+   ]
+  },
+  "QAS_TABLE": {
+   "standard": true,
+   "desc": "the qas array of drivers.json rendered as a Markdown table (id, QG, source, stimulus, artifact, environment, response, measure, importance, difficulty)",
+   "used_in": [
+    "ARCH-CANDIDATE",
+    "ARCH-JUDGE",
+    "ARCH-PREMORTEM",
+    "QUALITY-SCENARIOS"
+   ],
+   "source": [
+    "doc_mapping",
+    "registry"
+   ]
+  },
+  "QG_MECHANISMS_TABLE": {
+   "standard": false,
+   "desc": "table | QG | mechanism | containers | QAS | from chosen/containers.md",
+   "used_in": [
+    "ARCH-README"
+   ],
+   "source": [
+    "doc_mapping"
+   ]
+  },
+  "QUALITY_GOALS_TABLE": {
+   "standard": false,
+   "desc": "table | id | goal | weight | why | source |",
+   "used_in": [
+    "GOALS-CONSTRAINTS"
+   ],
+   "source": [
+    "doc_mapping"
+   ]
+  },
+  "RAW_STANDINGS": {
+   "standard": false,
+   "desc": "raw standings table",
+   "used_in": [
+    "TOURNAMENT"
+   ],
+   "source": [
+    "doc_mapping"
+   ]
+  },
+  "REDTEAM_ITEMS": {
+   "standard": true,
+   "desc": "the top 5 review/redteam.json items by impact x likelihood x cheapness",
+   "used_in": [
+    "PROPOSAL-FIX"
+   ],
+   "source": [
+    "registry"
+   ]
+  },
+  "RESCUED": {
+   "standard": false,
+   "desc": "rescued IDs with reasons, or 'none'",
+   "used_in": [
+    "SHORTLIST"
+   ],
+   "source": [
+    "doc_mapping"
+   ]
+  },
+  "REVIEWS": {
+   "standard": false,
+   "desc": "every redteam/<ID>_<stance>_<family>.md (and rebuttals), with family names removed, under '--- REVIEW <ID> <STANCE> ---' lines",
+   "used_in": [
+    "SYNTHESIS"
+   ],
+   "source": [
+    "registry"
+   ]
+  },
+  "REVIEW_LENS": {
+   "standard": false,
+   "desc": "the architecture review lens id: L1, L2, L3 or L4",
+   "used_in": [
+    "ARCH-REVIEW"
+   ],
+   "source": [
+    "registry"
+   ]
+  },
+  "RISKIEST_ASSUMPTION": {
+   "standard": false,
+   "desc": "quick-probe riskiest_assumption",
+   "used_in": [
+    "QUICK-DECISION"
+   ],
+   "source": [
+    "doc_mapping"
+   ]
+  },
+  "RISKS_TABLE": {
+   "standard": false,
+   "desc": "table | id | risk | likelihood | impact | mitigation | owner | early warning | source |",
+   "used_in": [
+    "RISKS"
+   ],
+   "source": [
+    "doc_mapping"
+   ]
+  },
+  "ROUND_CAP": {
+   "standard": true,
+   "desc": "grilling round cap: 1 in guided, 3 otherwise",
+   "used_in": [
+    "FRAME-GRILL",
+    "FRAME-GRILL-DOCS"
+   ],
+   "source": [
+    "registry"
+   ]
+  },
+  "RUBRIC_FIXES": {
+   "standard": true,
+   "desc": "must_fix items of every review/rubric_<fam>.json, one line each",
+   "used_in": [
+    "PROPOSAL-FIX"
+   ],
+   "source": [
+    "registry"
+   ]
+  },
+  "RUNNER_UP": {
+   "standard": false,
+   "desc": "runner-up ID and title, or 'none'",
+   "used_in": [
+    "QUICK-DECISION"
+   ],
+   "source": [
+    "doc_mapping"
+   ]
+  },
+  "RUN_DIR": {
+   "standard": false,
+   "desc": "the absolute run folder path with forward slashes",
+   "used_in": [
+    "CONTEXT-MERGE",
+    "FRAME-GRILL-DOCS",
+    "S1-CE"
+   ],
+   "source": [
+    "registry"
+   ]
+  },
+  "RUN_NAME": {
+   "standard": true,
+   "desc": "the run folder name, <YYYY-MM-DD>-<slug>",
+   "used_in": [
+    "FRAME-GRILL-DOCS",
+    "G0",
+    "G1",
+    "G10",
+    "G11",
+    "G12",
+    "G13",
+    "G14",
+    "G2",
+    "G2c",
+    "G2f",
+    "G3",
+    "G4",
+    "G5",
+    "G6",
+    "G7",
+    "G8a",
+    "G8b",
+    "G9",
+    "GB",
+    "GX",
+    "PROPOSAL-HEAD",
+    "PROPOSAL-README",
+    "QUICK-DECISION",
+    "SHORTLIST",
+    "TOURNAMENT"
+   ],
+   "source": [
+    "doc_mapping",
+    "gate_context",
+    "registry"
+   ]
+  },
+  "RUN_PATH": {
+   "standard": false,
+   "desc": "the run folder relative to the project: brainstorm/<run>",
+   "source": [
+    "doc_mapping"
+   ],
+   "used_in": [
+    "HANDOFF-CE",
+    "HANDOFF-OPENSPEC",
+    "HANDOFF-SPECKIT",
+    "HANDOFF-SUPERPOWERS"
+   ]
+  },
+  "S1_DIALS": {
+   "standard": false,
+   "desc": "ce-ideate dials: 'go deep' in deep mode; 'no external research' when privacy web or code is no; else empty",
+   "used_in": [
+    "S1-CE"
+   ],
+   "source": [
+    "registry"
+   ]
+  },
+  "S1_SEEN": {
+   "standard": false,
+   "desc": "yes, no or n/a",
+   "used_in": [
+    "RUN"
+   ],
+   "source": [
+    "doc_mapping"
+   ]
+  },
+  "SCHEMA_TEXT": {
+   "standard": true,
+   "desc": "the job's JSON schema text for non-native-schema backends; for native-schema backends: 'The schema is enforced by the tool.'",
+   "used_in": [
+    "ARCH-CANDIDATE",
+    "ARCH-DECISIONS",
+    "ARCH-DRIVERS",
+    "ARCH-JUDGE",
+    "ARCH-REVIEW",
+    "CURATOR",
+    "FRAME-QUESTIONS",
+    "LENS",
+    "PROPOSAL-REDTEAM",
+    "PROPOSAL-RUBRIC",
+    "QUICK-CURATE",
+    "QUICK-PROBE",
+    "SCREEN-HEADER",
+    "STACK-VERIFY",
+    "TOURNAMENT-HEADER"
+   ],
+   "source": [
+    "registry"
+   ]
+  },
+  "SCREEN_AUDITS": {
+   "standard": false,
+   "desc": "bs.py screen 'Judge agreement' and 'Own-origin gap' sections",
+   "used_in": [
+    "SHORTLIST"
+   ],
+   "source": [
+    "doc_mapping"
+   ]
+  },
+  "SECTIONS_ALL": {
+   "standard": true,
+   "desc": "the assembled PROPOSAL.md sections (and ONE-PAGER.md when it exists)",
+   "used_in": [
+    "EXEC-ONEPAGER",
+    "PRFAQ",
+    "PROPOSAL-FIX",
+    "PROPOSAL-REDTEAM",
+    "PROPOSAL-RUBRIC"
+   ],
+   "source": [
+    "registry"
+   ]
+  },
+  "SEEDS_BUNDLE": {
+   "standard": true,
+   "desc": "every human seed file inlined (00_HUMAN_SEEDS*.md, 00b_HUMAN_ROUND2.md), each under a '--- FILE: <name> ---' line (curator jobs only)",
+   "used_in": [
+    "CURATOR",
+    "QUICK-CURATE"
+   ],
+   "source": [
+    "registry"
+   ]
+  },
+  "SEEDS_IDEAS": {
+   "standard": false,
+   "desc": "seed ideas, one per line",
+   "used_in": [
+    "SEEDS"
+   ],
+   "source": [
+    "doc_mapping"
+   ]
+  },
+  "SEEDS_OBVIOUS": {
+   "standard": false,
+   "desc": "obvious answers",
+   "used_in": [
+    "SEEDS"
+   ],
+   "source": [
+    "doc_mapping"
+   ]
+  },
+  "SEEDS_OFF_LIMITS": {
+   "standard": false,
+   "desc": "off-limits",
+   "used_in": [
+    "SEEDS"
+   ],
+   "source": [
+    "doc_mapping"
+   ]
+  },
+  "SEEDS_PRIMARY": {
+   "standard": false,
+   "desc": "seeds Primary idea text",
+   "used_in": [
+    "SEEDS"
+   ],
+   "source": [
+    "doc_mapping"
+   ]
+  },
+  "SEEDS_PROBLEM": {
+   "standard": false,
+   "desc": "seeds Problem text (empty -> template)",
+   "used_in": [
+    "SEEDS"
+   ],
+   "source": [
+    "doc_mapping"
+   ]
+  },
+  "SEED_PROBLEM": {
+   "standard": false,
+   "desc": "the Problem and Off-limits sections of 00_HUMAN_SEEDS.md only (never Ideas, Primary idea or Obvious)",
+   "used_in": [
+    "BMAD-SEEDS",
+    "FRAME-DRAFT",
+    "FRAME-FINAL",
+    "FRAME-GRILL",
+    "FRAME-GRILL-DOCS",
+    "FRAME-QUESTIONS"
+   ],
+   "source": [
+    "registry"
+   ]
+  },
+  "SELECTION_RECORD": {
+   "standard": false,
+   "desc": "summary of 06_TOURNAMENT, 07_REDTEAM and 08_DECISION incl. audits and PROVISIONAL badges",
+   "used_in": [
+    "PROPOSAL-APPENDICES"
+   ],
+   "source": [
+    "doc_mapping"
+   ]
+  },
+  "SETTLED": {
+   "standard": false,
+   "desc": "settled decisions from 08_DECISION.md including Not doing",
+   "used_in": [
+    "HANDOFF-CE",
+    "HANDOFF-SPECKIT"
+   ],
+   "source": [
+    "doc_mapping"
+   ]
+  },
+  "SHEET_CONTAINERS": {
+   "standard": false,
+   "desc": "containers as a table",
+   "used_in": [
+    "ARCH-SHEET"
+   ],
+   "source": [
+    "doc_mapping"
+   ]
+  },
+  "SHEET_COST": {
+   "standard": false,
+   "desc": "cost_monthly_usd and build_person_weeks ranges",
+   "used_in": [
+    "ARCH-SHEET"
+   ],
+   "source": [
+    "doc_mapping"
+   ]
+  },
+  "SHEET_DATA": {
+   "standard": false,
+   "desc": "data entities and storage",
+   "used_in": [
+    "ARCH-SHEET"
+   ],
+   "source": [
+    "doc_mapping"
+   ]
+  },
+  "SHEET_DEPLOYMENT": {
+   "standard": false,
+   "desc": "deployment",
+   "used_in": [
+    "ARCH-SHEET"
+   ],
+   "source": [
+    "doc_mapping"
+   ]
+  },
+  "SHEET_LABEL": {
+   "standard": false,
+   "desc": "the neutral label A..D",
+   "used_in": [
+    "ARCH-SHEET"
+   ],
+   "source": [
+    "doc_mapping"
+   ]
+  },
+  "SHEET_PARADIGM": {
+   "standard": false,
+   "desc": "arch-candidate paradigm",
+   "used_in": [
+    "ARCH-SHEET"
+   ],
+   "source": [
+    "doc_mapping"
+   ]
+  },
+  "SHEET_QAS": {
+   "standard": false,
+   "desc": "qas_mechanisms as a table",
+   "used_in": [
+    "ARCH-SHEET"
+   ],
+   "source": [
+    "doc_mapping"
+   ]
+  },
+  "SHEET_REJECTED": {
+   "standard": false,
+   "desc": "rejected approaches bullets",
+   "used_in": [
+    "ARCH-SHEET"
+   ],
+   "source": [
+    "doc_mapping"
+   ]
+  },
+  "SHEET_RISKS": {
+   "standard": false,
+   "desc": "risks bullets",
+   "used_in": [
+    "ARCH-SHEET"
+   ],
+   "source": [
+    "doc_mapping"
+   ]
+  },
+  "SHEET_SECURITY": {
+   "standard": false,
+   "desc": "security_threats as bullets",
+   "used_in": [
+    "ARCH-SHEET"
+   ],
+   "source": [
+    "doc_mapping"
+   ]
+  },
+  "SHEET_STACK": {
+   "standard": false,
+   "desc": "stack as a table",
+   "used_in": [
+    "ARCH-SHEET"
+   ],
+   "source": [
+    "doc_mapping"
+   ]
+  },
+  "SHEET_SUMMARY": {
+   "standard": false,
+   "desc": "arch-candidate summary",
+   "used_in": [
+    "ARCH-SHEET"
+   ],
+   "source": [
+    "doc_mapping"
+   ]
+  },
+  "SHEET_TOKENS": {
+   "standard": false,
+   "desc": "innovation_tokens bullets",
+   "used_in": [
+    "ARCH-SHEET"
+   ],
+   "source": [
+    "doc_mapping"
+   ]
+  },
+  "SHEET_TRADEOFFS": {
+   "standard": false,
+   "desc": "tradeoffs bullets",
+   "used_in": [
+    "ARCH-SHEET"
+   ],
+   "source": [
+    "doc_mapping"
+   ]
+  },
+  "SHORTLIST_TABLE": {
+   "standard": false,
+   "desc": "screen shortlist table with reasons",
+   "used_in": [
+    "SHORTLIST"
+   ],
+   "source": [
+    "doc_mapping"
+   ]
+  },
+  "SLUG": {
+   "standard": false,
+   "desc": "the run slug (3-5 words)",
+   "used_in": [
+    "PROGRESS",
+    "RUN"
+   ],
+   "source": [
+    "doc_mapping"
+   ]
+  },
+  "SOFT_CONSTRAINTS_LIST": {
+   "standard": false,
+   "desc": "bullets",
+   "used_in": [
+    "GOALS-CONSTRAINTS"
+   ],
+   "source": [
+    "doc_mapping"
+   ]
+  },
+  "SOURCES_TABLE": {
+   "standard": true,
+   "desc": "sources.md (the S-### registry) as a table",
+   "used_in": [
+    "EXEC-ONEPAGER",
+    "PROPOSAL-A",
+    "PROPOSAL-APPENDICES",
+    "PROPOSAL-B",
+    "PROPOSAL-C",
+    "PROPOSAL-LITE"
+   ],
+   "source": [
+    "doc_mapping",
+    "registry"
+   ]
+  },
+  "STACK_NOTE": {
+   "standard": false,
+   "desc": "verification counts, e.g. '9 VERIFIED, 2 UNVERIFIED, 0 NOT SEARCHED (checked YYYY-MM-DD)'",
+   "used_in": [
+    "STACK"
+   ],
+   "source": [
+    "doc_mapping"
+   ]
+  },
+  "STACK_ROWS": {
+   "standard": false,
+   "desc": "the chosen candidate's JSON stack rows as a table (layer, component, choice, version)",
+   "used_in": [
+    "STACK-VERIFY"
+   ],
+   "source": [
+    "registry"
+   ]
+  },
+  "STACK_TABLE": {
+   "standard": false,
+   "desc": "table | layer | component | choice | version | release date | source | status | license | EOL note | alternatives | innovation token |",
+   "used_in": [
+    "STACK"
+   ],
+   "source": [
+    "doc_mapping"
+   ]
+  },
+  "STAGE_CHECKLIST": {
+   "standard": false,
+   "desc": "the [x]/[~]/[ ] stage lines",
+   "used_in": [
+    "PROGRESS"
+   ],
+   "source": [
+    "doc_mapping"
+   ]
+  },
+  "STAGE_LOG": {
+   "standard": false,
+   "desc": "stage log lines '  - <ISO> <step> <state> <note>'",
+   "used_in": [
+    "RUN"
+   ],
+   "source": [
+    "doc_mapping"
+   ]
+  },
+  "STANCE": {
+   "standard": false,
+   "desc": "ADVOCATE or CRITIC",
+   "used_in": [
+    "REBUTTAL",
+    "REVIEWER"
+   ],
+   "source": [
+    "registry"
+   ]
+  },
+  "STANDINGS": {
+   "standard": false,
+   "desc": "debiased standings table (6.4 9.6)",
+   "used_in": [
+    "TOURNAMENT"
+   ],
+   "source": [
+    "doc_mapping"
+   ]
+  },
+  "STATUS_BANNER": {
+   "standard": false,
+   "desc": "DRAFT, APPROVED, AUTOPILOT DRAFT: no human decisions were made, or PENDING MILESTONE 0",
+   "used_in": [
+    "ARCH-README",
+    "PROPOSAL-HEAD",
+    "PROPOSAL-README"
+   ],
+   "source": [
+    "doc_mapping"
+   ]
+  },
+  "STEAL_NOTES": {
+   "standard": false,
+   "desc": "the G11 'steal' elements (from, element), or 'none'",
+   "used_in": [
+    "ARCH-PACKAGE-STRUCTURE"
+   ],
+   "source": [
+    "registry"
+   ]
+  },
+  "STRATEGY_ID": {
+   "standard": true,
+   "desc": "the pool prefix of this generator job (S1, S2, S3, S4, S5, G1.., R1.., L1..L6, QA/QB in quick mode)",
+   "used_in": [
+    "GAP",
+    "GEN-HEADER",
+    "LENS",
+    "QUICK-GEN",
+    "REOPEN",
+    "S1F",
+    "S2-VS",
+    "S3-EDE",
+    "S4-TRANSFER",
+    "S5-OPS",
+    "S5-RESEARCH"
+   ],
+   "source": [
+    "registry"
+   ]
+  },
+  "STRATEGY_MAP": {
+   "standard": false,
+   "desc": "the strategy -> family line, e.g. 'S1=claude S2=claude S3=gpt S4=claude S5=kimi'",
+   "used_in": [
+    "FRAME-DRAFT",
+    "FRAME-FINAL",
+    "FRAME-GRILL",
+    "FRAME-GRILL-DOCS",
+    "RUN"
+   ],
+   "source": [
+    "doc_mapping",
+    "registry"
+   ]
+  },
+  "STRUCTURE_FILES": {
+   "standard": true,
+   "desc": "the package files written so far (chosen/*, decisions.json, ADRs, risks.md), each under a '--- FILE: <path> ---' line",
+   "used_in": [
+    "ARCH-DECISIONS",
+    "ARCH-FIX",
+    "ARCH-PACKAGE-CROSSCUT",
+    "ARCH-REVIEW",
+    "STACK-VERIFY"
+   ],
+   "source": [
+    "registry"
+   ]
+  },
+  "SUMMARY": {
+   "standard": false,
+   "desc": "gate body computed by the engine for this gate (gates.summary): plan, questions, standings, verdict lines before the synthesis, matrix, rubric, ... in the order the evidence rules require",
+   "source": [
+    "gate_context"
+   ],
+   "used_in": [
+    "G0",
+    "G1",
+    "G10",
+    "G11",
+    "G12",
+    "G13",
+    "G14",
+    "G2",
+    "G2c",
+    "G2f",
+    "G3",
+    "G4",
+    "G5",
+    "G6",
+    "G7",
+    "G8a",
+    "G8b",
+    "G9",
+    "GB",
+    "GX"
+   ]
+  },
+  "SURVIVORS": {
+   "standard": false,
+   "desc": "surviving shortlist entries with their checks (EVOLVE)",
+   "used_in": [
+    "EVOLVE"
+   ],
+   "source": [
+    "registry"
+   ]
+  },
+  "SYSTEM_CONTEXT": {
+   "standard": false,
+   "desc": "one paragraph from drivers.context.system",
+   "used_in": [
+    "CONTEXT-VIEW"
+   ],
+   "source": [
+    "doc_mapping"
+   ]
+  },
+  "TIME": {
+   "standard": false,
+   "desc": "HH:MM of the update",
+   "used_in": [
+    "PROGRESS"
+   ],
+   "source": [
+    "doc_mapping"
+   ]
+  },
+  "TITLE": {
+   "standard": false,
+   "desc": "gates: the gate title; handoff seeds: the chosen idea's title; index.html: the proposal title",
+   "source": [
+    "doc_mapping",
+    "gate_context"
+   ],
+   "used_in": [
+    "G0",
+    "G1",
+    "G10",
+    "G11",
+    "G12",
+    "G13",
+    "G14",
+    "G2",
+    "G2c",
+    "G2f",
+    "G3",
+    "G4",
+    "G5",
+    "G6",
+    "G7",
+    "G8a",
+    "G8b",
+    "G9",
+    "GB",
+    "GX",
+    "HANDOFF-CE",
+    "HANDOFF-OPENSPEC",
+    "HANDOFF-SPECKIT",
+    "INDEX-HTML"
+   ]
+  },
+  "TOC": {
+   "standard": false,
+   "desc": "table-of-contents links (one <a> per section, architecture and appendix anchor)",
+   "source": [
+    "doc_mapping"
+   ],
+   "used_in": [
+    "INDEX-HTML"
+   ]
+  },
+  "TOPIC": {
+   "standard": false,
+   "desc": "the topic in the user's words (run.json topic; proposal mode: the idea)",
+   "used_in": [
+    "BMAD-SEEDS",
+    "FRAME-DRAFT",
+    "FRAME-FINAL",
+    "FRAME-GRILL",
+    "FRAME-GRILL-DOCS",
+    "FRAME-QUESTIONS",
+    "RUN"
+   ],
+   "source": [
+    "doc_mapping",
+    "registry"
+   ]
+  },
+  "TOP_CARDS": {
+   "standard": false,
+   "desc": "07_TOP.md: the red-team ideas' cards, checks summaries and tournament records",
+   "used_in": [
+    "PRECOMMIT",
+    "SYNTHESIS"
+   ],
+   "source": [
+    "registry"
+   ]
+  },
+  "TRADEOFFS": {
+   "standard": false,
+   "desc": "kill-assumptions and the strongest disagreement",
+   "used_in": [
+    "HANDOFF-CE"
+   ],
+   "source": [
+    "doc_mapping"
+   ]
+  },
+  "USER_CHANGES": {
+   "standard": true,
+   "desc": "the user's G13 'changes:' text, verbatim, or 'none'",
+   "used_in": [
+    "PROPOSAL-FIX"
+   ],
+   "source": [
+    "registry"
+   ]
+  },
+  "UTILITY_TREE": {
+   "standard": false,
+   "desc": "nested list QG -> QAS ids",
+   "used_in": [
+    "QUALITY-SCENARIOS"
+   ],
+   "source": [
+    "doc_mapping"
+   ]
+  },
+  "VARIANT": {
+   "standard": true,
+   "desc": "run.json variant",
+   "used_in": [
+    "APPROACH",
+    "ARCH-CANDIDATE",
+    "ARCH-DRIVERS",
+    "ARCH-PACKAGE-CROSSCUT",
+    "ARCH-PACKAGE-STRUCTURE",
+    "CHECK",
+    "FRAME-DRAFT",
+    "FRAME-FINAL",
+    "FRAME-GRILL",
+    "FRAME-GRILL-DOCS",
+    "FRAME-QUESTIONS",
+    "P-GROUND",
+    "PROBE",
+    "PROGRESS",
+    "PROPOSAL-HEAD",
+    "QUICK-PROBE",
+    "RUN",
+    "S5-OPS",
+    "SCREEN-HEADER"
+   ],
+   "source": [
+    "doc_mapping",
+    "registry"
+   ]
+  },
+  "WHY": {
+   "standard": false,
+   "desc": "the user's reason, verbatim in quotes (full-auto: the rule's reason)",
+   "used_in": [
+    "QUICK-DECISION"
+   ],
+   "source": [
+    "doc_mapping"
+   ]
+  },
+  "AT_A_GLANCE": {
+   "standard": false,
+   "desc": "the container diagram, stack table, cost, build effort and top 3 risks of the chosen candidate",
+   "used_in": [
+    "ARCH-README"
+   ],
+   "source": [
+    "doc_mapping"
+   ]
+  }
+ },
+ "gate_context": [
+  "TITLE",
+  "GATE",
+  "RUN_NAME",
+  "SUMMARY",
+  "HOW_TO_REPLY",
+  "SUGGESTION",
+  "TOPIC",
+  "MODE",
+  "VARIANT",
+  "AUTOPILOT",
+  "FAMILIES",
+  "SEEDS_FILE",
+  "RUN_PATH"
+ ],
+ "doc_mappings": {
+  "DECISION": [
+   "RUN_NAME",
+   "DECISION_BODY",
+   "DATE"
+  ],
+  "HANDOFF": [
+   "RUN_NAME",
+   "HANDOFF_BODY",
+   "DATE"
+  ],
+  "HANDOFF-CE": [
+   "TITLE",
+   "DESCRIPTION",
+   "IDEA_ID",
+   "RUN_PATH",
+   "BASIS",
+   "TRADEOFFS",
+   "SETTLED",
+   "PROBE_RESULT",
+   "ARCH_README",
+   "PROPOSAL",
+   "DOMAIN_CLAUSE",
+   "DATE",
+   "PROBE_WARNING"
+  ],
+  "INDEX-HTML": [
+   "TITLE",
+   "CSS",
+   "TOC",
+   "PITCH",
+   "BADGE",
+   "DATE",
+   "ONE_PAGER",
+   "BODY",
+   "MERMAID_CDN",
+   "LANG"
+  ],
+  "HANDOFF-SPECKIT": [
+   "TITLE",
+   "DESCRIPTION",
+   "IDEA_ID",
+   "RUN_PATH",
+   "BASIS",
+   "TRADEOFFS",
+   "SETTLED",
+   "PROBE_RESULT",
+   "ARCH_README",
+   "PROPOSAL",
+   "DOMAIN_CLAUSE",
+   "DATE",
+   "PROBE_WARNING"
+  ],
+  "HANDOFF-SUPERPOWERS": [
+   "TITLE",
+   "DESCRIPTION",
+   "IDEA_ID",
+   "RUN_PATH",
+   "BASIS",
+   "TRADEOFFS",
+   "SETTLED",
+   "PROBE_RESULT",
+   "ARCH_README",
+   "PROPOSAL",
+   "DOMAIN_CLAUSE",
+   "DATE",
+   "PROBE_WARNING"
+  ],
+  "HANDOFF-OPENSPEC": [
+   "TITLE",
+   "DESCRIPTION",
+   "IDEA_ID",
+   "RUN_PATH",
+   "BASIS",
+   "TRADEOFFS",
+   "SETTLED",
+   "PROBE_RESULT",
+   "ARCH_README",
+   "PROPOSAL",
+   "DOMAIN_CLAUSE",
+   "DATE",
+   "PROBE_WARNING"
+  ]
+ },
+ "fill_rules": {
+  "prompts": "engine registry PLACEHOLDERS plus the job's item vars; an unknown name refuses the job",
+  "host": "only the text between the ub-argument markers is filled (registry) and written to task.argument_file; the host reads the raw template",
+  "gates": "gate_context names first, then registry placeholders; the result is written to gates/<G>.md and shown verbatim",
+  "docs": "doc_mappings[NAME] for the docs the engine fills (a name outside the mapping makes the engine use its built-in text); the other docs are format references for render_arch.py and the engine's writers"
+ }
+}

@@ -1,0 +1,41 @@
+{
+ "type": "object",
+ "additionalProperties": false,
+ "required": [
+  "verdicts"
+ ],
+ "properties": {
+  "verdicts": {
+   "type": "array",
+   "items": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "pair_id",
+     "winner",
+     "confidence",
+     "decisive_reason"
+    ],
+    "properties": {
+     "pair_id": {
+      "type": "string"
+     },
+     "winner": {
+      "type": "string",
+      "enum": [
+       "FIRST",
+       "SECOND",
+       "TIE"
+      ]
+     },
+     "confidence": {
+      "type": "number"
+     },
+     "decisive_reason": {
+      "type": "string"
+     }
+    }
+   }
+  }
+ }
+}

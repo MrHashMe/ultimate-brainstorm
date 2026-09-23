@@ -1,0 +1,55 @@
+{
+ "$id": "findings",
+ "type": "object",
+ "additionalProperties": false,
+ "required": [
+  "findings"
+ ],
+ "properties": {
+  "findings": {
+   "type": "array",
+   "items": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "id",
+     "lens",
+     "severity",
+     "file",
+     "issue",
+     "fix",
+     "evidence"
+    ],
+    "properties": {
+     "id": {
+      "type": "string"
+     },
+     "lens": {
+      "type": "string"
+     },
+     "severity": {
+      "type": "string",
+      "enum": [
+       "P0",
+       "P1",
+       "P2",
+       "P3"
+      ]
+     },
+     "file": {
+      "type": "string"
+     },
+     "issue": {
+      "type": "string"
+     },
+     "fix": {
+      "type": "string"
+     },
+     "evidence": {
+      "type": "string"
+     }
+    }
+   }
+  }
+ }
+}

@@ -1,0 +1,10 @@
+{
+ "family": "claude",
+ "order": "fwd",
+ "pairs": {
+  "P01": {
+   "first": "I-002",
+   "second": "I-004"
+  }
+ }
+}

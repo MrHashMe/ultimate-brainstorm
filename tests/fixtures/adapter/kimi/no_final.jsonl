@@ -1,0 +1,3 @@
+not json at all
+{"role":"assistant","content":"Early text","tool_calls":[{"id":"t1"}]}
+{"role":"tool","content":"tool output"}

@@ -1,0 +1,113 @@
+{
+ "$id": "quick-curated",
+ "description": "QUICK-CURATE output (bs.py quick-pick reads it)",
+ "type": "object",
+ "additionalProperties": false,
+ "required": [
+  "ideas"
+ ],
+ "properties": {
+  "ideas": {
+   "type": "array",
+   "items": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "id",
+     "title",
+     "pitch",
+     "mechanism",
+     "cluster",
+     "origin",
+     "gates",
+     "scores",
+     "fails_if",
+     "problem",
+     "for_whom",
+     "first_version"
+    ],
+    "properties": {
+     "id": {
+      "type": "string",
+      "description": "Q-01, Q-02, ..."
+     },
+     "title": {
+      "type": "string"
+     },
+     "pitch": {
+      "type": "string"
+     },
+     "mechanism": {
+      "type": "string"
+     },
+     "cluster": {
+      "type": "string"
+     },
+     "origin": {
+      "type": "string",
+      "description": "human, human-mixed, ai-mixed or the family label from the FAMILY MAP"
+     },
+     "gates": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+       "g1",
+       "g2",
+       "g3"
+      ],
+      "properties": {
+       "g1": {
+        "type": "boolean",
+        "description": "hard constraints respected"
+       },
+       "g2": {
+        "type": "boolean",
+        "description": "legal, ethical, safe"
+       },
+       "g3": {
+        "type": "boolean",
+        "description": "problem and insight each statable in one sentence"
+       }
+      }
+     },
+     "scores": {
+      "type": "array",
+      "items": {
+       "type": "object",
+       "additionalProperties": false,
+       "required": [
+        "criterion",
+        "score"
+       ],
+       "properties": {
+        "criterion": {
+         "type": "string",
+         "description": "criterion name exactly as given"
+        },
+        "score": {
+         "type": "integer",
+         "description": "1-5"
+        }
+       }
+      }
+     },
+     "fails_if": {
+      "type": "string",
+      "description": "the most likely way it dies, one line"
+     },
+     "problem": {
+      "type": "string",
+      "description": "one sentence"
+     },
+     "for_whom": {
+      "type": "string"
+     },
+     "first_version": {
+      "type": "string",
+      "description": "one sentence"
+     }
+    }
+   }
+  }
+ }
+}

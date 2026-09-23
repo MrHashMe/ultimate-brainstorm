@@ -1,0 +1,113 @@
+{
+ "$id": "arch-judge",
+ "type": "object",
+ "additionalProperties": false,
+ "required": [
+  "candidates",
+  "steal",
+  "confidence"
+ ],
+ "properties": {
+  "candidates": {
+   "type": "array",
+   "items": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "label",
+     "veto",
+     "veto_reason",
+     "scores",
+     "sensitivity_points",
+     "tradeoff_points",
+     "risks",
+     "non_risks"
+    ],
+    "properties": {
+     "label": {
+      "type": "string"
+     },
+     "veto": {
+      "type": "boolean"
+     },
+     "veto_reason": {
+      "type": "string"
+     },
+     "scores": {
+      "type": "array",
+      "items": {
+       "type": "object",
+       "additionalProperties": false,
+       "required": [
+        "criterion",
+        "score",
+        "reason"
+       ],
+       "properties": {
+        "criterion": {
+         "type": "string"
+        },
+        "score": {
+         "type": "integer"
+        },
+        "reason": {
+         "type": "string"
+        }
+       }
+      }
+     },
+     "sensitivity_points": {
+      "type": "array",
+      "items": {
+       "type": "string"
+      }
+     },
+     "tradeoff_points": {
+      "type": "array",
+      "items": {
+       "type": "string"
+      }
+     },
+     "risks": {
+      "type": "array",
+      "items": {
+       "type": "string"
+      }
+     },
+     "non_risks": {
+      "type": "array",
+      "items": {
+       "type": "string"
+      }
+     }
+    }
+   }
+  },
+  "steal": {
+   "type": "array",
+   "items": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "from",
+     "element",
+     "why"
+    ],
+    "properties": {
+     "from": {
+      "type": "string"
+     },
+     "element": {
+      "type": "string"
+     },
+     "why": {
+      "type": "string"
+     }
+    }
+   }
+  },
+  "confidence": {
+   "type": "number"
+  }
+ }
+}

@@ -1,0 +1,10 @@
+{
+  "version": "2",
+  "plugins": [
+    {
+      "id": "ultimate-brainstorm",
+      "displayName": "Ultimate Brainstorm",
+      "source": "https://github.com/MrHashMe/ultimate-brainstorm"
+    }
+  ]
+}

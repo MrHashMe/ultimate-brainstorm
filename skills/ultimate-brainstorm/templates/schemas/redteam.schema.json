@@ -1,0 +1,72 @@
+{
+ "$id": "redteam",
+ "description": "PROPOSAL-REDTEAM output (review/redteam.json)",
+ "type": "object",
+ "additionalProperties": false,
+ "required": [
+  "items"
+ ],
+ "properties": {
+  "items": {
+   "type": "array",
+   "items": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "claim",
+     "steelman",
+     "fails_if",
+     "impact",
+     "likelihood",
+     "cheapness",
+     "cheapest_test",
+     "kill_criterion"
+    ],
+    "properties": {
+     "claim": {
+      "type": "string",
+      "description": "the load-bearing claim, quoted or paraphrased with its section"
+     },
+     "steelman": {
+      "type": "string"
+     },
+     "fails_if": {
+      "type": "string"
+     },
+     "impact": {
+      "type": "string",
+      "enum": [
+       "H",
+       "M",
+       "L"
+      ]
+     },
+     "likelihood": {
+      "type": "string",
+      "enum": [
+       "H",
+       "M",
+       "L"
+      ]
+     },
+     "cheapness": {
+      "type": "string",
+      "enum": [
+       "H",
+       "M",
+       "L"
+      ],
+      "description": "how cheap it is to test"
+     },
+     "cheapest_test": {
+      "type": "string"
+     },
+     "kill_criterion": {
+      "type": "string"
+     }
+    }
+   },
+   "description": "at most 8 items"
+  }
+ }
+}

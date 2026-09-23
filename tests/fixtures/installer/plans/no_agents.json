@@ -1,0 +1,12 @@
+{
+ "description": "no agent CLI and no agent home: exit 3 with the --with-clis hint (4.14, 12.1)",
+ "tools": [],
+ "args": [
+  "--components",
+  "none"
+ ],
+ "exit": 3,
+ "output_contains": [
+  "--with-clis"
+ ]
+}
