@@ -114,7 +114,7 @@ Stage 14 hands off:
 | ID | Type | What |
 |---|---|---|
 | 14.1 | T | software/growth with CONTEXT.proposed.md: host/CONTEXT-MERGE (per-term yes, per-ADR yes) |
-| 14.2 | H | G14: publish copies (`10_ARCHITECTURE/` -> `docs/architecture/`, `adr/` -> `docs/adr/`, `11_PROPOSAL/` -> `docs/proposal/`), each with its own yes; backups of existing targets go to `_superseded/`. Without `RESULT: PASSED` the card warns "riskiest assumption untested" |
+| 14.2 | H | G14: publish copies (`10_ARCHITECTURE/` -> `docs/architecture/`, `adr/` -> `docs/adr/`, `11_PROPOSAL/` -> `docs/proposal/`), each with its own yes. A target holding another run's package or files the kit did not publish stays untouched: the copy goes to `docs/<run>/<item>/` and the card shows that target (and names the other run when one holds the folder). Re-publishing this run's own copy moves each file it replaces or no longer has to `_superseded/<stamp>/published/<item>/` (in a fixed folder last written by kit 2.0.2 or earlier, files its marker listed that the package lacks stay in place, and replacing such a file with other content is warned about). A link or junction on the way, or a taken `docs/<run>/<item>/`, means that item is not published; the card says why and what to move aside (then `redo <run> 14.2`). Without `RESULT: PASSED` the card warns "riskiest assumption untested" |
 | 14.3 | S | the handoff seed: HANDOFF-CE (default for software/growth), HANDOFF-SPECKIT (greenfield), HANDOFF-SUPERPOWERS or HANDOFF-OPENSPEC (only when the repo already uses them); every seed ends "Do not reopen the choice of idea or architecture." |
 | 14.4 | S | 12_HANDOFF.md, LEDGER update, DONE card with links |
 

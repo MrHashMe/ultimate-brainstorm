@@ -1205,13 +1205,7 @@ def _v_g13(ctx):
 
 def _v_g14(ctx):
     from . import handoff
-    pd = ctx.state.get("project_dir") or "."
-    targets = []
-    for key in ("architecture", "adr", "proposal"):
-        src, dst = handoff.PUBLISH[key]
-        exists = os.path.exists(os.path.join(pd, *dst.split("/")))
-        targets.append("- %s: %s -> %s%s" % (key, src, dst, " (exists: your own files stay; changed files are "
-                                                          "backed up first)" if exists else ""))
+    targets = [handoff.card_line(handoff.plan_target(ctx, key)) for key in ("architecture", "adr", "proposal")]
     options = g14_options(ctx)
     terms = ""
     if ctx.exists("CONTEXT.proposed.md") and not ctx.state.get("context_merge"):
