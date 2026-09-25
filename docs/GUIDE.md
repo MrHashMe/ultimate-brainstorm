@@ -919,9 +919,19 @@ half-done stage.
   gates: hard to reverse, surprising without context, a real trade-off) are asked about one by one; zero ADRs is normal.
   The outcome is recorded in `00_RUN.md` and `12_HANDOFF.md`. Nothing is committed.
 - Publish (G14, all modes but full-auto): on your yes, `10_ARCHITECTURE/` is copied to `docs/architecture/`,
-  `adr/` to `docs/adr/` and `11_PROPOSAL/` to `docs/proposal/`, each with its own yes; existing targets are backed up
-  to `_superseded/`. Without `RESULT: PASSED` in `09_PROBE.md` the card warns "riskiest assumption untested" and the
-  seed carries that warning.
+  `adr/` to `docs/adr/` and `11_PROPOSAL/` to `docs/proposal/`, each with its own yes. When one of those folders
+  already holds another run's package, or files the kit did not publish (your own ADRs, say), this run's copy goes
+  to `docs/<run>/<item>/` instead, so two runs never mix (two ADR sets both numbered 0001, say); the card shows the
+  real target and warns you, naming the other run. Only this run's own earlier copy is updated in place; each file
+  it replaces or no longer has goes to `_superseded/<stamp>/published/<item>/` first. If a target is a link or
+  junction, or `docs/<run>/<item>/` is taken too, that item is not published and the card says why: move that folder
+  aside and publish again (`redo <run> 14.2` asks G14 again). In a folder last written by kit 2.0.2 or earlier,
+  files the old marker lists that this run's package does not have stay in place (they may be another run's, or
+  this run's own old ADRs) and the card warns, also before it replaces such a file with other content (backed up
+  first); move them aside by hand to clear them. To split folders 2.0.2 mixed,
+  move `docs/architecture`, `docs/adr` and `docs/proposal` aside and run `redo <run> 14.2` for each run, oldest
+  first. Without `RESULT: PASSED` in `09_PROBE.md` the card warns
+  "riskiest assumption untested" and the seed carries that warning.
 - Seed: the kit writes the handoff seed: CE (default for software and growth), Spec Kit for greenfield projects
   (`specify init <proj> --integration <agent>`, then `/speckit.specify` with PROPOSAL sections 3 and 6-8 and
   `chosen/`), Superpowers or OpenSpec only in repos that already use them. The CE seed adds "Architecture decisions:
