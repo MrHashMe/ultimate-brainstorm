@@ -30,7 +30,8 @@ First checks for any problem:
 | python not found / WindowsApps stub | `python3` on Windows is often the Store stub | use `py -3`; install Python 3.9+ with `winget install Python.Python.3.12` |
 | mermaid diagrams not drawn in index.html | offline, or the CDN changed major version [U-26] | the source text stays visible; open the file online, or read PROPOSAL.md |
 | `ub export --format docx` does nothing | pandoc is not on PATH | install pandoc, or use index.html / PROPOSAL.md |
-| lint FAIL remains after the fix pass | the architecture or proposal still breaks a lint rule | the item is listed at G13 and in the proposal's open questions; `changes: <what>` at G13 runs one more fix pass |
+| lint FAIL remains after the fix pass | the architecture or proposal still breaks a lint rule | the proposal gets one automatic second fix pass (13.6b); what is left is listed at G13 (architecture items also in the proposal's open questions); `changes: <what>` at G13 runs one more fix pass |
+| ONE-PAGER.md disagrees with PROPOSAL.md (lint P11) | a fix changed a figure or date in the sections but not in the one-pager | 13.6b reprints the one-pager; if the G13 card still lists P11, reply `changes: fix the lint items` |
 
 Windows notes: Claude Code runs UB in Git Bash or its PowerShell tool; Codex in PowerShell; Kimi Code needs Git Bash.
 All templates and prompts are ASCII, and every free-text answer goes through an answer file, so PowerShell 5.1

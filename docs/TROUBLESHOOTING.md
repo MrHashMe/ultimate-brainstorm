@@ -32,7 +32,8 @@ When the pipeline cannot go on, it shows a short explanation and one or more fix
 | a job "refused by policy" | the job would break your privacy answers or a vendor rule (for example the GLM Coding Plan over HTTP) | nothing is wrong with your setup; the card says which rule. Change the privacy answer only if you mean it |
 | "another session is driving this run" | two agents are working on the same run folder | close one of them; the lock expires by itself after 2 minutes |
 | "kit version differs" | the run was started with another kit version | usually fine; if something breaks, finish the run with the version that started it, or `redo` from a stage |
-| the sign-off card lists lint FAILs or unresolved review findings | a generated architecture or proposal document still breaks a format rule after the automatic fix pass | they are also listed as open questions in the proposal. Reply `changes: <what to fix>` at sign-off, or `redo 12.14` to run the architecture fix pass again |
+| the sign-off card lists lint FAILs or unresolved review findings | a generated architecture or proposal document still breaks a format rule after the automatic fix passes | architecture items are also listed as open questions in the proposal. Reply `changes: <what to fix>` at sign-off (for proposal lint items: `changes: fix the lint items`), or `redo 12.14` to run the architecture fix pass again |
+| the sign-off card lists `Lint P11 WARN, ONE-PAGER.md: ...` | a fix changed a figure or date in the proposal, but the one-pager still states the old one | reply `changes: fix the lint items` at sign-off; the fix step rewrites ONE-PAGER.md to match the sections |
 
 `status` (for example `/ultimate-brainstorm status`) shows where a run is. `PROGRESS.md` in the run folder always shows
 the current stage, the next step and which families are OK.

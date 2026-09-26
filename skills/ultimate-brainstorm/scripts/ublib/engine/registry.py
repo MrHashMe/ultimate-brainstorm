@@ -579,6 +579,11 @@ def _p_step_skipped(ctx, arg):
     return st.step_state(ctx.state, arg) == "skipped"
 
 
+@predicate("step_pending")
+def _p_step_pending(ctx, arg):
+    return st.step_state(ctx.state, arg) == "pending"
+
+
 @predicate("s1_engine")
 def _p_s1_engine(ctx, arg):
     return ctx.seats.get("s1_engine", "s1f") == arg
@@ -663,6 +668,25 @@ def _p_context_proposed(ctx, arg):
 @predicate("fix_requested")
 def _p_fix_requested(ctx, arg):
     return bool(ctx.state.get("user_changes"))
+
+
+# lint rules whose WARN items still earn the second proposal fix pass (P11: the one-pager disagrees with the proposal)
+REFIX_WARN_RULES = ("P11",)
+
+
+def proposal_lint_open(ctx):
+    """The items of 11_PROPOSAL/lint.json a fix pass should still act on: every FAIL, and the WARNs of
+    REFIX_WARN_RULES."""
+    lint = ctx.read_json("11_PROPOSAL/lint.json", {}) or {}
+    return [i for i in lint.get("items") or [] if isinstance(i, dict) and
+            (i.get("severity") == "fail" or i.get("id") in REFIX_WARN_RULES)]
+
+
+@predicate("proposal_lint_open")
+def _p_proposal_lint_open(ctx, arg):
+    if ctx.sim is not None:
+        return bool(ctx.sim.get("proposal_lint_open", True))
+    return bool(proposal_lint_open(ctx))
 
 
 @predicate("gate_asked")
@@ -1442,11 +1466,13 @@ def _f_proposal_review(ctx, step):
 
 @fanout("proposal_fix", lambda ctx: (1, 1))
 def _f_proposal_fix(ctx, step):
+    """13.6, and 13.6b when lint items are left after it (raw outputs 13.6-<loop>, 13.6b-<loop>)."""
     fam = (ctx.seats.get("proposal") or {}).get("drafter") or ctx.host_family
     allowed = ["sections/*.md", "ONE-PAGER.md", "review/resolution.md"]
     it = _files_item(ctx, None, "PROPOSAL-FIX", "fixer", fam, "11_PROPOSAL", allowed, ["review/resolution.md"],
                      stub=_proposal_stub(ctx, [s for s, _ in PROPOSAL_SECTIONS]),
-                     raw_name="13.6-%d" % int((ctx.state.get("counters") or {}).get("g13_loops", 0)))
+                     raw_name="%s-%d" % (step.get("id") or "13.6",
+                                         int((ctx.state.get("counters") or {}).get("g13_loops", 0))))
     it["tools"], it["cwd"], it["repo_root"] = "none", "empty", None
     return [it]
 
@@ -1811,9 +1837,17 @@ def _ph_sources(ctx, jc):
 
 @placeholder("SECTIONS_ALL")
 def _ph_sections(ctx, jc):
-    return ctx.read("11_PROPOSAL/PROPOSAL.md") or "\n\n".join(
+    """PROPOSAL.md (or the section drafts before 13.4), then ONE-PAGER.md when it exists: the fixer may reprint the
+    one-pager only if it can see it. EXEC-ONEPAGER writes the one-pager, so it gets the sections alone."""
+    text = ctx.read("11_PROPOSAL/PROPOSAL.md") or "\n\n".join(
         textio.read_text(p) for p in sorted(glob.glob(os.path.join(ctx.run_dir, "11_PROPOSAL", "sections",
                                                                    "*.md"))))
+    one = ctx.read("11_PROPOSAL/ONE-PAGER.md")
+    if one.strip() and (jc or {}).get("template") != "EXEC-ONEPAGER":
+        from .render import ONE_PAGER_STATUS_RX
+        one = "\n".join(ln for ln in textio.normalize_newlines(one).split("\n") if not ONE_PAGER_STATUS_RX.match(ln))
+        text = text.rstrip() + "\n\n--- FILE: ONE-PAGER.md ---\n" + one.strip() + "\n"
+    return text
 
 
 @placeholder("RUBRIC_FIXES")

@@ -106,8 +106,8 @@ review lenses and one fix pass. Build type `approach` (research, marketing, crea
 instead and has no G11.
 
 Stage 13 writes the proposal (`11_PROPOSAL/`, see references/proposal.md): evidence packs, sections in three parallel
-parts, the executive summary and one-pager, assembly with appendices, rubric and red-team review, one fix pass, the
-HTML pack, and G13 sign-off.
+parts, the executive summary and one-pager, assembly with appendices, rubric and red-team review, one fix pass (and
+a second one when a lint FAIL or a one-pager mismatch, P11, is left), the HTML pack, and G13 sign-off.
 
 Stage 14 hands off:
 

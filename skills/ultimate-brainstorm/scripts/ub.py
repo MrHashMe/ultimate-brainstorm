@@ -606,6 +606,7 @@ def preview_from(ctx, sid):
     shadow = st.Ctx(ctx.run_dir, json.loads(json.dumps(ctx.state)), ctx.deps, sim=dict(pipeline.DEFAULT_SIM))
     steps = pipeline.load_steps()
     idx = pipeline.index_of(steps, sid)
+    pipeline.current_step(shadow, steps)  # the same settling as supersede_from, so the preview counts what will run
     for s in steps[idx:]:
         st.set_step(shadow.state, s["id"], "pending")
     return progress.plan(shadow, pipeline.simulate(shadow, remaining_only=True))

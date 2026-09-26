@@ -894,7 +894,9 @@ half-done stage.
   appendices A-F (ADR index, assumptions index, candidate comparison, idea selection record with the audits, glossary,
   sources) and runs `bs.py assumptions` and `bs.py lint-proposal`. Rubric judges from other families score 7 criteria
   and list must-fix items; a red-team from a non-drafter family attacks the claims; one fix pass answers every item as
-  ADDRESSED, ACCEPTED-RISK (moved to the risks section) or REJECTED with a reason. `ub render` builds the single-file
+  ADDRESSED, ACCEPTED-RISK (moved to the risks section) or REJECTED with a reason, and keeps `ONE-PAGER.md` in line with
+  the sections. When a lint FAIL, or a figure or date that differs between the one-pager and the proposal (P11), is
+  still left, a second fix pass runs; whatever remains is listed on the G13 card. `ub render` builds the single-file
   `index.html` pack (table of contents, diagrams, ADR cards, print styles).
 - Rules in every proposal prompt: use only facts from the pack and cite them `[S-###]`; every unsourced number, market
   or competitor claim carries `[ASSUMPTION: ...]` or `[ESTIMATE: range; basis]`; never invent customers, quotes, metrics

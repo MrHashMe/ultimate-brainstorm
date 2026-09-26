@@ -1744,6 +1744,7 @@ appendices A, B, F.
 | P8 | FAIL | Every `[ASSUMPTION` occurrence is listed in assumptions.md |
 | P9 | WARN | The word "novel" appears anywhere |
 | P10 | WARN | A `$` figure in §10 is not found in `../10_ARCHITECTURE/chosen/cost-model.md` |
+| P11 | WARN | ONE-PAGER.md agrees with the proposal: every money figure in §1 (a `$`, `€`, `£`, USD, EUR, GBP or CHF amount or range, compared as exact numbers: currency and thousands separators (comma, space, apostrophe) ignored, `k`/`M`/`MM`/`B` and thousand/million/billion/mn/bn applied, so `$9k-$27k` equals `9,000-27,000 USD`; the first end of a range takes the second end's magnitude only when the range stays in order, and a second end below the first is not part of a range; the `basis:` part of an `[ESTIMATE` tag is ignored) appears in ONE-PAGER.md; and (not with `--lite`) every money figure and ISO date (`YYYY-MM-DD` or `YYYY-MM`) in ONE-PAGER.md appears in §1-§13. Code fences and the one-pager's status stamp are ignored |
 
 **lint-frame.** Always exits 0.
 - `01_FRAME.md` has the v1 P-FRAME sections.
@@ -2498,9 +2499,10 @@ Chosen option: "<option>", because <justification>.
 | 13.3 | D | EXEC-ONEPAGER after 13.2 (files sections/01.md + ONE-PAGER.md); deep: PRFAQ |
 | 13.4 | S | Assemble PROPOSAL.md: title block + status banner (DRAFT, APPROVED, AUTOPILOT DRAFT or PENDING MILESTONE 0) + sections + appendices A-F (A ADR index, B assumptions index, C candidate comparison from matrix.json, D idea selection record from 06_TOURNAMENT/07_REDTEAM/08_DECISION incl. audits and PROVISIONAL badges, E glossary from FRAME Domain language + terms, F sources); `bs.py assumptions`; `bs.py lint-proposal` |
 | 13.5 | D | PROPOSAL-RUBRIC (rubric families, json `rubric`) and PROPOSAL-REDTEAM (a non-drafter family, json `redteam`) |
-| 13.6 | D | PROPOSAL-FIX (drafter; files sections/NN.md + review/resolution.md): answer every must_fix and the top 5 red-team items as ADDRESSED (where) / ACCEPTED-RISK (moved to §11) / REJECTED (reason); then 13.4 again |
+| 13.6 | D | PROPOSAL-FIX (drafter; files sections/NN.md + ONE-PAGER.md + review/resolution.md; SECTIONS_ALL carries ONE-PAGER.md after the sections): answer every must_fix and the top 5 red-team items as ADDRESSED (where) / ACCEPTED-RISK (moved to §11) / REJECTED (reason); fix lint FAILs and P11 items; reprint ONE-PAGER.md whenever a change alters a figure, date or the ask it states; then 13.4 again (13.4b) |
+| 13.6b | D | Conditional (plan min 0): when 11_PROPOSAL/lint.json after 13.4b still has a FAIL or a P11 item and G13 (13.8) is still pending (not shown, not answered: a run that reached sign-off under an older kit is never re-fixed; `supersede_from` and the redo preview first walk the pipeline so such a run records 13.6b as skipped before `redo 13.7`/`13.8` resets G13), PROPOSAL-FIX runs once more with that lint report; then 13.4 again (13.4c). What remains is listed on the G13 card |
 | 13.7 | S | `ub render` -> index.html |
-| 13.8 | H | G13: approve -> PROPOSAL status Approved + ADRs `accepted` (date); changes -> 13.6 with USER_CHANGES (at most 2 loops); switch -> redo 12.10; runner-up -> redo 12.1 (cost preview first) |
+| 13.8 | H | G13: the card lists the proposal lint FAIL and P11 items still open (the first 8, then a count pointing to lint.md), with the `changes:` reply that runs a fix round (13.6, and 13.6b if items remain: up to 2 calls); approve -> PROPOSAL status Approved + ADRs `accepted` (date); changes -> 13.6 (and 13.6b) with USER_CHANGES (at most 2 loops); switch -> redo 12.10; runner-up -> redo 12.1 (cost preview first) |
 
 **Lite, used in quick mode:** PROPOSAL-LITE is one call writing sections 01, 02, 03, 06, 07, 11, 12, 13 and
 ONE-PAGER.md. Then 13.4 lite, 1 rubric family, no red-team, render, G13.
@@ -3173,7 +3175,9 @@ That function is the single seam; every backend goes through it.
 *Other bookkeeping and lints:*
 - `test_bs_misc.py`: quick-pick selection rules; split path guards (`..`, absolute, drive letter, disallowed extension,
   empty file, duplicates); sources ID stability across re-runs; assumptions extraction; `coverage.json`.
-- `test_lints.py`: one good and one bad fixture per rule A1-A9, P1-P10 and frame; lite mode.
+- `test_lints.py`: one good and one bad fixture per rule A1-A9, P1-P11 and frame; lite mode.
+- `test_proposal_fix.py`: PROPOSAL-FIX sees ONE-PAGER.md; 13.6b runs only on a lint FAIL or P11 item left after 13.6;
+  G13 lists the open items; a stub run whose fix moves the ask in §1 gets the one-pager back in line.
 
 *Validators and adapter:*
 - `test_validate.py`: every contract type, positive and negative; the repair prompt text.

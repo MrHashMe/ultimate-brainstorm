@@ -137,7 +137,7 @@ def current_step(ctx, steps):
 # ================================================================ simulation (`ub plan`, ETA, golden sequences)
 
 DEFAULT_SIM = {"homogenized": True, "survivors": 7, "k4": False, "footprint": False, "synthesis_stop": False,
-               "round2": False, "context_proposed": False, "seeds_given": True}
+               "round2": False, "context_proposed": False, "seeds_given": True, "proposal_lint_open": True}
 
 
 def simulate(ctx, remaining_only=False, facts=None, with_gates=False):
@@ -496,6 +496,9 @@ def step_outputs(ctx, step):
 
 def supersede_from(ctx, steps, sid, stamp=None):
     """Move the outputs of `sid` and every downstream step to _superseded/<ISO>/ and reset them (6.10)."""
+    # settle first: a step a newer kit added before the run's position is skipped while its `when` still sees the old
+    # state (13.6b needs G13 pending; `redo 13.7` on a run signed off under an older kit must not unlock it)
+    current_step(ctx, steps)
     idx = index_of(steps, sid)
     rel = []
     for s in steps[idx:]:
