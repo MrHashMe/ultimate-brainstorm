@@ -499,7 +499,7 @@ class Gates(unittest.TestCase):
         self.assertIn("revealed after your choice", self.gate("G11"))
         self.assertIn("asked even in full-auto", self.gate("GX"))
         self.assertIn("INCONCLUSIVE never counts as a pass", self.gate("G9"))
-        self.assertIn("without a yes for each copy", self.gate("G14"))
+        self.assertIn("without your yes (the ADRs go with the architecture and proposal", self.gate("G14"))
 
     def test_engine_gate_display_when_available(self):
         """With the engine present, the display function fills every name (no '(n/a)')."""

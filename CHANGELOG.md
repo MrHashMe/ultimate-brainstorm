@@ -21,12 +21,26 @@ All notable changes to ultimate-brainstorm are listed here, newest first.
   unchanged file is left alone and not backed up, and a backup never overwrites an older one. The `.ub-published`
   marker (now `schema: 2`) is written before the first change, so an interrupted publish resumes in the same
   folder, and `12_HANDOFF.md` still lists what the interrupted attempt moved or replaced. Files are written through a
-  temp file and a rename, so a hard link in `docs/` is replaced, not written through; a link or junction at `docs/`,
-  `docs/<run>/` or inside a target means that item is not published. OS and editor files
+  temp file and a rename, so a hard link in `docs/` is replaced, not written through. A fixed folder that is (or
+  holds) a link or junction counts as taken, so the copy goes to `docs/<run>/<item>/`; the item is not published
+  when `docs/` is a link, or when that run folder is (or holds) a link or is taken too. OS and editor files
   (`.DS_Store`, `Thumbs.db`, `desktop.ini`, `.gitkeep`, swap files) are never published and never make a folder
   look taken. Names read from disk (another run's name, a link's name) are escaped before they go on the card. An
   item with no files (zero ADRs) shows "nothing to publish", unless this run published it before: then its old copy
   moves to the backup. Listing an item twice publishes it once.
+- G14 `publish` copied every ADR twice, to `docs/architecture/adr/` and to `docs/adr/` (or both under
+  `docs/<run>/`), and the two copies drifted apart as soon as one was edited. ADRs are now published once, to the
+  adr copy, and publishing `architecture` or `proposal` publishes them too, so every link is written against a fresh
+  copy. The architecture copy leaves out `adr/`, and the ADR links in the architecture README (decision index),
+  `chosen/`, the proposal (Appendix A, sections) and `index.html` point at the adr copy. The proposal's ADR links
+  (`../10_ARCHITECTURE/adr/...`), which were broken in every published copy, now resolve. If no adr folder can be
+  placed at all, the ADR links are left as they are and the card says so. Old ADR files (in the architecture copy, or
+  renamed after
+  `ub switch --arch`) move to `_superseded`, except files that a published copy of this run not in the answer still
+  links to: those stay until nothing links to them. A second copy of the run (made while `docs/adr` was a link, say)
+  moves to the backup the same way. A publish writes every copy first and moves old files last, so an interrupted
+  one never takes away a file a published copy links to, and resuming it ends with every link resolving. Links are
+  rewritten in the bytes, so encoding, BOM and line endings are kept. The G14 card says where the ADRs go.
 - Folders last written by 2.0.2 or earlier are not repaired automatically, because their marker cannot tell one
   run's files from another's. When a run publishes into such a folder again, every file the old marker lists that
   the package does not have stays in place (it may be another run's, or this run's own old ADR), the card warns, and

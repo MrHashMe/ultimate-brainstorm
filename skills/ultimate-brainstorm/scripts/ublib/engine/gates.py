@@ -1205,7 +1205,7 @@ def _v_g13(ctx):
 
 def _v_g14(ctx):
     from . import handoff
-    targets = [handoff.card_line(handoff.plan_target(ctx, key)) for key in ("architecture", "adr", "proposal")]
+    targets = handoff.card_lines(ctx)
     options = g14_options(ctx)
     terms = ""
     if ctx.exists("CONTEXT.proposed.md") and not ctx.state.get("context_merge"):
@@ -1293,7 +1293,7 @@ _SUMMARY_ORDER = {
             ("Top pre-mortem risk of the leader", "PREMORTEM_TOP"), ("Suggested", "ARCH_SUGGESTION")],
     "G12": [("ADRs (status proposed)", "ADR_LIST")],
     "G13": [(None, "PROVISIONAL_BANNER"), (None, "PROPOSAL_SUMMARY"), ("Files", "LINKS_BLOCK")],
-    "G14": [(None, "PROBE_WARNING"), ("Publish copies into the repository (each needs its own yes)", "PUBLISH_TARGETS"),
+    "G14": [(None, "PROBE_WARNING"), ("Publish copies into the repository (each needs a yes)", "PUBLISH_TARGETS"),
             ("Handoff seed for the next tool", "HANDOFF_OPTIONS"), (None, "TERMS_BLOCK")],
     "GB": [(None, "BUDGET_LINE")],
     "GX": [(None, "GX_REASON")],

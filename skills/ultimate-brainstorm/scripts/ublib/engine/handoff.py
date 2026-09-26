@@ -6,6 +6,7 @@ Scripts: handoff_seed (14.3), handoff_final (14.4).
 import filecmp
 import json
 import os
+import posixpath
 import re
 import shutil
 import tempfile
@@ -207,66 +208,281 @@ def _taken(rel, holder, other):
     return "%s holds files the kit did not publish" % rel
 
 
-def plan_target(ctx, item):
-    """Where one item goes. The fixed folder (docs/architecture, docs/adr, docs/proposal) when it is free or this run
-    published it; when another run's package or the project's own files are there, the run's own folder
-    docs/<run>/<item>, so two runs never mix (two ADR sets both numbered 0001, say) and nothing already there is
-    touched. A copy this run made earlier (also in the 2.0.x fallback docs/<item>/ub-<run>/) is updated where it is,
-    even when the package has no files any more. The G14 card shows this plan and publish() follows it.
-    Returns {"item", "src", "base", "dst" (None = not published), "state" (new, update, other-run, foreign, refused,
-    empty), "empty" (update of an earlier copy by a package with no files), "other_run", "why", "blocker" (the folder
-    to move aside when refused), "stale" (files of this run's earlier copy that its package no longer has: moved to
-    the backup), "kept" (files a pre-schema marker listed that the package does not have: left in place), "clash"
-    (files a pre-schema publish left there that the package replaces with other content: backed up first)}."""
+ALL_ITEMS = ("architecture", "adr", "proposal")
+
+
+def _place(ctx, item, planned):
+    """Where one item goes (the target half of plan_target): the fixed folder (docs/architecture, docs/adr,
+    docs/proposal) when it is free or this run published it; when another run's package or the project's own files are
+    there, or it is a link or junction, the run's own folder docs/<run>/<item>, so two runs never mix (two ADR sets both
+    numbered 0001, say) and nothing already there is touched or written through. A copy this run made earlier (also
+    in the 2.0.x fallback docs/<item>/ub-<run>/) is updated where it is, even when the package has no files any more."""
     src_rel, base_rel = PUBLISH[item]
     pd = ctx.state.get("project_dir") or "."
     run_name = _run_name(ctx)
     own_rel = "docs/%s/%s" % (run_name, item)
     legacy_rel = "%s/ub-%s" % (base_rel, run_name)
     plan = {"item": item, "src": src_rel, "base": base_rel, "dst": None, "state": "refused", "empty": False,
-            "other_run": None, "why": "", "blocker": None, "stale": [], "kept": [], "clash": []}
-    sources = dict(_source_files(ctx.path(src_rel)))
-    planned = set(sources)
+            "other_run": None, "why": "", "blocker": None, "legacy_dst": legacy_rel, "retire": []}
     base, other = _holder(pd, base_rel, run_name)
     own, own_other = _holder(pd, own_rel, run_name)
-    mine = (base_rel if base == "mine" else own_rel if own == "mine" else
-            legacy_rel if _holder(pd, legacy_rel, run_name)[0] == "mine" else None)
+    mines = [rel for rel, held in ((base_rel, base), (own_rel, own), (legacy_rel, _holder(pd, legacy_rel, run_name)[0]))
+             if held == "mine"]
+    mine = mines[0] if mines else None
     if mine:
-        plan.update(dst=mine, state="update", empty=not planned)
+        # this run's other copies of the item (a link that came and went, say) are retired, so no two remain
+        plan.update(dst=mine, state="update", empty=not planned, retire=mines[1:])
     elif not planned:
         plan.update(state="empty", why="no files")
-        return plan
-    elif base == "link":
-        plan.update(why=_taken(base_rel, base, other), blocker=_shown(other, 4096))
-        return plan
     elif base == "free":
         plan.update(dst=base_rel, state="new")
     elif own != "free" or not RUN_NAME_RE.match(run_name):
-        plan.update(why="%s; %s" % (_taken(base_rel, base, other), _taken(own_rel, own, own_other) if own != "free"
-                                    else "the run name is not a safe folder name"),
+        reasons = [_taken(base_rel, base, other), _taken(own_rel, own, own_other) if own != "free"
+                   else "the run name is not a safe folder name"]
+        plan.update(why="; ".join(r for i, r in enumerate(reasons) if r not in reasons[:i]),
                     blocker=(_shown(own_other, 4096) if own == "link" else own_rel) if own != "free" else None)
-        return plan
     else:
-        plan.update(dst=own_rel, state="other-run" if base == "run" else "foreign", other_run=other,
+        plan.update(dst=own_rel, state={"run": "other-run", "link": "linked"}.get(base, "foreign"), other_run=other,
                     why=_taken(base_rel, base, other))
-    if plan["state"] == "update":
-        dst = os.path.join(pd, *plan["dst"].split("/"))
-        marker = _marker(dst)
-
-        def on_disk(rel):
-            return os.path.isfile(os.path.join(dst, *rel.split("/")))
-        if marker["schema"] is None and plan["dst"] != legacy_rel:
-            # written by kit 2.0.2 or earlier: its list may include another run's files (the cross-run bug), so the
-            # files the package does not have stay, and the ones it replaces are flagged
-            plan["kept"] = sorted(f for f in set(marker["files"]) - planned if on_disk(f))
-            suspect = set(marker["files"]) if plan["kept"] else set()
-        else:
-            plan["stale"] = sorted(f for f in set(marker["files"]) - planned if on_disk(f))
-            plan["kept"] = sorted(f for f in set(marker["legacy_files"]) - planned if on_disk(f))
-            suspect = set(marker["legacy_files"])
-        plan["clash"] = sorted(f for f in suspect & planned if on_disk(f) and not filecmp.cmp(
-            os.path.join(dst, *f.split("/")), sources[f], shallow=False))
     return plan
+
+
+def _abs(ctx, rel):
+    return os.path.join(ctx.state.get("project_dir") or ".", *rel.split("/"))
+
+
+def _layout(ctx, items=None):
+    """Where every item goes, and "home": the adr copy's folder, the one place the ADRs are published to and every
+    ADR link of the architecture and proposal copies points at (None when the run has no ADRs or the adr folder cannot
+    be placed; the links are then left as they are). Publishing `architecture` or `proposal` publishes the ADRs too,
+    so every link is written against a fresh copy; the architecture copy never holds adr/. items None: all three (the
+    card shows the plan for the answer `publish`)."""
+    asked = list(ALL_ITEMS) if items is None else [i for i in ALL_ITEMS if i in items]
+    sources = dict((i, _source_files(ctx.path(PUBLISH[i][0]))) for i in ALL_ITEMS)
+    places = dict((i, _place(ctx, i, set(rel for rel, _f in sources[i]))) for i in ALL_ITEMS)
+    run_items = list(asked)
+    if "adr" not in asked and sources["adr"] and any(places[i]["dst"] for i in ("architecture", "proposal")
+                                                     if i in asked):
+        run_items.append("adr")
+    home = places["adr"]["dst"] if sources["adr"] else None
+    return {"asked": asked, "items": [i for i in ALL_ITEMS if i in run_items], "sources": sources, "places": places,
+            "home": home, "cache": {}}
+
+
+def _relpath(to_rel, from_rel):
+    """Project-relative folder to_rel as seen from folder from_rel (forward slashes)."""
+    return posixpath.relpath("/" + to_rel, "/" + from_rel)
+
+
+def _adr_links(src_rel, dst_rel, rel, target):
+    """(old, new) link prefix to the ADRs for file rel of a copy: the run's 10_ARCHITECTURE/adr as seen from the
+    file's folder in the run, and the ADRs' target folder as seen from the file's folder in the copy."""
+    folder = posixpath.dirname(rel)
+    return (_relpath(PUBLISH["adr"][0], posixpath.join(src_rel, folder)) + "/",
+            _relpath(target, posixpath.join(dst_rel, folder)) + "/")
+
+
+def _relink(raw, old, new):
+    """raw (bytes) with every Markdown link, <angle> link, reference definition and HTML href/src whose target starts
+    with old (optionally written as ./old) pointed at new instead. Works on the bytes, so the encoding, a BOM and the
+    line endings stay as they are; UTF-16 files are left alone."""
+    if raw.startswith((b"\xff\xfe", b"\xfe\xff")):
+        return raw
+    pattern = (br"(\]\([ \t]*<?|(?:href|src)=[\"']|^[ \t]{0,3}\[[^\]\r\n]+\]:[ \t]*<?)(?:\./)?"
+               + re.escape(old.encode("utf-8")))
+    return re.sub(pattern, lambda m: m.group(1) + new.encode("utf-8"), raw, flags=re.M)
+
+
+# the link forms _relink rewrites, as targets: ](x), ](<x>), href="x" / src='x', and [ref]: x (any line ending/title)
+_LINK_TARGET_RE = re.compile(br"\]\([ \t]*<?([^)\s>]+)|(?:href|src)=[\"']([^\"']+)"
+                             br"|^[ \t]{0,3}\[[^\]\r\n]+\]:[ \t]*<?([^\s>]+)", re.M)
+
+
+def _link_targets(ctx, dst_rel):
+    """The project-relative paths the Markdown and HTML files of the published copy at dst_rel link to (only the
+    files its marker lists)."""
+    out = set()
+    dst = _abs(ctx, dst_rel)
+    for f in _marker(dst)["files"]:
+        if not f.lower().endswith((".md", ".html")):
+            continue
+        try:
+            with open(os.path.join(dst, *f.split("/")), "rb") as fh:
+                raw = fh.read()
+        except OSError:
+            continue
+        for m in _LINK_TARGET_RE.finditer(raw):
+            link = (m.group(1) or m.group(2) or m.group(3) or b"").decode("utf-8", "replace")
+            link = link.split("#")[0].split("?")[0]
+            if not link or link.startswith("/") or re.match(r"^[A-Za-z][A-Za-z0-9+.-]*:", link):
+                continue
+            out.add(posixpath.normpath(posixpath.join(dst_rel, posixpath.dirname(f), link)))
+    return out
+
+
+def _outside_links(ctx, layout):
+    """Every path that a published copy of this run links to, other than the copies this answer rewrites: the
+    folders whose marker names this run (fixed, docs/<run>/<item>, 2.0.x ub-<run>), whatever their state."""
+    if "outside" not in layout["cache"]:
+        pd = ctx.state.get("project_dir") or "."
+        run_name = _run_name(ctx)
+        rewritten = set(layout["places"][i]["dst"] for i in layout["items"] if layout["places"][i]["dst"])
+        rewritten |= set(r for i in layout["items"] for r in layout["places"][i]["retire"])
+        out = set()
+        for item in ALL_ITEMS:
+            base = PUBLISH[item][1]
+            for rel in (base, "docs/%s/%s" % (run_name, item), "%s/ub-%s" % (base, run_name)):
+                if rel in rewritten or _link_on_path(pd, rel) or not os.path.isdir(_abs(ctx, rel)):
+                    continue
+                if _marker(_abs(ctx, rel))["run"] == run_name:
+                    out |= _link_targets(ctx, rel)
+        layout["cache"]["outside"] = out
+    return layout["cache"]["outside"]
+
+
+def _package(ctx, item, layout):
+    """rel -> (source path, bytes to write or None to copy the file as it is): what the item's copy holds. The
+    architecture copy leaves out adr/ (the ADRs live only in the adr copy), and the ADR links of the Markdown and HTML
+    files of the architecture and proposal copies point at home."""
+    place, target = layout["places"][item], layout["home"]
+    src_rel, dst_rel = place["src"], place["dst"]
+    out = {}
+    for rel, full in layout["sources"][item]:
+        if item == "architecture" and rel.startswith("adr/"):
+            continue
+        data = None
+        if target and dst_rel and item != "adr" and rel.lower().endswith((".md", ".html")):
+            old, new = _adr_links(src_rel, dst_rel, rel, target)
+            if old != new:
+                try:
+                    with open(full, "rb") as fh:
+                        raw = fh.read()
+                except OSError:
+                    raw = None
+                if raw is not None:
+                    relinked = _relink(raw, old, new)
+                    if relinked != raw:
+                        data = relinked
+        out[rel] = (full, data)
+    return out
+
+
+def _samefile(a, b):
+    try:
+        return os.path.samefile(a, b)
+    except OSError:
+        return False
+
+
+def _same(path, full, data):
+    """True when the file at path already holds what the copy would write."""
+    if data is None:
+        return filecmp.cmp(path, full, shallow=False)
+    with open(path, "rb") as fh:
+        return fh.read() == data
+
+
+def _plan(ctx, item, layout):
+    plan = dict(layout["places"][item], stale=[], kept=[], clash=[], pinned=[], relocated=[], renamed=[],
+                home=layout["home"])
+    if plan["state"] != "update":
+        return plan
+    package = _package(ctx, item, layout)
+    planned = set(package)
+    dst = _abs(ctx, plan["dst"])
+    marker = _marker(dst)
+
+    def on_disk(rel):
+        return os.path.isfile(os.path.join(dst, *rel.split("/")))
+
+    def alias(f):
+        """f names the same file as a planned name of other letter case (a case-insensitive disk)."""
+        return any(q.lower() == f.lower() and q != f and _samefile(os.path.join(dst, *f.split("/")),
+                                                                  os.path.join(dst, *q.split("/"))) for q in planned)
+    if marker["schema"] is None and plan["dst"] != plan["legacy_dst"]:
+        # written by kit 2.0.2 or earlier: its list may include another run's files (the cross-run bug), so the
+        # files the package does not have stay, and the ones it replaces are flagged
+        plan["kept"] = sorted(f for f in set(marker["files"]) - planned if on_disk(f))
+        suspect = set(marker["files"]) if plan["kept"] else set()
+        stale = []
+    else:
+        stale = sorted(f for f in set(marker["files"]) - planned if on_disk(f))
+        plan["kept"] = sorted(f for f in set(marker["legacy_files"]) - planned if on_disk(f))
+        suspect = set(marker["legacy_files"])
+    # a case-only rename on a case-insensitive disk: the old name is the same file as a new one (links to it still
+    # resolve), so it is moved out before the new file is written, never kept or moved later
+    plan["renamed"] = sorted(f for f in stale if alias(f))
+    stale = sorted(set(stale) - set(plan["renamed"]))
+    if stale:
+        # never take away a file that another published copy of this run, not rewritten now, links to
+        linked = _outside_links(ctx, layout)
+        by_lower = {}
+        for target in linked:
+            by_lower.setdefault(target.lower(), []).append(target)
+
+        def is_linked(f):
+            rel = posixpath.join(plan["dst"], f)
+            if rel in linked:
+                return True
+            # a link spelled with other letter case reaches the same file on a case-insensitive disk
+            return any(_samefile(_abs(ctx, target), _abs(ctx, rel)) for target in by_lower.get(rel.lower(), []))
+        plan["pinned"] = sorted(f for f in stale if is_linked(f))
+    plan["stale"] = sorted(set(stale) - set(plan["pinned"]))
+    if item == "architecture":
+        plan["relocated"] = [f for f in stale if f.startswith("adr/")]
+    plan["clash"] = sorted(f for f in suspect & planned if on_disk(f) and not _same(
+        os.path.join(dst, *f.split("/")), *package[f]))
+    # a leftover that is a case variant of a new file is that file: it is replaced (backed up), not kept
+    for f in [f for f in plan["kept"] if alias(f)]:
+        plan["kept"].remove(f)
+        twin = [q for q in planned if q.lower() == f.lower()][0]
+        if twin not in plan["clash"] and not _same(os.path.join(dst, *f.split("/")), *package[twin]):
+            plan["clash"] = sorted(plan["clash"] + [twin])
+    return plan
+
+
+def plan_target(ctx, item, items=None):
+    """What publishing one item does: where it goes and what happens there. The G14 card shows this plan (for the
+    answer `publish`, items None) and publish() follows it.
+    Returns {"item", "src", "base", "dst" (None = not published), "state" (new, update, other-run, foreign, refused,
+    empty), "empty" (update of an earlier copy by a package with no files), "other_run", "why", "blocker" (the folder
+    to move aside when refused), "stale" (files of this run's earlier copy that its package no longer has: moved to
+    the backup), "relocated" (the stale adr/ files of an architecture copy whose ADRs now live in the adr copy),
+    "pinned" (stale files another published copy of this run links to: kept), "kept" (files a pre-schema marker
+    listed that the package does not have: left in place), "clash" (files a pre-schema publish left there that the
+    package replaces with other content: backed up first)}."""
+    return _plan(ctx, item, _layout(ctx, items))
+
+
+def adr_card_note(ctx, layout):
+    """The G14 card line that says where the ADRs end up ("" when there is nothing to say)."""
+    adr = layout["places"]["adr"]
+    linking = [i for i in ("architecture", "proposal") if layout["places"][i]["dst"]]
+    names = " and ".join("`%s`" % i for i in linking)
+    if layout["sources"]["adr"]:
+        if adr["dst"] and linking:
+            return ("ADRs are published once, to %s: %s %s them there too, and %s ADR links point there. An old ADR "
+                    "file that a copy not published in the same answer still links to stays until nothing links to it."
+                    % (adr["dst"], names, "publish" if len(linking) > 1 else "publishes",
+                       "their" if len(linking) > 1 else "its"))
+        if adr["dst"]:
+            return "ADRs are published once, to %s." % adr["dst"]
+        if linking:
+            return ("The adr folder cannot be used (see above), so the ADR links of the %s %s are left as they are "
+                    "and will not resolve; move that folder aside and redo step 14.2." % (
+                        " and ".join(linking), "copies" if len(linking) > 1 else "copy"))
+        return ""
+    if adr["state"] == "update":
+        return ("This run has no ADRs now: `adr` moves its old ADR copy in %s to the backup (except files a published "
+                "copy of this run still links to)." % adr["dst"])
+    return ""
+
+
+def card_lines(ctx):
+    """The G14 card's publish block: one line per item (for the answer `publish`), then where the ADRs end up."""
+    layout = _layout(ctx)
+    note = adr_card_note(ctx, layout)
+    return [card_line(_plan(ctx, item, layout)) for item in ALL_ITEMS] + ([note] if note else [])
 
 
 def _count(n, one, many):
@@ -286,10 +502,29 @@ def card_line(plan):
     if plan["state"] == "update":
         line = head + "%s (this run published here before; %s)" % (
             plan["dst"], "its package now has no files" if plan["empty"] else "files it replaces are backed up first")
-        if plan["stale"]:
-            n = len(plan["stale"])
+        moving = [f for f in plan["stale"] if f in plan["relocated"]]
+        other = [f for f in plan["stale"] + plan["renamed"] if f not in plan["relocated"]]
+        pinned_adrs = [f for f in plan["pinned"] if f in plan["relocated"]]
+        pinned_other = [f for f in plan["pinned"] if f not in plan["relocated"]]
+        if moving:
+            n = len(moving)
+            line += ". Its old %s of %s (%s) %s to the backup" % (
+                "copy" if n == 1 else "copies", _count(n, "ADR", "ADRs"),
+                "ADRs live only in the adr copy now" if plan["home"] else "the architecture copy holds no ADRs now",
+                "moves" if n == 1 else "move")
+        if other:
+            n = len(other)
             line += ". %s this run published there before and no longer has %s to the backup" % (
                 _count(n, "file", "files"), "moves" if n == 1 else "move")
+        if pinned_adrs:
+            n = len(pinned_adrs)
+            line += ". Its old %s of %s %s, because another published copy of this run links to %s" % (
+                "copy" if n == 1 else "copies", _count(n, "ADR", "ADRs"), "stays" if n == 1 else "stay",
+                "it" if n == 1 else "them")
+        if pinned_other:
+            n = len(pinned_other)
+            line += ". %s this run no longer has %s, because another published copy of this run links to %s" % (
+                _count(n, "file", "files"), "stays" if n == 1 else "stay", "it" if n == 1 else "them")
         if plan["kept"]:
             n = len(plan["kept"])
             line += (". WARNING: it also holds %s that this run's package does not have, published by kit 2.0.2 or "
@@ -298,13 +533,19 @@ def card_line(plan):
         if plan["clash"]:
             line += (". WARNING: it replaces %s that kit 2.0.2 or earlier published there, possibly another run's "
                      "(backed up first)" % _count(len(plan["clash"]), "file", "files"))
-        return line + ("." if plan["stale"] or plan["kept"] or plan["clash"] else "")
+        if plan["retire"]:
+            line += (". This run's other copy in %s moves to the backup (files another published copy links to stay)"
+                     % " and ".join(plan["retire"]))
+        return line + ("." if plan["stale"] or plan["renamed"] or plan["pinned"] or plan["kept"] or plan["clash"]
+                       or plan["retire"] else "")
     if plan["state"] == "other-run":
         return head + "%s. WARNING: %s already holds another run's package (%s); nothing there is changed." % (
             plan["dst"], plan["base"], _shown(plan["other_run"]))
     if plan["state"] == "foreign":
         return head + "%s. %s already holds files the kit did not publish; nothing there is changed." % (
             plan["dst"], plan["base"])
+    if plan["state"] == "linked":
+        return head + "%s. %s; nothing is written through it." % (plan["dst"], plan["why"])
     return head + plan["dst"]
 
 
@@ -330,13 +571,18 @@ def _tidy(dst, moved):
             d = os.path.dirname(d)
 
 
-def _copy_replace(src, dst):
-    """Copy src over dst through a temp file and a rename, so a hard link at dst is replaced, never written through."""
+def _copy_replace(src, dst, data=None):
+    """Copy src (or write data, when given) over dst through a temp file and a rename, so a hard link at dst is
+    replaced, never written through."""
     tmp = None
     try:
         fd, tmp = tempfile.mkstemp(prefix=_TMP_PREFIX, suffix=".tmp", dir=os.path.dirname(dst))
         os.close(fd)
-        shutil.copy2(src, tmp)
+        if data is None:
+            shutil.copy2(src, tmp)
+        else:
+            with open(tmp, "wb") as fh:
+                fh.write(data)
         textio._replace_with_retry(tmp, dst)
         tmp = None
     finally:
@@ -367,11 +613,46 @@ def _progress(ctx):
     return prog
 
 
+def _retire(ctx, layout, item, plan, run_name, backup):
+    """Move this run's other copies of the item (plan["retire"]) to the backup, except files a published copy of this
+    run that stays links to. Returns [(folder, moved, kept)]."""
+    out = []
+    linked = _outside_links(ctx, layout)
+    for k, old_rel in enumerate(plan["retire"], 1):
+        old = _abs(ctx, old_rel)
+        marker = _marker(old)
+        files = [f for f in marker["files"] + marker["legacy_files"]
+                 if os.path.isfile(os.path.join(old, *f.split("/")))]
+        keep = [f for f in files if posixpath.join(old_rel, f) in linked]
+        moved = 0
+        for f in files:
+            path = os.path.join(old, *f.split("/"))
+            if f in keep or os.path.islink(path):
+                continue
+            shutil.move(path, backup("%s-retired%d" % (item, k), f))
+            moved += 1
+        if keep:
+            _write_marker(old, run_name, keep)
+        else:
+            shutil.move(os.path.join(old, PUBLISHED_MARKER), backup("%s-retired%d" % (item, k), PUBLISHED_MARKER))
+        _tidy(old, files)
+        for folder in (old, os.path.dirname(old)) if old_rel.startswith("docs/%s/" % run_name) else (old,):
+            try:
+                os.rmdir(folder)
+            except OSError:
+                break
+        out.append((old_rel, moved, len(keep)))
+    return out
+
+
 def publish(ctx, items):
-    """Copy each approved item into <project>/docs/... file by file, at the place plan_target() names. Nothing is
-    ever deleted, and only this run's own files are ever touched: a file that would be overwritten, or a file of this
-    run's earlier copy that its package no longer has, goes to _superseded/<stamp>/published/<item>/ first. The marker
-    is written before the first change, so an interrupted publish resumes in the same folder.
+    """Copy each approved item into <project>/docs/... file by file, at the place plan_target() names; `architecture`
+    and `proposal` publish the ADRs too (the one folder their ADR links point at). Nothing is ever deleted, and only
+    this run's own files are ever touched: a file that would be overwritten, or a file of this run's earlier copy that
+    its package no longer has, goes to _superseded/<stamp>/published/<item>/ first. Two phases: every copy gets its new
+    files first (the adr copy before the copies that link to it); only then do old files leave, except the ones a
+    published copy of this run outside the answer still links to. The marker is written before the first change, so
+    an interrupted publish resumes in the same folder.
     Returns {"published": [...], "not_published": [...]} (one short line each, for 12_HANDOFF.md)."""
     pd = ctx.state.get("project_dir")
     out = {"published": [], "not_published": []}
@@ -380,60 +661,98 @@ def publish(ctx, items):
     stamp = _backup_stamp(ctx)
     run_name = _run_name(ctx)
     prog = _progress(ctx)
-    for item in [i for i in PUBLISH if i in items]:
-        plan = plan_target(ctx, item)
+    layout = _layout(ctx, items)
+    home = layout["home"]
+    lines = {}
+    work = []
+
+    def backup(item, rel):
+        path = ctx.path("_superseded", stamp, "published", item, *rel.split("/"))
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        return path
+    for item in sorted(layout["items"], key=lambda i: i != "adr"):
+        plan = _plan(ctx, item, layout)
         src_rel, dst_rel = plan["src"], plan["dst"]
         if not dst_rel:
-            out["not_published"].append("%s (%s)" % (src_rel, plan["why"]))
+            if item in layout["asked"] or plan["state"] != "empty":
+                lines[item] = ("not_published", "%s (%s)" % (src_rel, plan["why"]))
             continue
         dst = os.path.join(pd, *dst_rel.split("/"))
-        files = _source_files(ctx.path(src_rel))
-        planned = set(rel for rel, _f in files)
+        package = _package(ctx, item, layout)
+        planned = set(package)
         entry = prog["items"].get(item)
         entry = entry if isinstance(entry, dict) and entry.get("dst") == dst_rel else {}
-        entry = {"dst": dst_rel, "moved": _rels(entry.get("moved")), "clash": sorted(
-            set(_rels(entry.get("clash"))) | set(plan["clash"]))}
+        entry = {"dst": dst_rel, "moved": _rels(entry.get("moved")),
+                 "moving": sorted(set(_rels(entry.get("moving"))) | set(plan["stale"])),
+                 "clash": sorted(set(_rels(entry.get("clash"))) | set(plan["clash"]))}
         prog["items"][item] = entry
         textio.write_json_atomic(ctx.path(PUBLISH_PROGRESS), prog)
         os.makedirs(dst, exist_ok=True)
         # until a clashing file is replaced it stays a leftover, so a re-asked card still warns about it
-        _write_marker(dst, run_name, (planned - set(plan["clash"])) | set(plan["stale"]),
-                      set(plan["kept"]) | set(plan["clash"]))
-
-        def backup(rel):
-            path = ctx.path("_superseded", stamp, "published", item, *rel.split("/"))
-            os.makedirs(os.path.dirname(path), exist_ok=True)
-            return path
-        for rel in plan["stale"]:
+        _write_marker(dst, run_name, (planned - set(plan["clash"])) | set(plan["stale"]) | set(plan["pinned"])
+                      | set(plan["renamed"]), set(plan["kept"]) | set(plan["clash"]))
+        for rel in plan["renamed"]:
+            # a case-only rename on a case-insensitive disk: the old name is the new file, so move it out first
             path = os.path.join(dst, *rel.split("/"))
             if os.path.isfile(path) and not os.path.islink(path):
-                shutil.move(path, backup(rel))
+                shutil.move(path, backup(item, rel))
                 entry["moved"] = sorted(set(entry["moved"]) | {rel})
                 textio.write_json_atomic(ctx.path(PUBLISH_PROGRESS), prog)
-        for rel, full in files:
+        for rel in sorted(package):
+            full, data = package[rel]
             target = os.path.join(dst, *rel.split("/"))
             if os.path.isdir(target):
                 continue
             if os.path.isfile(target):
-                if filecmp.cmp(target, full, shallow=False):
+                if _same(target, full, data):
                     continue
-                shutil.copy2(target, backup(rel))
+                shutil.copy2(target, backup(item, rel))
             os.makedirs(os.path.dirname(target), exist_ok=True)
-            _copy_replace(full, target)
-        _write_marker(dst, run_name, planned, plan["kept"])
-        _tidy(dst, entry["moved"])
+            _copy_replace(full, target, data)
+        work.append((item, plan, dst_rel, dst, planned, entry))
+    for item, plan, dst_rel, dst, planned, entry in work:
+        keep = [os.path.join(dst, *q.split("/")) for q in sorted(planned | set(plan["pinned"]))]
+        for rel in plan["stale"]:
+            path = os.path.join(dst, *rel.split("/"))
+            if any(_samefile(path, q) for q in keep if q.lower() == path.lower()):
+                continue  # another name for a file that stays (a case-insensitive disk)
+            if os.path.isfile(path) and not os.path.islink(path):
+                shutil.move(path, backup(item, rel))
+                entry["moved"] = sorted(set(entry["moved"]) | {rel})
+                textio.write_json_atomic(ctx.path(PUBLISH_PROGRESS), prog)
+        _write_marker(dst, run_name, planned | set(plan["pinned"]), plan["kept"])
+        retired = _retire(ctx, layout, item, plan, run_name, backup)
+        moved = set(entry["moved"]) | set(f for f in entry["moving"] if f not in planned
+                                          and not os.path.lexists(os.path.join(dst, *f.split("/"))))
+        _tidy(dst, sorted(moved))
         textio.write_json_atomic(ctx.path(PUBLISH_PROGRESS), prog)
         notes = [plan["why"]] if plan["why"] else []
+        if item not in layout["asked"]:
+            notes.append("published with the copies that link to it")
         if plan["empty"]:
             notes.append("the package has no files; nothing copied")
-        if entry["moved"]:
-            notes.append("%s moved to _superseded" % _count(len(entry["moved"]), "old file", "old files"))
+        if item == "architecture" and home:
+            notes.append("its ADRs are in %s" % home)
+        if item in ("architecture", "proposal") and not home and layout["sources"]["adr"]:
+            notes.append("its ADR links are not rewritten: the adr folder cannot be used")
+        if moved:
+            notes.append("%s moved to _superseded" % _count(len(moved), "old file", "old files"))
+        for old_rel, n_moved, n_kept in retired:
+            notes.append("this run's other copy in %s: %s moved to _superseded%s" % (
+                old_rel, _count(n_moved, "file", "files"), ("; %d kept (linked)" % n_kept) if n_kept else ""))
+        if plan["pinned"]:
+            notes.append("%s kept: another published copy of this run links to %s" % (
+                _count(len(plan["pinned"]), "old file", "old files"), "it" if len(plan["pinned"]) == 1 else "them"))
         if entry["clash"]:
             notes.append("%s from kit 2.0.2 or earlier replaced, backed up" % _count(len(entry["clash"]), "file",
                                                                                         "files"))
         if plan["kept"]:
             notes.append("%s from kit 2.0.2 or earlier left in place" % _count(len(plan["kept"]), "file", "files"))
-        out["published"].append("%s -> %s%s" % (src_rel, dst_rel, (" (%s)" % "; ".join(notes)) if notes else ""))
+        lines[item] = ("published", "%s -> %s%s" % (plan["src"], dst_rel,
+                                                    (" (%s)" % "; ".join(notes)) if notes else ""))
+    for item in ALL_ITEMS:
+        if item in lines:
+            out[lines[item][0]].append(lines[item][1])
     return out
 
 

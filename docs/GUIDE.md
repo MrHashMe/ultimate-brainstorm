@@ -922,9 +922,15 @@ half-done stage.
   `adr/` to `docs/adr/` and `11_PROPOSAL/` to `docs/proposal/`, each with its own yes. When one of those folders
   already holds another run's package, or files the kit did not publish (your own ADRs, say), this run's copy goes
   to `docs/<run>/<item>/` instead, so two runs never mix (two ADR sets both numbered 0001, say); the card shows the
-  real target and warns you, naming the other run. Only this run's own earlier copy is updated in place; each file
-  it replaces or no longer has goes to `_superseded/<stamp>/published/<item>/` first. If a target is a link or
-  junction, or `docs/<run>/<item>/` is taken too, that item is not published and the card says why: move that folder
+  real target and warns you, naming the other run. The ADRs are published once, so no two copies drift apart: only
+  the adr copy (`docs/adr/` or `docs/<run>/adr/`) holds them, `architecture` and `proposal` publish them too, the
+  architecture copy leaves out its `adr/` folder, and the ADR links in the architecture README and the proposal
+  (Appendix A, `index.html`) point there. An old ADR file that a copy you did not publish again still links to stays
+  until nothing links to it. Only
+  this run's own earlier copy is updated in place; each file
+  it replaces or no longer has goes to `_superseded/<stamp>/published/<item>/` first. A folder that is (or holds) a
+  link or junction counts as taken. If `docs/` is a link, or `docs/<run>/<item>/` is taken too, that item is not
+  published and the card says why: move that folder
   aside and publish again (`redo <run> 14.2` asks G14 again). In a folder last written by kit 2.0.2 or earlier,
   files the old marker lists that this run's package does not have stay in place (they may be another run's, or
   this run's own old ADRs) and the card warns, also before it replaces such a file with other content (backed up
