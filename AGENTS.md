@@ -66,7 +66,7 @@ home. Real calls happen only in the manual checklist `docs/ACCEPTANCE.md` (with 
 
 ## Releasing
 
-`python tools/release.py --version 2.0.2 --out dist/` builds the archives, `SHA256SUMS` and the rendered bootstrap
+`python tools/release.py --version 2.0.3 --out dist/` builds the archives, `SHA256SUMS` and the rendered bootstrap
 shims for the GitHub repository `MrHashMe/ultimate-brainstorm`. A fork passes `--owner <github-user>`; the owner name is
 then replaced only in the archive copy, never in the repository. Pushing a `vX.Y.Z` tag runs the same build in
 `.github/workflows/release.yml` and publishes the GitHub release.

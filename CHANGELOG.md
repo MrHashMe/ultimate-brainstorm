@@ -1,8 +1,10 @@
-# Changelog 2.0.2
+# Changelog 2.0.3
 
 All notable changes to ultimate-brainstorm are listed here, newest first.
 
-## Unreleased
+## 2.0.3 - 2026-09-26
+
+Bug-fix release for G14 publishing: runs never mix in `docs/` any more, and ADRs are published once.
 
 ### Fixed
 

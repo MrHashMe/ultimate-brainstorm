@@ -58,7 +58,7 @@ if _HERE not in sys.path:
 
 from ublib import filesproto, lints, textio  # noqa: E402
 
-VERSION = "2.0.2"
+VERSION = "2.0.3"
 FAMILIES = ("claude", "gpt")  # v1 judge families (runs without run.json)
 VENDORS = {"claude": "anthropic", "gpt": "openai", "kimi": "moonshot", "glm": "zhipu"}
 NOBODY = ("human", "human-mixed", "ai-mixed", "?", "")  # origins that count as nobody's own
