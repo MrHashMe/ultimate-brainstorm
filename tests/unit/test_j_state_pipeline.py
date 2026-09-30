@@ -18,6 +18,7 @@ import json
 import os
 import subprocess
 import sys
+import threading
 import time
 import unittest
 from unittest import mock
@@ -363,6 +364,45 @@ class LostRecord(Base):
             self.wait_for(lambda: not lock._beat[0].is_alive(), "the beat to stop")
         self.assertFalse(lock.still_ours())
         self.assertEqual(textio.read_json(os.path.join(run, ".ub", "lock.json")), rec)
+
+    def beat_meets_takeover(self, when):
+        """CI run 36714156939: a 2.0.3 takeover landed between the beat's check and its write; the beat wrote over it,
+        then saw its own record, never stopped, and its driver would have saved over the other driver's run.json.
+        Here the beat's first change to lock.json after the claim meets a 2.0.3 takeover: `before` it, `after` it (the
+        record is moved aside), or the record is `gone` (a 2.0.3 driver moved it aside and has not created its own
+        yet). The takeover stands (a record that went away is never recreated) and the beat stops."""
+        armed, taken, real = {}, [], textio._replace_with_retry
+
+        def replace(src, dst, *args):
+            if taken or not armed or threading.current_thread().name != "ub-driver-beat":
+                return real(src, dst, *args)
+            taken.append(None)  # the takeover's own write passes through
+            if when == "gone":
+                os.remove(os.path.join(armed["run"], ".ub", "lock.json"))
+            elif when == "before":
+                taken[0] = self.take_over(armed["run"])
+            real(src, dst, *args)
+            if when == "after":
+                taken[0] = self.take_over(armed["run"])
+        with mock.patch.object(st, "LEGACY_BEAT_S", 0.05), \
+                mock.patch.object(textio, "_replace_with_retry", side_effect=replace):
+            run, lock = self.claimed()
+            armed["run"] = run
+            self.wait_for(lambda: not lock._beat[0].is_alive(), "the beat to stop")
+        self.assertTrue(taken, "the beat never changed lock.json")
+        self.assertFalse(lock.still_ours())
+        info = os.path.join(run, ".ub", "lock.json")
+        self.assertEqual(textio.read_json_or(info), taken[0])
+        self.assertEqual([n for n in os.listdir(os.path.dirname(info)) if n.startswith("lock.json.")], [])
+
+    def test_a_takeover_right_before_the_beat_writes_stands(self):
+        self.beat_meets_takeover("before")
+
+    def test_a_takeover_while_the_beat_writes_stands(self):
+        self.beat_meets_takeover("after")
+
+    def test_a_record_that_went_away_is_not_recreated_by_the_beat(self):
+        self.beat_meets_takeover("gone")
 
     def test_a_driver_that_keeps_its_record_saves(self):
         run, lock = self.claimed()
