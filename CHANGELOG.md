@@ -2,6 +2,18 @@
 
 All notable changes to ultimate-brainstorm are listed here, newest first.
 
+## Unreleased
+
+### Fixed
+
+- During an upgrade alongside kit 2.0.3 drivers, a driver that stalled for more than 120 s could still miss that a
+  2.0.3 driver took its `.ub/lock.json` record over. When the takeover landed while the heartbeat was refreshing the
+  record, the refresh wrote over it. The driver then kept seeing its own record and could save over the other
+  driver's work. The heartbeat now moves the record aside and writes a new one only when the old one was its own. A
+  2.0.3 record is put back, and the driver stops without saving (BLOCKED "another session took over this run; this
+  one stopped without saving"). A 2.0.3 driver that starts in the instant the record is moved aside takes the run, and
+  this driver stops the same way. Seen as an intermittent Windows CI failure.
+
 ## 2.1.0 - 2026-09-30
 
 Reliability, fairness and privacy release. A run stays consistent when several sessions touch it, the rankings rest
