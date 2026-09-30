@@ -399,7 +399,8 @@ is not in the card's own words is now read back, and acts only after your `yes` 
   and Kimi output is read line by line as it arrives (a 256 MB flood cap, no buffering), Claude's one JSON answer is
   capped at 12 MB (`max_stdout_mb` overrides either); past a cap the job ends invalid at once. stderr keeps a 64 KB
   tail. Markers record each process's identity (a time-zone independent start time), so `ub stop` and relaunches
-  never kill a reused process ID.
+  never kill a reused process ID. On macOS and BSD a killed child that its parent has not reaped (a zombie) counts as
+  gone, as on Linux; it used to make `ub stop` wait out its whole grace period.
 - Codex workers: shell, MCP servers (each disabled by name; the ineffective `mcp_servers={}` override is gone),
   connectors, plugins, sub-agents, hooks, memories, notify and web search are switched off where the job does not need
   them, and every JSONL item is checked against an allowlist: anything outside the job's tools, or unknown, is refused
@@ -996,6 +997,9 @@ is not in the card's own words is now read back, and acts only after your `yes` 
   5. The `--yes` blocked-rows exit is also recorded in the plan as 4.
 - On Windows, uninstall keeps the case of the user's CLAUDE.md / AGENTS.md when it removes the routing block (it had
   renamed them to claude.md / agents.md).
+- A backup's `LINKS.txt` lists a Windows symlink's target as a plain path (without the `\\?\` prefix Windows adds).
+- install.sh prints gh's words with `printf`, not `echo`: under dash, `echo` turns a backslash sequence in a quoted
+  certificate identity into a control character.
 - install.sh exits with install.py's exit code (2 usage, 3 no agent, 4 blocked, 5 cancelled) instead of collapsing them
   to 1, as install.ps1 already did.
 

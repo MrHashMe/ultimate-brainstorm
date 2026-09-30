@@ -809,7 +809,22 @@ def pid_alive(pid):
                 return False
         except OSError:
             pass
+    elif not sys.platform.startswith("linux") and _ps_zombie(pid):
+        return False  # macOS, BSD: a killed child its parent has not reaped still answers signal 0
     return True
+
+
+def _ps_zombie(pid):
+    """True when `ps -o stat=` shows pid as a zombie (no /proc on macOS and BSD). Any failure to ask reads as not one."""
+    exe = "/bin/ps" if os.path.isfile("/bin/ps") else which("ps")
+    if not exe:
+        return False
+    try:
+        cp = subprocess.run([exe, "-o", "stat=", "-p", str(pid)], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                            stderr=subprocess.DEVNULL, timeout=10, env=dict(os.environ, LC_ALL="C"))
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return cp.returncode == 0 and cp.stdout.decode("ascii", "replace").strip().startswith("Z")
 
 
 def legacy_driver_live(data, run_dir, now=None, exclude_pid=None):

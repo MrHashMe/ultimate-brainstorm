@@ -2307,7 +2307,10 @@ def backup_paths(ctx, agent, root, rels):
         if rel.endswith("/"):  # an empty folder (unrecorded)
             os.makedirs(os.path.join(base, *rel.split("/")), exist_ok=True)
         elif os.path.islink(src):
-            links.append("%s -> %s\n" % (rel, os.readlink(src)))
+            target = os.readlink(src)
+            if target.startswith("\\\\?\\") and not target.startswith("\\\\?\\UNC\\"):
+                target = target[4:]  # Windows returns the extended-length form; the list is for a person to read
+            links.append("%s -> %s\n" % (rel, target))
         elif os.path.isfile(src):
             t = os.path.join(base, *rel.split("/"))
             os.makedirs(os.path.dirname(t), exist_ok=True)

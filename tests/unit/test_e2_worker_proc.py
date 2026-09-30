@@ -251,5 +251,27 @@ class PsIdentityTests(unittest.TestCase):
             self.assertEqual(proc.process_start_time(1234), float(calendar.timegm(self.INSTANT + (0, 0, 0))))
 
 
+class ZombieTests(unittest.TestCase):
+    """macOS and BSD have no /proc: a killed child its parent has not reaped (a zombie) still answers signal 0, so
+    pid_alive asks ps for its state there, as it reads /proc/<pid>/stat on Linux."""
+
+    def alive(self, stat, returncode=0):
+        def fake_ps(argv, **kw):
+            return subprocess.CompletedProcess(argv, returncode, (stat + "\n").encode("ascii"), b"")
+        with mock.patch.object(proc, "IS_WINDOWS", False), mock.patch.object(proc.sys, "platform", "darwin"), \
+                mock.patch.object(proc.os, "kill"), mock.patch.object(proc, "which", return_value="/usr/bin/ps"), \
+                mock.patch.object(proc.subprocess, "run", side_effect=fake_ps):
+            return proc.pid_alive(1234)
+
+    def test_a_zombie_is_not_alive(self):
+        self.assertFalse(self.alive("Z+"))
+        self.assertFalse(self.alive("Zs"))
+
+    def test_a_running_or_unreadable_process_is_alive(self):
+        self.assertTrue(self.alive("S"))
+        self.assertTrue(self.alive("Ss+"))
+        self.assertTrue(self.alive("", returncode=1))  # ps could not say: alive, so nothing is killed by mistake
+
+
 if __name__ == "__main__":
     unittest.main()

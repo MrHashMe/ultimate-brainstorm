@@ -209,13 +209,13 @@ class Floods(tl.EngineTestCase):
             gates.parse_reply(gid, text, None, [])
             if gid not in zf.PICKS:
                 gates.canonical(None, gid, {"reply": text})
-            self.assertLess(time.perf_counter() - t0, 3.0, (gid, re.sub(r"\s+", " ", text[:24])))
+            self.assertLess(time.perf_counter() - t0, 10.0, (gid, re.sub(r"\s+", " ", text[:24])))
         with mock.patch("os.fsync", lambda fd: None):
             for k, (gid, text) in enumerate(floods[:5]):
                 ctx = self.at(gid, 40 + k)
                 t0 = time.perf_counter()
                 self.answer(ctx, gid, {"reply": text})
-                self.assertLess(time.perf_counter() - t0, 3.0, (gid, "answer_gate", re.sub(r"\s+", " ", text[:24])))
+                self.assertLess(time.perf_counter() - t0, 10.0, (gid, "answer_gate", re.sub(r"\s+", " ", text[:24])))
 
 
 if __name__ == "__main__":

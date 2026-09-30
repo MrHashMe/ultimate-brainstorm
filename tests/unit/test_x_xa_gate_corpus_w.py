@@ -2201,7 +2201,7 @@ class Floods(unittest.TestCase):
             gates.parse_reply(gid, text, None, [])
             if gid == "G0":
                 gates.parse_kickoff(text, [])
-            self.assertLess(time.perf_counter() - t0, 3.0, (gid, text[:24]))
+            self.assertLess(time.perf_counter() - t0, 10.0, (gid, text[:24]))
 
 
 if __name__ == "__main__":

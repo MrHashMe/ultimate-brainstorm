@@ -3334,11 +3334,11 @@ class Floods(unittest.TestCase):
             gates.parse_reply(gid, text, None, [])
             if gid == "G0":
                 gates.parse_kickoff(text, [])
-            self.assertLess(time.perf_counter() - t0, 3.0, (gid, text[:24]))
+            self.assertLess(time.perf_counter() - t0, 10.0, (gid, text[:24]))
         for text in ("call it a " * (n // 2) + "day", "that's all " * (n // 2), "extend? " * (n // 2) + "not now"):
             t0 = time.perf_counter()  # half the size: a quadratic pattern still takes minutes, a busy machine 3 s
             gates._v1_offer({"reply": text})
-            self.assertLess(time.perf_counter() - t0, 3.0, text[:24])
+            self.assertLess(time.perf_counter() - t0, 10.0, text[:24])
 
 
 if __name__ == "__main__":

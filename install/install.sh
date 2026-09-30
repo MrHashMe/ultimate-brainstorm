@@ -84,11 +84,12 @@ ub_provenance() {
   # out of reach, for example behind a proxy that blocks it): the check could not run, not a verdict.
   if printf '%s\n' "$ub_own" | grep -Eiq \
       '^[[:space:]]*(Error:[[:space:]]*)?error creating Sigstore verifier([^[:alnum:]_]|$)'; then
-    echo "gh could not build its Sigstore verifier: is the Sigstore TUF repository (tuf-repo-cdn.sigstore.dev)" \
+    printf '%s %s\n' "gh could not build its Sigstore verifier: is the Sigstore TUF repository (tuf-repo-cdn.sigstore.dev)" \
       "reachable from here? gh: $ub_last"
     return 0
   fi
-  echo "$ub_last"
+  # printf, not echo: dash's echo turns a backslash sequence in gh's words (a quoted identity) into a control character.
+  printf '%s\n' "$ub_last"
   return 1
 }
 
@@ -171,7 +172,8 @@ main() {
   ub_manual="$ub_manual $UB_OWNER/ultimate-brainstorm/.github/workflows/release.yml --source-ref refs/tags/v$UB_VERSION"
   ub_manual="$ub_manual --hostname github.com"
   if ! ub_why=$(ub_provenance "$ub_tmp/$ub_name"); then
-    echo "install.sh: provenance check failed for $ub_name: gh attestation verify did not confirm that it was built" \
+    printf '%s %s %s %s %s\n' \
+      "install.sh: provenance check failed for $ub_name: gh attestation verify did not confirm that it was built" \
       "by $UB_OWNER/ultimate-brainstorm's .github/workflows/release.yml for the tag v$UB_VERSION (gh: $ub_why)." \
       "Do not install this archive. If gh could not reach GitHub or Sigstore, run the command again; if they stay" \
       "out of reach, run the check by hand where gh reaches them ($ub_manual) and install that checked archive's" \
@@ -180,10 +182,10 @@ main() {
   fi
   if [ -n "$ub_why" ]; then
     if [ -n "$ub_req" ]; then
-      echo "install.sh: --require-attestation: the provenance of $ub_name was not checked ($ub_why)." >&2
+      printf '%s\n' "install.sh: --require-attestation: the provenance of $ub_name was not checked ($ub_why)." >&2
       return 1
     fi
-    echo "install.sh: note: provenance not checked ($ub_why); check it by hand: $ub_manual" >&2
+    printf '%s\n' "install.sh: note: provenance not checked ($ub_why); check it by hand: $ub_manual" >&2
   fi
 
   mkdir "$ub_tmp/kit" || return 1

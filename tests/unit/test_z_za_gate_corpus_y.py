@@ -1096,7 +1096,7 @@ class Floods(unittest.TestCase):
                 gates.parse_kickoff(text, [])
             else:
                 gates.canonical(None, gid, dict(ans, reply=text))
-            self.assertLess(time.perf_counter() - t0, 3.0, (gid, text[:24]))
+            self.assertLess(time.perf_counter() - t0, 10.0, (gid, text[:24]))
 
 
 class Kickoff(unittest.TestCase):

@@ -103,11 +103,13 @@ class InstallSh(unittest.TestCase):
             func = extract(f.read(), "ub_provenance() {\n", "\n}\n")
         script = th.write(os.path.join(th.root, "prov.sh"), func + (
             'UB_OWNER=MrHashMe\nUB_VERSION=2.1.0\n'
-            'if why=$(ub_provenance "$1"); then echo "ok[$why]"; else echo "failed[$why]"; fi\n'))
+            'if why=$(ub_provenance "$1"); then printf "ok[%s]\\n" "$why"; else printf "failed[%s]\\n" "$why"; fi\n'))
         gh_bin = os.path.join(th.root, "shbin")
         shims.install_fakes(gh_bin, ("gh",), windows=False)  # a sh script, also for Git Bash on Windows
         env = dict(th.env)
         env["PATH"] = gh_bin + os.pathsep + env["PATH"]
+        if os.name != "nt":  # th.env's PATH has no coreutils (CI keeps Python outside /usr/bin); ub_provenance needs sed, grep
+            env["PATH"] += os.pathsep + os.environ.get("PATH", "")  # after gh_bin, so the fake gh still wins
         archive = th.write(os.path.join(th.root, "ultimate-brainstorm-2.1.0.tar.gz"), "archive\n")
         proc = paths.run([self.sh, script.replace("\\", "/"), archive.replace("\\", "/")], env=env, timeout=120)
         self.assertEqual(proc.returncode, 0, paths.describe(proc))

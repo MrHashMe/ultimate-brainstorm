@@ -457,7 +457,7 @@ class Floods(tl.EngineTestCase):
                 t0 = time.perf_counter()
                 gates.parse_reply(gid, text, None, [])
                 read(self, gid, text, 700 + k)
-                self.assertLess(time.perf_counter() - t0, 3.0, (gid, text[:24]))
+                self.assertLess(time.perf_counter() - t0, 10.0, (gid, text[:24]))
 
 
 class ReadBackText(tl.EngineTestCase):

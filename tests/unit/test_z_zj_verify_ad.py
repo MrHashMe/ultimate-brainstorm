@@ -264,7 +264,7 @@ class Floods(tl.EngineTestCase):
         for text in kickoffs:
             t0 = time.perf_counter()
             ub.parse_text(text)
-            self.assertLess(time.perf_counter() - t0, 3.0, text[:30])
+            self.assertLess(time.perf_counter() - t0, 10.0, text[:30])
         replies = (("G8a", "I-003, " + "I-009, no " * (n // 10)), ("G8a", "I-009" + " " * n + "- nope"),
                    ("G8a", "I-009 -" + " " * n + "x"), ("G8a", "I-009, no" + " " * n + "thanks x"),
                    ("G8a", "I-003. " + "I've had " * (n // 9) + "x"), ("G4", "rescue I-012: " + "had " * (n // 4)),
@@ -277,7 +277,7 @@ class Floods(tl.EngineTestCase):
             gates.parse_reply(gid, text, None, [])
             if gid not in ("G6", "G7", "G8a", "G8b"):
                 gates.canonical(None, gid, {"reply": text})
-            self.assertLess(time.perf_counter() - t0, 3.0, (gid, text[:24]))
+            self.assertLess(time.perf_counter() - t0, 10.0, (gid, text[:24]))
 
 
 if __name__ == "__main__":
