@@ -1,6 +1,6 @@
 {
  "schema": 1,
- "kit_version": "2.0.3",
+ "kit_version": "2.1.0",
  "rules": [
   "Line 1 of every .md/.tpl template is '<!-- ub-template: NAME v1 kind=KIND -->'; the engine removes it when rendering.",
   "Isolated-call prompts (every prompts/*.md except GEN-HEADER) have line 2 'Do not load or invoke any skill; this prompt is the whole task.'",
@@ -263,9 +263,28 @@
    "tools": "none",
    "contract": {
     "type": "json",
-    "schema": "SK:templates/schemas/merges.schema.json"
+    "schema": "SK:templates/schemas/merges.schema.json",
+    "unique": [
+     {
+      "array": "ideas",
+      "key": "key"
+     }
+    ],
+    "nonempty": [
+     {
+      "array": "ideas",
+      "fields": [
+       "key",
+       "title",
+       "pitch",
+       "mechanism",
+       "aliases",
+       "cluster"
+      ]
+     }
+    ]
    },
-   "notes": "the only job allowed to see seeds; the engine converts the output to v1 merges.json"
+   "notes": "the only job allowed to see seeds; the engine converts the output to v1 merges.json; unique and nonempty are what bs.py map refuses"
   },
   "QUICK-CURATE": {
    "kind": "curator",
@@ -273,8 +292,23 @@
    "tools": "none",
    "contract": {
     "type": "json",
-    "schema": "SK:templates/schemas/quick-curated.schema.json"
-   }
+    "schema": "SK:templates/schemas/quick-curated.schema.json",
+    "unique": [
+     {
+      "array": "ideas",
+      "key": "id"
+     }
+    ],
+    "nonempty": [
+     {
+      "array": "ideas",
+      "fields": [
+       "id"
+      ]
+     }
+    ]
+   },
+   "notes": "blind to the model families: no FAMILY_MAP; each idea lists its source aliases and bs.py quick-pick derives origin from pool/_families.json"
   },
   "SCREEN-HEADER": {
    "kind": "partial",
@@ -319,7 +353,7 @@
     "final_line": "^VERDICT: (CROWDED|ADJACENT|NOT LOCATED|NOT CHECKED); DIFFERENTIATOR: .+$"
    },
    "final_example": "VERDICT: ADJACENT; DIFFERENTIATOR: works offline on shared ward tablets",
-   "notes": "software/growth add ## 5. Codebase fit; web off -> NOT CHECKED"
+   "notes": "software/growth in a git repository add ## 5. Codebase fit (CODEBASE_FIT) unless the checker is another vendor with privacy code = no; web off -> NOT CHECKED"
   },
   "EVOLVE": {
    "kind": "generator",
@@ -383,9 +417,9 @@
      "## 4. Wrong premise",
      "## 5. 48-hour test"
     ],
-    "final_line": "^VERDICT: (BACK IF .+|BACK|DON'T BACK); confidence (0(\\.\\d+)?|1(\\.0+)?)$"
+    "final_line": "^VERDICT: (BACK IF .+|BACK|DON'T BACK)(; confidence (0(\\.\\d+)?|1(\\.0+)?))?$"
    },
-   "final_example": "VERDICT: BACK IF two wards agree to a pilot; confidence 0.6"
+   "final_example": "VERDICT: BACK IF two wards agree to a pilot"
   },
   "REBUTTAL": {
    "kind": "reviewer",
@@ -638,7 +672,7 @@
     "status_trailer": true
    },
    "split_root": "10_ARCHITECTURE",
-   "notes": "quick mode; the engine validates decisions.json against arch-decisions after the split"
+   "notes": "quick mode; the files contract validates decisions.json against arch-decisions (validate.REGISTER_SCHEMAS) before anything is written"
   },
   "STACK-VERIFY": {
    "kind": "researcher",
@@ -1647,6 +1681,16 @@
     "registry"
    ]
   },
+  "CODEBASE_FIT": {
+   "standard": false,
+   "desc": "CHECK section 5 (the '## 5. Codebase fit' heading and its questions, cite file:line) for software and growth checkers whose prompts may carry code, in a project folder that is a git repository; empty (the line is removed) for other variants, for a folder without git and for another vendor's checker when privacy code = no",
+   "used_in": [
+    "CHECK"
+   ],
+   "source": [
+    "registry"
+   ]
+  },
   "COMPONENT_NAME": {
    "standard": true,
    "desc": "the exact installed name of the component the template names (FRAME-GRILL-DOCS: the domain-modeling skill; HANDOFF: the downstream tool, or 'none')",
@@ -1833,16 +1877,6 @@
     "registry"
    ]
   },
-  "DUPCHECK_PAIRS": {
-   "standard": false,
-   "desc": "bs.py dupcheck candidate pairs for the second curator pass (deep), or 'none'",
-   "used_in": [
-    "CURATOR"
-   ],
-   "source": [
-    "registry"
-   ]
-  },
   "EXTERNAL_TABLE": {
    "standard": false,
    "desc": "table | id | external system | description | relationship |",
@@ -1855,7 +1889,7 @@
   },
   "FACTS": {
    "standard": true,
-   "desc": "02_CONTEXT.md sections A and A2 (A2 only in software/growth; for other vendors with privacy.code=false: paths kept, contents and fenced code dropped, A2 keeps only 'proposed' terms). Empty before grounding",
+   "desc": "02_CONTEXT.md sections A and A2 (A2 only in software/growth). For other vendors with privacy.code=false: paths kept, contents and fenced code dropped, and A2 keeps only the terms with the proposed source mark ([proposed], (proposed), source: proposed, a '| proposed |' cell) that name no CONTEXT.md; any other list item, numbered item, table row, bold-led line, heading (with its body) or line naming CONTEXT.md is dropped. Empty before grounding",
    "used_in": [
     "EVOLVE-CONTRAST",
     "FRAME-DRAFT",
@@ -1881,8 +1915,7 @@
    "standard": false,
    "desc": "pool/_families.json rendered as 'prefix = family' lines",
    "used_in": [
-    "CURATOR",
-    "QUICK-CURATE"
+    "CURATOR"
    ],
    "source": [
     "registry"
@@ -2019,7 +2052,7 @@
   },
   "GLOSSARY": {
    "standard": false,
-   "desc": "FRAME Domain language plus terms, or 'none'",
+   "desc": "FRAME Domain language, then the A2 terms under ### Domain terms (today's system), or a no-terms line",
    "used_in": [
     "PROPOSAL-APPENDICES"
    ],
@@ -2300,7 +2333,7 @@
   },
   "MERMAID_CDN": {
    "standard": false,
-   "desc": "render.py constant MERMAID_CDN [U-26]",
+   "desc": "render.py constant MERMAID_CDN: the pinned single-file Mermaid build, loaded with SRI (MERMAID_SRI is in the template) [U-26]",
    "used_in": [
     "INDEX-HTML"
    ],
@@ -2773,6 +2806,22 @@
    "desc": "the top 5 review/redteam.json items by impact x likelihood x cheapness",
    "used_in": [
     "PROPOSAL-FIX"
+   ],
+   "source": [
+    "registry"
+   ]
+  },
+  "REPO_SCOPE": {
+   "standard": false,
+   "desc": "only for a job that reads the repository (cwd repo), else empty: the repository is readable, the run root (default brainstorm/) is not part of the codebase and is never opened, code is cited as path:line and never pasted",
+   "used_in": [
+    "ARCH-CANDIDATE",
+    "ARCH-FIX",
+    "ARCH-PACKAGE-CROSSCUT",
+    "ARCH-PACKAGE-LITE",
+    "ARCH-PACKAGE-STRUCTURE",
+    "CHECK",
+    "P-GROUND"
    ],
    "source": [
     "registry"
@@ -3669,7 +3718,6 @@
   ],
   "INDEX-HTML": [
    "TITLE",
-   "CSS",
    "TOC",
    "PITCH",
    "BADGE",

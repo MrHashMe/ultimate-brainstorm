@@ -1,6 +1,8 @@
 # Weekly drift check (KIT_SPEC 11.8): fetch vercel-labs/skills src/agents.ts and compare the skill folders it lists for
-# claude-code, codex, kimi-code-cli and zcode with an explicit expected map (EXPECTED). On a mismatch (or when agents.ts can no longer
-# be parsed) it opens an issue. It never edits the repository.
+# claude-code, codex, kimi-code-cli and zcode with the explicit expected map in tools/validate_kit.py (EXPECTED_UPSTREAM;
+# the same tested code as tests/static). On a mismatch (or when agents.ts can no longer be parsed) it opens ONE issue,
+# titled without a date, and later comments on that open issue only when the report changed. A failed download fails
+# the run (a red run notifies the maintainer) and opens nothing. It never edits the repository.
 name: drift
 
 on:
@@ -8,76 +10,59 @@ on:
     - cron: "17 6 * * 1"
   workflow_dispatch:
 
-permissions:
-  contents: read
-  issues: write
+permissions: {}
 
 jobs:
   drift:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      issues: write
     steps:
       - name: Check out
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: "3.12"
 
-      - name: Compare agents.ts with targets.json
+      - name: Download agents.ts
+        run: >-
+          curl -fsSL --retry 3 --retry-all-errors -o agents.ts
+          https://raw.githubusercontent.com/vercel-labs/skills/main/src/agents.ts
+
+      - name: Compare agents.ts with the expected folders
         id: compare
-        shell: python
         run: |
-          import json, os, re, urllib.request
-          URL = "https://raw.githubusercontent.com/vercel-labs/skills/main/src/agents.ts"
-          # The folders vercel-labs/skills (`npx skills add -a <agent>`) is expected to use, per agent key. This is an
-          # explicit map, not the installer's copy targets: the installer deliberately writes ~/.agents/skills for
-          # Codex (never the -g target ~/.codex/skills) and <project>/.agents/skills for Kimi (10.3). A difference
-          # here means upstream moved a folder; review targets.json and install.py by hand.
-          EXPECTED = {
-              "claude-code": ["~/.claude/skills", ".claude/skills"],
-              "codex": ["~/.codex/skills", ".agents/skills"],
-              "kimi-code-cli": ["~/.agents/skills", ".agents/skills"],
-              "zcode": ["~/.zcode/skills", ".zcode/skills"],
-          }
-          problems = []
-          try:
-              src = urllib.request.urlopen(URL, timeout=30).read().decode("utf-8", "replace")
-          except Exception as e:  # noqa: BLE001
-              src = ""
-              problems.append("could not fetch %s: %s" % (URL, e))
+          set +e
+          python tools/validate_kit.py --drift-agents-ts agents.ts --report drift-report.md
+          rc=$?
+          set -e
+          case "$rc" in
+            0) echo "drift=no" >> "$GITHUB_OUTPUT" ;;
+            1) echo "drift=yes" >> "$GITHUB_OUTPUT" ;;
+            *) echo "::error::validate_kit.py exited $rc"; exit "$rc" ;;
+          esac
 
-          def norm(p):
-              p = str(p).replace("\\", "/")
-              p = p.replace("homedir()", "~").replace("${home}", "~").replace("${codexHome}", "~/.codex")
-              p = re.sub(r"^\./", "", p)
-              return p.rstrip("/")
-
-          for key, want in EXPECTED.items():
-              m = re.search(r"['\"]?%s['\"]?\s*:\s*\{(.*?)\n\s*\}" % re.escape(key), src, re.S)
-              if not m:
-                  problems.append("%s: entry not found in agents.ts" % key)
-                  continue
-              found = [norm(p) for p in re.findall(r"['\"`]([^'\"`]*skills[^'\"`]*)['\"`]", m.group(1))]
-              if not found:
-                  problems.append("%s: no skills path in agents.ts entry" % key)
-                  continue
-              for p in found:
-                  if not any(p == w or p.endswith(w.split("~/", 1)[-1]) for w in want):
-                      problems.append("%s: agents.ts path %r is not in the expected %r" % (key, p, want))
-          report = "\n".join("- " + p for p in problems)
-          print(report or "no drift")
-          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as out:
-              out.write("drift=%s\n" % ("yes" if problems else "no"))
-          with open("drift-report.md", "w", encoding="utf-8") as f:
-              f.write("The weekly drift check found differences between vercel-labs/skills `src/agents.ts` and "
-                      "`install/targets.json`. Review them by hand; this workflow never edits the repository.\n\n"
-                      + report + "\n")
-
-      - name: Open an issue
+      - name: Open the drift issue, or update the open one
         if: steps.compare.outputs.drift == 'yes'
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
         run: |
-          gh issue create --title "targets.json drift vs vercel-labs/skills agents.ts ($(date -u +%Y-%m-%d))" \
-            --body-file drift-report.md
+          title="targets.json drift vs vercel-labs/skills agents.ts"
+          marker=$(grep -o 'drift-sha: [0-9a-f]*' drift-report.md)
+          number=$(gh issue list --state open --search "\"$title\" in:title" --json number,title \
+            --jq "map(select(.title == \"$title\")) | .[0].number // empty")
+          if [ -z "$number" ]; then
+            gh issue create --title "$title" --body-file drift-report.md
+          elif gh issue view "$number" --json body,comments --jq '[.body] + [.comments[].body] | join("\n")' \
+              | grep -qF "$marker"; then
+            echo "Issue #$number already holds this report."
+          else
+            gh issue comment "$number" --body-file drift-report.md
+          fi

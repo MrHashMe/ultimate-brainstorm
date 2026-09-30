@@ -8,7 +8,14 @@ Frozen API (4.8):
     sha256_text(text) -> str ; sha256_file(path) -> str ; is_ascii(text) -> bool
 
 Extras (not frozen, safe to use): decode_bytes, normalize_newlines, read_json, read_bytes, read_json_or,
-append_line, now_iso, to_posix, real_path.
+append_line, now_iso, to_posix, glob_in, real_path, loads_strict, read_json_strict, PathTooLong, explain_long_path,
+long_paths_enabled, temp_prefix, fsync_dir, try_lock_fd, unlock_fd, and the Markdown line scanners fence_open,
+fence_closes, fence_spans, fence_mask, fenced_blocks, parse_heading, headings.
+
+Parsers over model output are linear (KIT_SPEC 4.5). There is one definition of a fenced code block and one of an
+ATX heading; validate, lints and render all use them. A fence opens on a line that is 3+ backticks or tildes after
+optional spaces/tabs (a backtick fence's info string holds no backtick) and closes on a line of only the same
+character, at least as many; an unclosed fence runs to the end of the text. Headings inside fences are not headings.
 
 Reads and concurrent replaces (Windows). Workers and drivers replace markers, heartbeats, job and result files with
 os.replace while other processes read them. On Windows an open() that lands inside another process's replace (or
@@ -20,7 +27,9 @@ unreadable; atomic writes retry their replace. FileNotFoundError is never retrie
 
 import datetime
 import errno
+import glob
 import hashlib
+import heapq
 import json
 import os
 import re
@@ -31,7 +40,10 @@ __all__ = [
     "read_text", "write_text_atomic", "write_json_atomic", "extract_json",
     "sha256_text", "sha256_file", "is_ascii",
     "decode_bytes", "normalize_newlines", "read_json", "read_bytes", "read_json_or", "append_line", "now_iso",
-    "to_posix", "real_path",
+    "to_posix", "glob_in", "real_path", "loads_strict", "read_json_strict", "PathTooLong", "explain_long_path",
+    "long_paths_enabled", "temp_prefix",
+    "fsync_dir", "try_lock_fd", "unlock_fd",
+    "fence_open", "fence_closes", "fence_spans", "fence_mask", "fenced_blocks", "parse_heading", "headings",
 ]
 
 _UTF8_BOM = b"\xef\xbb\xbf"
@@ -152,12 +164,130 @@ def _replace_with_retry(src, dst, attempts=10):
             delay = min(delay * 2, 0.5)
 
 
+WINDOWS_MAX_PATH = 259  # the longest file path Win32 opens without long-path support (MAX_PATH 260 with the NUL)
+TEMP_PREFIX_CHARS = 16  # temp names are "." + the first 16 characters of the target name + "." + 8 random + ".tmp"
+
+
+class PathTooLong(OSError):
+    """A write failed on Windows because a path is longer than MAX_PATH allows (no long-path support)."""
+
+
+def temp_prefix(path):
+    """The mkstemp prefix for a temp file next to `path`: short, so a temp name is never the longest path in a run
+    folder (the Windows MAX_PATH budget)."""
+    return "." + os.path.basename(path)[:TEMP_PREFIX_CHARS] + "."
+
+
+_WINDOWS = os.name == "nt"
+_LONG_PATH_ERRNOS = (errno.ENOENT, errno.EINVAL, errno.ENAMETOOLONG)
+_LONG_PATH_WINERRORS = (2, 3, 206)  # FILE_NOT_FOUND, PATH_NOT_FOUND, FILENAME_EXCED_RANGE
+_LONG_PATHS = []
+
+
+def long_paths_enabled():
+    """True / False from the Windows registry (LongPathsEnabled; read once); None when it cannot be read; True off
+    Windows."""
+    if not _WINDOWS:
+        return True
+    if not _LONG_PATHS:
+        try:
+            import winreg
+            with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r"SYSTEM\CurrentControlSet\Control\FileSystem") as key:
+                _LONG_PATHS.append(bool(winreg.QueryValueEx(key, "LongPathsEnabled")[0]))
+        except (ImportError, OSError, ValueError):
+            _LONG_PATHS.append(None)
+    return _LONG_PATHS[0]
+
+
+def explain_long_path(exc, *paths):
+    """`exc` again, or a PathTooLong with an actionable message when it is a Windows error that a path longer than
+    MAX_PATH causes (Win32 then reports only "file not found", "path not found" or "the filename or extension is too
+    long") and long paths are not known to be enabled. Any other error (access denied, a full disk, ...) stays as it
+    is, on a long path too."""
+    if not _WINDOWS or isinstance(exc, PathTooLong) or not isinstance(exc, OSError):
+        return exc
+    if getattr(exc, "winerror", None) not in _LONG_PATH_WINERRORS and exc.errno not in _LONG_PATH_ERRNOS:
+        return exc
+    if long_paths_enabled() is True:
+        return exc
+    long_ones = [os.path.abspath(p) for p in paths if p and len(os.path.abspath(p)) > WINDOWS_MAX_PATH]
+    if not long_ones:
+        return exc
+    p = max(long_ones, key=len)
+    return PathTooLong(exc.errno, "path is %d characters, more than the %d Windows allows without long-path support; "
+                       "move the run to a shorter folder (ub init --root <short path>) or enable Windows long paths "
+                       "(LongPathsEnabled): %s" % (len(p), WINDOWS_MAX_PATH, to_posix(p)))
+
+
+_LOCK_BYTE = 0x7FFFFFF0  # a byte far beyond any end of file: the locked file stays readable
+
+
+def try_lock_fd(fd):
+    """Lock an open file without blocking (msvcrt byte lock on Windows, flock on POSIX). True: locked; False: another
+    open file holds it; None: this file system has no file locks. The OS drops the lock when the process dies."""
+    if os.name == "nt":
+        try:
+            import msvcrt
+        except ImportError:
+            return None
+        try:
+            os.lseek(fd, _LOCK_BYTE, 0)
+            msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+            return True
+        except OSError as e:
+            if e.errno in (errno.EACCES, errno.EDEADLK) or getattr(e, "winerror", None) in (5, 33):
+                return False
+            return None
+    try:
+        import fcntl
+    except ImportError:
+        return None
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return True
+    except OSError as e:
+        if e.errno in (errno.EAGAIN, errno.EWOULDBLOCK, errno.EACCES):
+            return False
+        return None
+
+
+def unlock_fd(fd):
+    """Undo try_lock_fd (closing the file also drops the lock)."""
+    try:
+        if os.name == "nt":
+            import msvcrt
+            os.lseek(fd, _LOCK_BYTE, 0)
+            msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(fd, fcntl.LOCK_UN)
+    except (ImportError, OSError):
+        pass
+
+
+def fsync_dir(path):
+    """Make renames in folder `path` durable (POSIX). Windows cannot open a folder for fsync: a no-op there."""
+    if os.name == "nt":
+        return
+    try:
+        fd = os.open(path, os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(fd)
+    except OSError:
+        pass
+    finally:
+        os.close(fd)
+
+
 def _write_bytes_atomic(path, data):
     path = os.path.abspath(os.fspath(path))
     parent = os.path.dirname(path)
-    os.makedirs(parent, exist_ok=True)
-    fd, tmp = tempfile.mkstemp(prefix="." + os.path.basename(path)[:40] + ".", suffix=".tmp", dir=parent)
+    tmp = None
     try:
+        os.makedirs(parent, exist_ok=True)
+        fd, tmp = tempfile.mkstemp(prefix=temp_prefix(path), suffix=".tmp", dir=parent)
         with os.fdopen(fd, "wb") as f:
             f.write(data)
             f.flush()
@@ -167,6 +297,11 @@ def _write_bytes_atomic(path, data):
                 pass
         _replace_with_retry(tmp, path)
         tmp = None
+    except OSError as e:
+        err = explain_long_path(e, path, tmp or os.path.join(parent, temp_prefix(path) + "12345678.tmp"))
+        if err is e:
+            raise
+        raise err from e
     finally:
         if tmp is not None:
             try:
@@ -192,78 +327,289 @@ def write_json_atomic(path, obj):
     write_text_atomic(path, json.dumps(obj, indent=1, ensure_ascii=False) + "\n")
 
 
-_FENCE_RE = re.compile(r"^[ \t]*(`{3,}|~{3,})[ \t]*([A-Za-z0-9_+-]*)[^\n]*\n(.*?)^[ \t]*\1[ \t]*$",
-                       re.MULTILINE | re.DOTALL)
+# ---------------------------------------------------------------- Markdown structure (linear line scanners)
+
+# Candidate lines only (found in C): a fence line starts, after spaces/tabs, with 3 backticks or tildes; a heading line
+# starts with '#'. fence_open / fence_closes / parse_heading then decide, so each rule has one definition.
+_FENCE_CANDIDATE = re.compile(r"^[ \t]*(?:```|~~~)[^\n]*", re.MULTILINE)
+_HEADING_CANDIDATE = re.compile(r"^#[^\n]*", re.MULTILINE)
+_HEADING_OPEN = re.compile(r"(#{1,6})\s+")
+_INFO_WORD = re.compile(r"[A-Za-z0-9_+-]*")
+
+
+def fence_open(line):
+    """(char, length, lang) when `line` opens a fenced code block, else None: optional spaces/tabs, then 3 or more
+    backticks or tildes; a backtick fence's info string holds no backtick (```x``` is inline code). lang is the info
+    string's first word, lowercased ('' when there is none)."""
+    s = line.lstrip(" \t")
+    ch = s[:1]
+    if ch not in ("`", "~"):
+        return None
+    run = len(s) - len(s.lstrip(ch))
+    if run < 3:
+        return None
+    info = s[run:]
+    if ch == "`" and "`" in info:
+        return None
+    return ch, run, _INFO_WORD.match(info.strip()).group(0).lower()
+
+
+def fence_closes(line, fence):
+    """True when `line` closes the fence `fence` (char, length, ...) that fence_open returned: only that character,
+    at least as many, with optional spaces/tabs around (CommonMark)."""
+    t = line.strip(" \t")
+    return len(t) >= fence[1] and not t.strip(fence[0])
+
+
+def fence_spans(text):
+    """[(open_line, close_line, char, length, lang)] for every fenced code block of `text` (LF line endings), in
+    document order. Line numbers index text.split("\\n"). close_line is None for a fence left open: it runs to the end
+    of the text. One pass; the cost is linear in the text."""
+    text = text or ""
+    spans, cur = [], None
+    line_no, last = 0, 0
+    for m in _FENCE_CANDIDATE.finditer(text):
+        line_no += text.count("\n", last, m.start())
+        last = m.start()
+        if cur is None:
+            f = fence_open(m.group(0))
+            if f:
+                cur = (line_no,) + f
+        elif fence_closes(m.group(0), cur[1:3]):
+            spans.append((cur[0], line_no) + cur[1:])
+            cur = None
+    if cur is not None:
+        spans.append((cur[0], None) + cur[1:])
+    return spans
+
+
+def fence_mask(lines):
+    """One bool per line of `lines` (a list): True inside a fenced code block, fence lines included."""
+    mask = [False] * len(lines)
+    for a, b, _c, _n, _lang in fence_spans("\n".join(lines)):
+        end = len(lines) if b is None else b + 1
+        mask[a:end] = [True] * (end - a)
+    return mask
 
 
 def fenced_blocks(text):
-    """List of (lang_lowercase, body) for every fenced code block, in document order."""
-    return [(m.group(2).lower(), m.group(3)) for m in _FENCE_RE.finditer(normalize_newlines(text or ""))]
-
-
-def _scan_json(text):
-    """Every decodable JSON object/array embedded in text, as (start, end, value), scanning left to right."""
-    dec = json.JSONDecoder()
-    found = []
-    i, n = 0, len(text)
-    while i < n:
-        a = text.find("{", i)
-        b = text.find("[", i)
-        cands = [p for p in (a, b) if p >= 0]
-        if not cands:
-            break
-        pos = min(cands)
-        try:
-            value, end = dec.raw_decode(text, pos)
-        except (ValueError, RecursionError):
-            i = pos + 1
-            continue
-        if isinstance(value, (dict, list)):
-            found.append((pos, end, value))
-            i = end
+    """List of (lang_lowercase, body) for every fenced code block, in document order. A closed block's body keeps its
+    lines with a trailing newline; a fence left open runs to the end of the text."""
+    text = normalize_newlines(text or "")
+    lines = text.split("\n")
+    out = []
+    for a, b, _c, _n, lang in fence_spans(text):
+        if b is None:
+            out.append((lang, "\n".join(lines[a + 1:])))
         else:
-            i = pos + 1
-    return found
+            body = lines[a + 1:b]
+            out.append((lang, "\n".join(body) + "\n" if body else ""))
+    return out
+
+
+def parse_heading(line):
+    """(level, title) for an ATX heading line such as '## Title ##', else None. The title is the rest of the line
+    without trailing whitespace, a closing '#' run and the whitespace before it: the same result as the old pattern
+    ^(#{1,6})\\s+(.*?)\\s*#*\\s*$, in linear time (that pattern backtracked cubically on long whitespace runs)."""
+    m = _HEADING_OPEN.match(line)
+    if m is None:
+        return None
+    return len(m.group(1)), line[m.end():].rstrip().rstrip("#").rstrip()
+
+
+def headings(text):
+    """[(line_index, level, title)] for the ATX headings of `text` (LF line endings) outside fenced code blocks, in
+    order. Line indexes index text.split("\\n")."""
+    text = text or ""
+    spans = fence_spans(text)
+    out, k = [], 0
+    line_no, last = 0, 0
+    for m in _HEADING_CANDIDATE.finditer(text):
+        line_no += text.count("\n", last, m.start())
+        last = m.start()
+        while k < len(spans) and spans[k][1] is not None and spans[k][1] < line_no:
+            k += 1
+        if k < len(spans) and spans[k][0] <= line_no:
+            continue  # inside a fence (spans[k] ends at or after this line)
+        h = parse_heading(m.group(0))
+        if h:
+            out.append((line_no,) + h)
+    return out
+
+
+def section(text, heading, level=2):
+    """Body of the first heading of `level` whose title starts with `heading` (case-insensitive, whitespace runs read
+    as one space: the `sections` contract's prefix rule), up to the next heading of the same or a higher level,
+    stripped; '' when there is none. Headings are headings() ones, so a heading line inside a fenced code block never
+    starts or ends a section: the body is the one the contract validated."""
+    text = normalize_newlines(text or "")
+    want = " ".join(str(heading).split()).lower()
+    heads = headings(text)
+    for k, (i, lvl, title) in enumerate(heads):
+        if lvl == level and " ".join(title.split()).lower().startswith(want):
+            end = next((j for j, lv, _t in heads[k + 1:] if lv <= level), None)
+            return "\n".join(text.split("\n")[i + 1:end]).strip()
+    return ""
+
+
+# ---------------------------------------------------------------- JSON from model output
+
+def _reject_constant(name):
+    raise ValueError("%s is not a JSON number" % name)
+
+
+_JSON = json.JSONDecoder(parse_constant=_reject_constant)  # NaN and Infinity are not JSON
+MAX_JSON_DEPTH = 512  # a deeper container is never an answer: the decoder is not tried on it
+MAX_JSON_CANDIDATES = 64  # bracket spans tried (longest first) when salvaging JSON from prose
+_JSON_TOKENS = re.compile(r'[\[\]{}"\\\n]')
+_OPENER_OF = {"]": "[", "}": "{"}
+
+
+def _json_spans(text):
+    """(spans, lead_matched): the maximal bracket pairs of text as [(start, end_exclusive, depth)], from one linear
+    pass, and whether the first non-space character is an opener that closes.
+
+    Inside brackets JSON strings are skipped (a string also ends at a line break, which JSON never allows in a
+    string); quotes outside brackets are prose. A closer that does not match the innermost opener abandons every open
+    bracket, and so does nesting deeper than 8 * MAX_JSON_DEPTH (bounded memory): unmatched brackets never form a
+    span. A pair is maximal when no matched pair encloses it, so JSON after a stray '[' in prose is still found, but a
+    malformed container is one span and never yields a fragment of itself."""
+    spans = []
+    if "]" not in text and "}" not in text:
+        return spans, False
+    lead = len(text) - len(text.lstrip())
+    lead_matched = False
+    stack = []  # [pos, char, provisional maximal spans inside it, depth]
+    in_str, skip = False, -1
+
+    def abandon():
+        for e in stack:
+            if e[2]:
+                spans.extend(e[2])
+        del stack[:]
+
+    for m in _JSON_TOKENS.finditer(text):
+        i, ch = m.start(), m.group()
+        if in_str:
+            if ch == "\n":
+                in_str = False
+            elif i != skip:
+                if ch == "\\":
+                    skip = i + 1
+                elif ch == '"':
+                    in_str = False
+            continue
+        if ch == '"':
+            in_str = bool(stack)
+        elif ch == "[" or ch == "{":
+            if len(stack) >= 8 * MAX_JSON_DEPTH:
+                abandon()
+            stack.append([i, ch, None, 1])
+        elif ch == "]" or ch == "}":
+            if not stack or stack[-1][1] != _OPENER_OF[ch]:
+                abandon()
+                continue
+            e = stack.pop()
+            span = (e[0], i + 1, e[3])
+            if stack:
+                top = stack[-1]
+                if top[3] <= e[3]:
+                    top[3] = e[3] + 1
+                if top[2] is None:
+                    top[2] = [span]
+                else:
+                    top[2].append(span)
+            else:
+                spans.append(span)
+                lead_matched = lead_matched or e[0] == lead
+    abandon()
+    return spans, lead_matched
 
 
 def extract_json(text):
-    """Extract a JSON object or array from model output.
+    """Extract a JSON object or array from model output, in time linear in the text.
 
-    Order: the whole text; fenced blocks (```json first, then other fences, each in document order); then the
-    longest JSON object/array embedded in surrounding prose. Raises ValueError when nothing parses.
+    Order: the whole text; fenced blocks (```json first, then other fences, each in document order); then the longest
+    of the maximal bracket spans that decodes (at most MAX_JSON_CANDIDATES tried, longest first). A closed but
+    malformed container is never mined for a fragment of itself, and a text that starts with an opener that never
+    closes is a malformed document, not prose. A cut-off or mismatched document after other text (a preamble, an
+    unclosed fence) can still yield an inner object, which the contract's schema then refuses: that keeps the salvage
+    of 'Draft: <cut off> Final: <document>'. NaN and Infinity are rejected. Raises ValueError when nothing parses.
     """
     if text is None:
-        raise ValueError("no JSON found: empty output")
+        raise ValueError("no JSON found: the text is empty")
     if isinstance(text, bytes):
         text = decode_bytes(text)
     text = normalize_newlines(text).lstrip("\ufeff")
     stripped = text.strip()
     if not stripped:
-        raise ValueError("no JSON found: empty output")
+        raise ValueError("no JSON found: the text is empty")
+    first_error = None
     try:
-        value = json.loads(stripped)
+        value = _JSON.decode(stripped)
         if isinstance(value, (dict, list)):
             return value
-    except (ValueError, RecursionError):
-        pass
+    except RecursionError:
+        first_error = "nested too deeply"
+    except ValueError as e:
+        first_error = str(e)
     blocks = fenced_blocks(text)
     ordered = [b for lang, b in blocks if lang == "json"] + [b for lang, b in blocks if lang != "json"]
     for body in ordered:
         try:
-            value = json.loads(body.strip())
+            value = _JSON.decode(body.strip())
         except (ValueError, RecursionError):
             continue
         if isinstance(value, (dict, list)):
             return value
-    found = _scan_json(text)
-    if found:
-        best = max(found, key=lambda t: (t[1] - t[0], -t[0]))
-        return best[2]
-    raise ValueError("no JSON object or array found in output")
+    spans, lead_matched = _json_spans(text)
+    if stripped[0] in "{[" and not lead_matched:
+        raise ValueError("the text starts with JSON that is not valid: %s" % first_error)
+    error = None
+    for a, b, depth in heapq.nlargest(MAX_JSON_CANDIDATES, spans, key=lambda s: (s[1] - s[0], -s[0])):
+        if depth > MAX_JSON_DEPTH:
+            continue
+        try:
+            value, _end = _JSON.raw_decode(text[a:b])  # a slice: error positions (and their cost) stay local
+        except RecursionError:
+            continue
+        except ValueError as e:
+            error = error or "the JSON at character %d is not valid: %s" % (a, e)
+            continue
+        if isinstance(value, (dict, list)):
+            return value
+    raise ValueError("no JSON object or array found in the text" + ("; %s" % error if error else ""))
+
+
+def loads_strict(text):
+    """Parse text that must be exactly one JSON object or array: a file the engine reads back, or a FILE-protocol
+    .json block. A BOM, surrounding whitespace and one enclosing code fence are tolerated; nothing else is, and no
+    fragment is ever salvaged. NaN and Infinity are rejected. Raises ValueError."""
+    if isinstance(text, bytes):
+        text = decode_bytes(text)
+    text = normalize_newlines(text or "").lstrip("\ufeff").strip()
+    lines = text.split("\n")
+    if len(lines) >= 2:
+        f = fence_open(lines[0])
+        if f and fence_closes(lines[-1], f):
+            text = "\n".join(lines[1:-1])
+    try:
+        value = _JSON.decode(text)
+    except RecursionError:
+        raise ValueError("JSON nested too deeply")
+    if not isinstance(value, (dict, list)):
+        raise ValueError("expected a JSON object or array")
+    return value
+
+
+def read_json_strict(path):
+    """read_text + loads_strict: for JSON files the engine owns. Raises OSError or ValueError."""
+    return loads_strict(read_text(path))
 
 
 def read_json(path):
-    """Read a JSON file tolerantly (BOM, UTF-16, fences, preamble). Raises OSError or ValueError."""
+    """Read a JSON file tolerantly (BOM, UTF-16, fences, preamble). A file that starts with a malformed document
+    raises instead of yielding a fragment of itself (extract_json). Raises OSError or ValueError."""
     text = read_text(path)
     try:
         return json.loads(text)
@@ -368,6 +714,13 @@ def now_iso():
 def to_posix(path):
     """Absolute path with forward slashes, for JSON, cards and docs (3.1 item 5)."""
     return os.path.abspath(os.fspath(path)).replace("\\", "/")
+
+
+def glob_in(folder, *parts, recursive=False):
+    """glob.glob of the pattern `parts` below `folder`, whose own path is taken literally (glob.escape): a run or
+    project folder named 'client [2026]' matches itself, never the character class [2026]. Every glob over a folder
+    the user named goes through here."""
+    return glob.glob(os.path.join(glob.escape(os.fspath(folder)), *parts), recursive=recursive)
 
 
 _LONG_PREFIX = "\\\\?\\"

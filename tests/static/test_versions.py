@@ -19,7 +19,7 @@ class Versions(unittest.TestCase):
 
     def test_version_file(self):
         self.assertRegex(self.version, r"^\d+\.\d+\.\d+$")
-        self.assertEqual(self.version, "2.0.3")
+        self.assertEqual(self.version, "2.1.0")
 
     def test_manifests(self):
         for key in vk.VERSIONED:

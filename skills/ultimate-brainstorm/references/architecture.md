@@ -38,7 +38,7 @@ and review. The engine runs every step; this file explains what it does and what
 | 12.6 | D | ARCH-JUDGE x J on the sheets + brief + scenarios (JSON, every label x every criterion) |
 | 12.7 | S | `bs.py arch-matrix` |
 | 12.8 | D | ARCH-PREMORTEM on the leader, by a family other than its author |
-| 12.9 | H | G11 (quick: the leader is taken automatically and shown at G13 with `switch`). Author families are revealed only after the choice |
+| 12.9 | H | G11 (quick: auto, but asked in hands-on and guided when the leader is vetoed, self-judged or confounded; with 2 families always, since the one arch judge is of an author family; an automatic leader is shown at G13 with `switch`). Author families are revealed only after the choice |
 | 12.10 | D | ARCH-PACKAGE-STRUCTURE (the chosen candidate's author family) |
 | 12.11 | D | in parallel: ARCH-PACKAGE-CROSSCUT, ARCH-DECISIONS, STACK-VERIFY (web family) |
 | 12.12 | S | render ADRs (`status: proposed`), risks.md, chosen/stack.md; `bs.py lint-arch` |
@@ -47,9 +47,10 @@ and review. The engine runs every step; this file explains what it does and what
 | 12.15 | S | README.md |
 | 12.16 | H | G12 ADRs (hands-on, deep; guided bundles ADR acceptance into G13) |
 
-Quick mode (lite): drivers; 2 candidates (A and C); 1 judge; matrix; automatic leader; ARCH-PACKAGE-LITE (containers,
-data model, decisions.json with 3 ADRs + risks); stack.json from the candidate with every row UNVERIFIED; render;
-`lint-arch --lite`; no review.
+Quick mode (lite): drivers; 2 candidates (A and C); 1 judge; matrix; automatic leader unless it is vetoed,
+self-judged or confounded (then hands-on and guided are asked; 2 families: self-judged, so G11 asks);
+ARCH-PACKAGE-LITE (containers, data model, decisions.json with 3 ADRs + risks); stack.json from the candidate with
+every row UNVERIFIED; render; `lint-arch --lite`; no review.
 
 Build type approach (research, marketing, creative, naming): 12.1, then APPROACH (host family, approach.md with the
 variant's headings), one ARCH-REVIEW lens by another family, lint A2 only, no G11.
@@ -84,12 +85,20 @@ approaches` (at least 2), `## 12 Innovation tokens`; then one fenced json block 
   margin; 3 = meets them with caveats; 1 = misses an H-importance scenario.
 - Criteria: the quality goals (weights summing to 70) plus fixed criteria time_to_mvp 10, team_fit 5, run_cost 5,
   reversibility 5, operational_simplicity 5.
-- A judge never scores a candidate written by its own family (when no other judge exists, all judges count and the
-  matrix says so). Score = weighted mean of the eligible judges.
-- Veto: 2 or more eligible judges -> EXCLUDED; exactly 1 -> FLAGGED; the only eligible judge -> FLAGGED with "single-
-  judge veto: the human decides".
-- Rank ranges with each weight at +/-25%. Disagreement = eligible scores spanning 2 or more points. Leader = the top
-  candidate that is not excluded; `clear` when its range is [1,1] and no other range reaches 1, else `close-call`.
+- A judge's score of a candidate written by its own family does not count (when no other judge exists, all judges
+  count and the matrix says so).
+- Score = weighted mean of the eligible judges' scores after per-judge centering (each judge's mean per criterion moved
+  to the panel mean), W over the criteria every ranked candidate has an eligible judge's score for; when candidates
+  share no eligible judge and each has one own-family judge, every judge's centered score counts. Veto: any judge's veto counts (an author family vetoing its own candidate included): 2 or more
+  -> EXCLUDED; exactly 1 -> FLAGGED (the only eligible judge: "single-judge veto: the human decides").
+- Rank ranges with each weight at +/-25%. Disagreement = the counted judges' scores spanning 2 or more points. Leader =
+  the top candidate that is not excluded; `self-judged` when only its author family's judge scored it or the
+  runner-up (a failed judge, or 2-family quick mode, whose one judge is the host and wrote a candidate; not in a
+  one-family run), `confounded` when it and the runner-up share no eligible judge, `clear` when its range is [1,1], no
+  other range reaches 1, it is not tied, no judge that favours its own family's candidate tilts it against the
+  runner-up, no flagged pair self-preference (two families judging each other's candidates) can reorder it with the
+  other family's candidates and no criterion was left out of W, else `close-call`. The G11 default passes over a leader that a judge vetoed and asks about a self-judged or
+  confounded one.
 - The steal list (elements of other candidates that would improve the leader) is offered at G11: "B + steal A: ...".
 
 ## Document formats (the lint checks them)
@@ -111,8 +120,9 @@ approaches` (at least 2), `## 12 Innovation tokens`; then one fenced json block 
 | risks.md | `## Risks` (id, risk, likelihood, impact, mitigation, owner, early warning, source); `## Technical debt` (id, debt, why accepted, payoff trigger) |
 
 Lint rules (lint-arch): A1 required files; A2 no placeholders (TODO, TBD, XXX, lorem, `{{`, angle-bracket
-placeholders) outside code fences; A3 ADR structure and cited risks exist; A4 every stack row has a version (empty or
-`latest` fails; UNVERIFIED or TO-VERIFY warns); A5 mermaid (diagram type first, brackets and quotes balanced on every
+placeholders; a type argument such as `list<string>` is none) outside code; A3 ADR structure and cited risks exist; A4
+every stack row has a version (empty, `n/a` or `latest ...` fails and renders from stack.json as UNVERIFIED;
+UNVERIFIED or TO-VERIFY warns); A5 mermaid (diagram type first, brackets and quotes balanced on every
 line, no tabs, a flowchart after every C4 block); A6 traceability (QG ids, EXT ids, C-ids, a failure/recovery flow);
 A7 deployment, security and cost at least 120 words each or deferred, cost-model has Assumptions and Sensitivity; A8
 unique R-ids and both risk headings; A9 the README decision index matches adr/.

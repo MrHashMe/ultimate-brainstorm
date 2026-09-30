@@ -13,8 +13,9 @@ Per host:
   inherits the whole conversation). Independent jobs may run at the same time.
 - Codex: "Spawn one new agent per job, with no conversation context. Each reads its prompt file, writes its output
   file and replies with one line."
-- Kimi Code: AgentSwarm with the prompt_template shown in the Hosts table of SKILL.md and items = the prompt files; or
-  one Agent per job.
+- Kimi Code: AgentSwarm with items = the prompt files and prompt_template "Read ITEM and follow it exactly.", where
+  ITEM is AgentSwarm's item variable (the word item inside double curly braces); or one Agent per job with the task
+  text above.
 - ZCode and others: your sub-agent tool, one fresh sub-agent per job. If you have none, run each job yourself, one by
   one, reading only its prompt file; tell the user these results are PROVISIONAL.
 

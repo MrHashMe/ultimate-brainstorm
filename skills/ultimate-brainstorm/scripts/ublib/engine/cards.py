@@ -5,6 +5,7 @@ Every card carries the same keys; unused ones are null. The engine prints the ca
 """
 
 import os
+import re
 import sys
 
 from .. import textio
@@ -12,6 +13,18 @@ from . import ENGINE_VERSION, STAGE_NAMES, UB_PY
 from . import state as st
 
 CARD_TYPES = ("AUTO", "HUMAN", "HOST", "HOST_BATCH", "DONE", "BLOCKED")
+
+# What bash and PowerShell (the shells hosts run card commands in, 6.13) change inside a double-quoted argument: a
+# double quote (PowerShell also ends the string at U+201C, U+201D and U+201E), a backtick, a line break, and a $ that
+# can start a name or an expression (a $ before / or at the end stays: //srv/c$/)
+_CHANGED_IN_QUOTES = re.compile('["`\r\n\u201c\u201d\u201e]|\\$(?!/|$)')
+
+
+def unquotable(path):
+    """The first character of `path`, written as the cards write it (forward slashes, in double quotes), that bash or
+    PowerShell would change, or None. A run folder or kit folder holding one breaks every card command (4.11)."""
+    m = _CHANGED_IN_QUOTES.search(textio.to_posix(path))
+    return m.group(0)[0] if m else None
 
 
 def default_runner():
@@ -37,9 +50,20 @@ def runner_of(state):
     return (state or {}).get("runner") or default_runner()
 
 
-def next_cmd(state, run_dir, wait_s=None):
+def next_cmd(state, run_dir, wait_s=None, lease=None):
     w = wait_s if wait_s is not None else int(((state or {}).get("exec") or {}).get("wait_s", 540))
-    return '%s next "%s" --wait-s %d --json' % (runner_of(state), textio.to_posix(run_dir), w)
+    return '%s next "%s" --wait-s %d%s --json' % (runner_of(state), textio.to_posix(run_dir), w,
+                                                  (" --lease %s" % lease) if lease else "")
+
+
+def with_lease(cmd, lease):
+    """cmd with `--lease <token>` (before its trailing --json): the command of the session that holds the current
+    step's lease (6.3). Unchanged without a lease or when it has one."""
+    if not lease or not cmd or " --lease " in cmd:
+        return cmd
+    if cmd.endswith(" --json"):
+        return "%s --lease %s --json" % (cmd[:-len(" --json")], lease)
+    return "%s --lease %s" % (cmd, lease)
 
 
 def base(ctx, ctype, step=None):
@@ -116,17 +140,19 @@ def host(ctx, step, task, say, progress=None):
     return c
 
 
-def host_batch(ctx, step, jobs, say, progress=None):
+def host_batch(ctx, step, jobs, say, progress=None, lease=None):
     c = base(ctx, "HOST_BATCH", step)
     c["jobs"] = jobs
     c["say"] = say
     c["progress"] = progress
+    if lease:
+        c["then"] = next_cmd(ctx.state, ctx.run_dir, lease=lease)  # the lease holder's poll reads the outputs
     return c
 
 
-def done(ctx, show, links, progress=None):
+def done(ctx, show, links, progress=None, say="Done."):
     c = base(ctx, "DONE", None)
-    c["say"] = "Done."
+    c["say"] = say
     c["show"] = show
     c["links"] = links
     c["progress"] = progress

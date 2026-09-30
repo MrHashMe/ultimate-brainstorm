@@ -31,7 +31,11 @@ def require_installer():
 @contextlib.contextmanager
 def installer_home(tools=("claude", "codex", "kimi", "npx", "node"), versions=None, extra_env=None, kimi_login=True,
                    zcode=False, scenario=None):
+    """A TmpHome for install.py. UB_COMPONENTS_DIR points at an empty th.root/components folder, so archive components
+    (components.json "archive") are never downloaded: their rows are manual unless a test puts the archive there."""
     with TmpHome(tools=tools, versions=versions, extra_env=extra_env, scenario=scenario) as th:
+        if "UB_COMPONENTS_DIR" not in (extra_env or {}):
+            th.env["UB_COMPONENTS_DIR"] = th.mkdir("components")
         if kimi_login and "kimi" in tools:
             th.kimi_login()
         if zcode:

@@ -56,8 +56,10 @@ pipeline uses (Compound Engineering, and mattpocock `grilling` + `domain-modelin
 `--with-clis claude,codex,kimi --login` to also install the agent command-line tools and sign in, for example
 `... | sh -s -- install --with-clis codex --login`.
 
-Prefer to read a script before running it? Open the URL in a browser, or use `curl -fsSL <url> | less` /
-`irm <url> | more`. To pin a version, replace `latest/download` with `download/v2.0.3`.
+Prefer to read a script before running it? Download it once, check its build provenance, read it, then run that
+same file (the commands are in [docs/INSTALL.md](docs/INSTALL.md#21-one-line-from-github-any-machine)). With the GitHub
+CLI signed in, the scripts and `update` verify the release archive with `gh attestation verify` (the attestation must
+come from the release workflow for that version's tag) before they run anything from it. To pin a version, replace `latest/download` with `download/v2.1.0`.
 
 Check everything at any time with `python ~/.ultimate-brainstorm/kit/install/install.py doctor` (Windows:
 `py -3 "$HOME\.ultimate-brainstorm\kit\install\install.py" doctor`).
@@ -82,9 +84,9 @@ Installed from a git clone? `git pull` in the clone, then `python install/instal
 
 | Agent | Commands |
 |---|---|
-| Claude Code (terminal) | `claude plugin marketplace add MrHashMe/ultimate-brainstorm@v2.0.3` then `claude plugin install ultimate-brainstorm@ultimate-brainstorm --scope user` |
-| Codex (terminal) | `codex plugin marketplace add MrHashMe/ultimate-brainstorm@v2.0.3` then `codex plugin add ultimate-brainstorm@ultimate-brainstorm`, then restart Codex |
-| Kimi Code (inside the app) | `/plugins install https://github.com/MrHashMe/ultimate-brainstorm/releases/tag/v2.0.3` then `/reload` |
+| Claude Code (terminal) | `claude plugin marketplace add MrHashMe/ultimate-brainstorm@v2.1.0` then `claude plugin install ultimate-brainstorm@ultimate-brainstorm --scope user` |
+| Codex (terminal) | `codex plugin marketplace add MrHashMe/ultimate-brainstorm@v2.1.0` then `codex plugin add ultimate-brainstorm@ultimate-brainstorm`, then restart Codex |
+| Kimi Code (inside the app) | `/plugins install https://github.com/MrHashMe/ultimate-brainstorm/releases/tag/v2.1.0` then `/reload` |
 | ZCode | Settings > Plugins > add a marketplace (this route is not yet confirmed; the installer's copy route is) |
 
 With this route you add the helper skills yourself; the commands are in [docs/INSTALL.md](docs/INSTALL.md).
@@ -121,25 +123,45 @@ Open your agent in the project folder and type one line:
 In PowerShell use the `.cmd` launchers: the `.ps1` twins run only when your execution policy allows local scripts
 (`Get-ExecutionPolicy` is RemoteSigned or Unrestricted); Windows PowerShell's default policy blocks them.
 
+Inside an agent, the skill writes what you typed to `brainstorm/.kickoff.txt` and starts the run from that file, so
+quotes, `$` or backticks in your topic reach the pipeline exactly as typed. In a terminal, `ub run "<topic>"` takes
+the words after `run` as the topic; for text with quotes or `$`, put it in a file and use
+`ub run --text-file topic.txt`.
+
 Useful words to put before your topic:
 
-- `quick <topic>` (about 30-50 minutes) or `deep <topic>` (most of a day); the default is `standard` (3-5 hours,
-  mostly unattended)
+- `quick <topic>` (about 16 model calls and 30-80 minutes of model work) or `deep <topic>` (about 73-193 calls and
+  2-5 hours of model work, plus longer rounds with you); the default is `standard` (about 55-73 calls and 1.5-3.5
+  hours of model work, mostly unattended). These are `ub plan` estimates for three families; the first card shows the
+  estimate for your setup, and your own answers add their time on top
 - `proposal <my idea in one sentence>`: you already have the idea; it gets checked, red-teamed, designed and written up
 - `software <feature>` (run it inside the repo), `product`, `growth`, `research`, `marketing`, `creative`, `naming`
 - `full-auto <topic>`: no questions after a one-time privacy confirmation (the first full-auto run asks once and
-  remembers the answer for later full-auto runs; change it with `ub config set privacy_defaults ...`, see
-  [docs/PRIVACY.md](docs/PRIVACY.md)); the result is a draft only. Or `hands-on <topic>` (you confirm every step)
+  remembers the answer for later full-auto runs, and asks again when a family from a new vendor is enabled; change it
+  with `ub config set privacy_defaults ...`, see [docs/PRIVACY.md](docs/PRIVACY.md)); the result is a draft only. Or
+  `hands-on <topic>` (you confirm every step)
 - `private <topic>`: nothing leaves your main agent's vendor, and no web search
 - `continue`, `status`, `stop`, `doctor`, `probe passed <note>`, `switch architecture B`
 
 You can close the agent at any time. Type `continue` later, in the same agent or a different one, and it picks up
-where it stopped.
+where it stopped; finished model calls are never repeated.
+
+- **Stop.** `stop` pauses the run: running model calls are stopped and nothing new starts. The run is not finished:
+  `continue` (or `ub run --continue` in a terminal) resumes it.
+- **One session at a time.** If two agents or terminals work on the same run, one drives it and the other one's card
+  says "another session is driving this run" and retries by itself. A crashed session never blocks the run.
+- **Budget.** Each run has a cap on backend requests (quick 60, standard 180, deep 600, proposal 90). Before a model
+  call could pass it, a guided run asks you for a higher cap; a full-auto run stops with a card that shows the command,
+  `ub budget "<run>" --max-calls N`. After that the run goes on by itself.
 
 ## Model families
 
 The pipeline is fairer when two or more model families take part, because judges then never grade only their own
-vendor's ideas. It works with one family too; results are then marked PROVISIONAL. Add any of these:
+vendor's ideas. It works with one family too; results are then marked PROVISIONAL. The fairness claim rests on the
+literature on model judges that [docs/GUIDE.md](docs/GUIDE.md) cites and on the audits each run makes (position
+consistency, self-preference, own-origin gaps). It has not yet been measured against human labels or a simpler
+baseline: that is the evaluation protocol in [docs/ACCEPTANCE.md](docs/ACCEPTANCE.md), which a release records once
+its runs are labelled. Add any of these:
 
 ```
 GPT (Codex CLI):       npm install -g @openai/codex        then  codex login
@@ -181,6 +203,11 @@ Everything lands in `brainstorm/<date>-<topic>/` inside your project folder:
 | `11_PROPOSAL/ONE-PAGER.md` | A one-page summary |
 | `11_PROPOSAL/index.html` | The whole proposal as one web page you can open, print or share |
 | `12_HANDOFF.md` | What was handed to your planning or spec tool next |
+
+At the handoff question you can also publish the results into your project: on your yes, the architecture package goes
+to `docs/<run>/10_ARCHITECTURE/` (with its ADRs) and the proposal to `docs/<run>/11_PROPOSAL/`. Each run publishes only
+into its own `docs/<run>/` folder, so runs never mix, and the files are exact copies, so every link in them works.
+Kit 2.0.x published into `docs/architecture/`, `docs/adr/` and `docs/proposal/`; those old copies are left as they are.
 
 ## Troubleshooting
 

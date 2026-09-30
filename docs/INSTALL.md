@@ -20,7 +20,7 @@ No Python yet? Windows: `winget install Python.Python.3.12`. macOS: `brew instal
 |---|---|---|
 | Python 3.9+ | everything | standard library only; nothing to `pip install` |
 | At least one agent | running the pipeline | Claude Code 2.1.268+, Codex 0.156+, Kimi Code CLI 2.0+, or ZCode. The terminal mode (`ub run`) needs no agent, only model CLIs |
-| Node.js 22.20+ and npx | the mattpocock skills (`npx skills`) and installing CLIs with npm | older Node: those rows become manual steps |
+| Node.js 22.20+ and npm | installing the agent CLIs with npm (`--with-clis`) | the mattpocock skills no longer need Node: the installer copies them from a pinned commit archive |
 | Git for Windows (Git Bash) | Kimi Code on Windows | Kimi Code runs its shell tool in Git Bash |
 | git | cloning; Kimi project scope | |
 
@@ -42,18 +42,49 @@ Windows PowerShell 5.1+:
 & ([scriptblock]::Create((irm https://github.com/MrHashMe/ultimate-brainstorm/releases/latest/download/install.ps1))) install
 ```
 
-The scripts download the release archive, check its SHA-256, unpack it to a temporary folder, run
-`install/install.py` with your arguments, and clean up. The installer first prints its plan (which agents were found,
-what goes where, and which steps you must do by hand) and asks once before it changes anything. Anything after
+The scripts download the release archive, check its SHA-256 and (when the GitHub CLI is signed in) its build
+provenance, unpack it to a temporary folder, run `install/install.py` with your arguments, and clean up. The
+installer first prints its plan (which agents were found, what goes where, and which steps you must do by hand) and
+asks once before it changes anything. Anything after
 `install` is passed on, for example `... | sh -s -- install --with-clis codex --login`. Leave out `install` (use
 `sh -s -- plan`) to print only the plan.
 
-To pin a version, replace `latest/download` with `download/v2.0.3`. Inspect first:
+To pin a version, replace `latest/download` with `download/v2.1.0`. Inspect first: download the script once, verify
+it, read it, then run that same file.
 
 ```
-curl -fsSL https://github.com/MrHashMe/ultimate-brainstorm/releases/latest/download/install.sh | less
-irm https://github.com/MrHashMe/ultimate-brainstorm/releases/latest/download/install.ps1 | more
+curl -fsSLO https://github.com/MrHashMe/ultimate-brainstorm/releases/download/vX.Y.Z/install.sh
+gh attestation verify install.sh --repo MrHashMe/ultimate-brainstorm --signer-workflow MrHashMe/ultimate-brainstorm/.github/workflows/release.yml --source-ref refs/tags/vX.Y.Z
+less install.sh
+sh install.sh install
 ```
+
+PowerShell:
+
+```
+irm https://github.com/MrHashMe/ultimate-brainstorm/releases/download/vX.Y.Z/install.ps1 -OutFile install.ps1
+gh attestation verify install.ps1 --repo MrHashMe/ultimate-brainstorm --signer-workflow MrHashMe/ultimate-brainstorm/.github/workflows/release.yml --source-ref refs/tags/vX.Y.Z
+notepad install.ps1
+powershell -ExecutionPolicy Bypass -File install.ps1 install
+```
+
+#### Release authenticity
+
+Every asset of a release from 2.1.0 on (archives, `install.sh`, `install.ps1`, `SHA256SUMS`) carries a GitHub build
+provenance attestation made by the release workflow. With the GitHub CLI installed and signed in, the shims and
+`install.py update` check the archive before they run anything from it, and require the attestation to come from the
+release workflow for that version's tag (a run of any other workflow in the repository could attest too):
+`gh attestation verify ultimate-brainstorm-X.Y.Z.tar.gz --repo MrHashMe/ultimate-brainstorm --signer-workflow
+MrHashMe/ultimate-brainstorm/.github/workflows/release.yml --source-ref refs/tags/vX.Y.Z --hostname github.com`.
+They stop when the check fails. Without gh (or with a gh that is not signed in or too old for those flags) they print
+a note and go on; add `--require-attestation` to make that an error. They ask only whether gh's active github.com
+account is signed in (`gh auth status --active --hostname github.com`: a broken second account or enterprise host does
+not skip the check), and a gh that cannot reach Sigstore's trust root (`error creating Sigstore verifier`, for example
+behind a proxy) is a note too. When gh cannot reach GitHub or Sigstore from this machine, run the check by hand where
+it can and install the checked archive's extracted folder with `install.py update --source DIR`. `install.py update`
+also refuses an archive whose `VERSION` is not its tag's version, and a "latest" release older than 2.1.0 (the first
+attested one); to install an older release, name it with `--tag`. Published releases are never replaced: a changed
+build gets a new version.
 
 ### 2.2 From a git clone (or any local copy)
 
@@ -66,7 +97,7 @@ PY install/install.py
 PY install/install.py install --with-clis claude,codex,kimi --login
 ```
 
-Use `git clone --depth 1 --branch v2.0.3 ...` for a fixed version. The same two commands work from any copy of the
+Use `git clone --depth 1 --branch v2.1.0 ...` for a fixed version. The same two commands work from any copy of the
 kit: replace `install/install.py` with `<kit>/install/install.py`.
 
 The first line prints the plan: which agents were found, what goes where, and which steps you must do by hand. The
@@ -128,16 +159,22 @@ install.py version
 | `--source DIR` or `--source github`, `--tag vX.Y.Z` | where the kit comes from (default: the folder that holds `install.py`) |
 | `--components core`, `none`, or `core,+pm-skills,...` | helper skills to add (section 5) |
 | `--with-clis claude,codex,kimi` | also install these CLIs with `npm install -g` (after confirmation) |
-| `--login` | run `codex login` and `kimi login` in the foreground (you finish them), and print how to sign in to Claude |
+| `--login` | run `codex login` and `kimi login` in the foreground (you finish them; with `--codex-home` / `--kimi-home` they sign in to that home), and print how to sign in to Claude |
 | `--migrate-v1` | back up and replace an old v1 copy of the skill (see 2.6) |
-| `--force` | back up and replace a folder the installer does not own |
+| `--force` | back up and replace a folder the installer does not own (the whole folder, `.git` included) |
 | `--routing-block` | add the brainstorming routing block (section 7) to your agents' instruction files |
 | `--claude-config-dir DIR`, `--codex-home DIR`, `--kimi-home DIR` | non-default agent homes (the same as `CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `KIMI_CODE_HOME`) |
 | `--no-native` | use the copy route even where a native plugin route exists |
 | `--backup-dir DIR` | where replaced files go (default `~/.ultimate-brainstorm/backups/`) |
+| `--require-attestation` | a downloaded release must pass `gh attestation verify`; without it, a check that cannot run is only a note |
 
 Exit codes: 0 ok (also "nothing to do"), 1 failure, 2 usage error, 3 no agent found, 4 blocked rows with `--yes`,
-5 cancelled.
+5 cancelled. `install.sh` and `install.ps1` pass on the same codes (the scriptblock one-liner sets `$LASTEXITCODE`);
+their own failures (download, hash, provenance) are 1.
+
+With `--with-clis`, the plan is made again once a CLI is installed (its agent now has rows too). With `--yes`, a
+blocked row in that plan stops after the CLI rows (exit 4); interactively, a changed plan is shown and asked about
+again.
 
 ### 2.5 Only for one project
 
@@ -161,9 +198,9 @@ and replaces it. Your v1 run folders keep working: `continue` upgrades them.
 
 | Agent | Where | Commands |
 |---|---|---|
-| Claude Code | terminal | `claude plugin marketplace add MrHashMe/ultimate-brainstorm@v2.0.3` then `claude plugin install ultimate-brainstorm@ultimate-brainstorm --scope user` |
-| Codex | terminal | `codex plugin marketplace add MrHashMe/ultimate-brainstorm@v2.0.3` then `codex plugin add ultimate-brainstorm@ultimate-brainstorm`, then restart Codex |
-| Kimi Code | inside the app | `/plugins install https://github.com/MrHashMe/ultimate-brainstorm/releases/tag/v2.0.3` then `/reload` |
+| Claude Code | terminal | `claude plugin marketplace add MrHashMe/ultimate-brainstorm@v2.1.0` then `claude plugin install ultimate-brainstorm@ultimate-brainstorm --scope user` |
+| Codex | terminal | `codex plugin marketplace add MrHashMe/ultimate-brainstorm@v2.1.0` then `codex plugin add ultimate-brainstorm@ultimate-brainstorm`, then restart Codex |
+| Kimi Code | inside the app | `/plugins install https://github.com/MrHashMe/ultimate-brainstorm/releases/tag/v2.1.0` then `/reload` |
 | ZCode | app | Settings > Plugins > add a marketplace or local directory. Not yet confirmed for this kit; the installer's copy route is |
 
 Then add the helper skills with the commands in section 5, and the terminal launcher is not installed (use the
@@ -192,6 +229,13 @@ npx -y skills@1.7.0 add MrHashMe/ultimate-brainstorm -g -a claude-code -a kimi-c
 The pipeline works without them and uses built-in alternatives. With them, framing and idea generation are better.
 The installer adds the core set by default; `--components none` skips it; `--components core,+pm-skills` adds extras.
 
+Every component source is pinned: mattpocock skills to a commit (`mattpocock/skills#<sha>`), Compound Engineering and
+pm-skills to a release tag whose commit the installer checks when it can read the marketplace clone, spec-kit to a
+commit, bmad and idea-reality to exact versions. claude-council has no release tag and is marked UNPINNED. `doctor`
+warns (`stack.<skill>.drift`) when an installed component skill no longer matches what was installed, and
+(`stack.<skill>.unpinned`) when a grilling or domain-modeling folder the installer did not install (for example one
+kit 2.0.x installed unpinned) is not the pinned content.
+
 ### Core
 
 **Compound Engineering** (pinned tag `compound-engineering-v3.28.2`): `ce-ideate` for the first idea strategy,
@@ -199,30 +243,37 @@ The installer adds the core set by default; `--components none` skips it; `--com
 
 | Agent | Commands the installer runs, or that you run by hand |
 |---|---|
-| Claude Code | `claude plugin marketplace add EveryInc/compound-engineering-plugin@compound-engineering-v3.28.2`, then `claude plugin install compound-engineering@<marketplace name> --scope user`. By hand in a session: `/plugin marketplace add EveryInc/compound-engineering-plugin` then `/plugin install compound-engineering` |
+| Claude Code | `claude plugin marketplace add EveryInc/compound-engineering-plugin@compound-engineering-v3.28.2`, then `claude plugin install compound-engineering@<marketplace name> --scope user`. By hand in a session: `/plugin marketplace add EveryInc/compound-engineering-plugin@compound-engineering-v3.28.2` then `/plugin install compound-engineering` |
 | Codex | `codex plugin marketplace add EveryInc/compound-engineering-plugin@compound-engineering-v3.28.2 --json`, then `codex plugin add compound-engineering@compound-engineering-plugin --json` |
 | Kimi Code (by hand) | `/plugins install https://github.com/EveryInc/compound-engineering-plugin/releases/tag/compound-engineering-v3.28.2` then `/reload` |
 | ZCode (by hand) | Settings > Plugins > add marketplace `EveryInc/compound-engineering-plugin` |
 
-**mattpocock `grilling` + `domain-modeling`** (framing interview; needs Node 22.20+; the installer sets
-`DISABLE_TELEMETRY=1`):
+**mattpocock `grilling` + `domain-modeling`** (framing interview): the installer downloads
+`https://codeload.github.com/mattpocock/skills/tar.gz/c55ee46073ed923f86ce59a5eb3b6d895095d1b7`, checks the content of
+`skills/productivity/grilling` and `skills/engineering/domain-modeling` against the SHA-256 pins in
+install/components.json, and copies the two folders (no npx, no Node). Where they go:
 
-| Agent | Command |
+| Agent | Folder |
 |---|---|
-| Claude Code | `npx -y skills@1.7.0 add mattpocock/skills --skill grilling --skill domain-modeling -g -a claude-code --copy -y` |
-| Codex | run from your home folder, without `-g`: `cd ~; npx -y skills@1.7.0 add mattpocock/skills --skill grilling --skill domain-modeling -a codex -y` (lands in `~/.agents/skills`) |
-| Kimi Code | `npx -y skills@1.7.0 add mattpocock/skills --skill grilling --skill domain-modeling -g -a kimi-code-cli --copy -y` (skipped when the Codex line already ran: Kimi reads `~/.agents/skills` too) |
-| ZCode | `npx -y skills@1.7.0 add mattpocock/skills --skill grilling --skill domain-modeling -g -a zcode --copy -y` |
+| Claude Code | `~/.claude/skills/` (or `$CLAUDE_CONFIG_DIR/skills/`) |
+| Codex | `~/.agents/skills/` |
+| Kimi Code | `~/.agents/skills/` (skipped when the Codex row installs them: Kimi reads that folder too) |
+| ZCode | `~/.zcode/skills/` |
+
+By hand: download that archive and copy the two folders there. A skill folder already present is kept as it is.
+`UB_COMPONENTS_DIR=<folder>` makes the installer copy the archive (named
+`mattpocock-skills-c55ee46073ed923f86ce59a5eb3b6d895095d1b7.tar.gz`) from that folder instead of downloading it,
+also with `UB_INSTALL_OFFLINE=1` (an offline machine).
 
 ### Extras (only when you ask)
 
 | Id | What | How |
 |---|---|---|
-| `pm-skills` | product discovery and experiments | Claude: `claude plugin marketplace add phuryn/pm-skills`, `claude plugin install pm-product-discovery@pm-skills`, `claude plugin install pm-execution@pm-skills`. Codex: the same with `codex plugin marketplace add phuryn/pm-skills --json` and `codex plugin add ...@pm-skills --json` |
-| `speckit` | Spec Kit handoff | `uv tool install specify-cli` |
-| `bmad` | deep-mode facilitation | by hand: `npx bmad-method install` (pick your tool; needs Node 20.12+, uv, Python 3.10+) |
-| `claude-council` | extra council seats | by hand in Claude Code: `/plugin marketplace add hex/claude-marketplace` then `/plugin install claude-council` |
-| `idea-reality` | prior-art counts for developer tools | by hand: `claude mcp add --env GITHUB_TOKEN=<token> --transport stdio idea-reality -- uvx idea-reality-mcp` |
+| `pm-skills` | product discovery and experiments (tag v2.1.0) | Claude: `claude plugin marketplace add phuryn/pm-skills@v2.1.0`, `claude plugin install pm-product-discovery@pm-skills`, `claude plugin install pm-execution@pm-skills`. Codex: the same with `codex plugin marketplace add phuryn/pm-skills@v2.1.0 --json` and `codex plugin add ...@pm-skills --json` |
+| `speckit` | Spec Kit handoff (v1.0.12) | `uv tool install specify-cli --from git+https://github.com/github/spec-kit.git@e77daa9021d20db26b878f7dfa5640fe5a42d04e` |
+| `bmad` | deep-mode facilitation (6.12.0) | by hand: `npx bmad-method@6.12.0 install` (pick your tool; needs Node 20.12+, uv, Python 3.10+) |
+| `claude-council` | extra council seats (UNPINNED) | by hand in Claude Code: `/plugin marketplace add hex/claude-marketplace` then `/plugin install claude-council`. This marketplace has no release tag; review it first |
+| `idea-reality` | prior-art counts for developer tools (0.5.0) | by hand: `claude mcp add --env GITHUB_TOKEN=<token> --transport stdio idea-reality -- uvx idea-reality-mcp@0.5.0` |
 
 ## 6. CLIs and model families
 
@@ -261,16 +312,28 @@ After a one-line install, the kit lives in `~/.ultimate-brainstorm/kit` (or `$UB
 
 ```
 PY ~/.ultimate-brainstorm/kit/install/install.py update          # fetches the latest GitHub release
-PY ~/.ultimate-brainstorm/kit/install/install.py update --tag v2.0.3
+PY ~/.ultimate-brainstorm/kit/install/install.py update --tag v2.1.0
 ```
 
-From a git clone: `git pull`, then `PY install/install.py update`. From any other copy: `PY <kit>/install/install.py
-update --source DIR`.
+From a git clone: `git pull`, then `PY install/install.py update`. `update` run from a kit copy (a clone, an unpacked
+release) stages that copy; `PY <kit>/install/install.py update --source DIR` stages DIR instead.
 
 It re-stages the kit, updates the native plugins, and updates the copies. A copied file you edited yourself is backed
 up to `~/.ultimate-brainstorm/backups/<date>/` before it is replaced. The plan shows the version change
-(`stage kit 2.0.2 -> 2.0.3`) and refuses a downgrade unless you add `--force`. Run from the staged kit without
-`--source`, `update` fetches the latest release (a kit installed by the bootstrap script has no local source).
+(`stage kit 2.0.3 -> 2.1.0`) and refuses a downgrade unless you add `--force`: every row that would take the older
+kit is blocked, so nothing is applied. Run from the staged kit without `--source` (also through a symlink or junction
+to UB_HOME), `update` re-stages the clone you installed from, or, when there is none (a kit installed by the bootstrap
+script), fetches the latest release and checks its build provenance as described in 2.1.
+
+While a brainstorm run has live workers (or a live `ub run` driver), `install` and `update` do not swap the kit under
+them: the affected rows are blocked with the run's name. Wait for it, stop it (`ub stop <run>`), or pass `--force`.
+A kit 2.0.x `ub run` session is named with its pid; `ub stop` does not end it: answer it or close it (Ctrl+C in its
+terminal), then run the command again.
+Only one installer applies changes at a time (`UB_HOME/install.lock`). Exit 4 also means the install changed after the
+plan was made (another installer applied, or a run started under a tree the plan swaps): nothing was applied; run the
+command again. An install that was cut short keeps its
+records: the next `install` or `update` records the copies and plugins again and removes its leftover staging
+folders.
 
 ## 9. Uninstall
 
@@ -280,16 +343,27 @@ PY <kit>/install/install.py uninstall --purge # also removes ~/.ultimate-brainst
 ```
 
 It removes the native plugins it installed (a plugin you added yourself stays unless you add `--force`), the copies it
-owns (only when their files are unchanged), the routing blocks, the launchers and the empty folders it created. It
+owns (only when their files are unchanged and you added nothing, such as a `.git` folder; `--force` backs such a copy
+up first), the routing blocks, the launchers and the empty folders it created. It
 keeps your run folders (`brainstorm/`) and backups; when an install replaced a folder of yours (`--force`,
-`--migrate-v1`), it prints where that backup is. `--purge` deletes only what the kit creates in UB_HOME and refuses a
-UB_HOME that holds no kit install. Two steps stay manual and are printed at the end:
+`--migrate-v1`), it prints where that backup is. `--purge` deletes what the kit created in UB_HOME and keeps
+`backups/` and anything else; it refuses a UB_HOME that holds no kit install. Codex's own data in the provider homes
+(`codex-homes/<p>/`: sessions, history, logs; written when you use codex-glm / codex-kimi) is moved to
+`backups/<time>/codex-homes/<p>/` instead of being deleted. If a plugin removal fails, `UB_HOME/kit` (the folder the
+plugin loads from) is kept and the command exits 1; run uninstall again. Each plugin is removed from the agent home it
+was installed in (for example the `--claude-config-dir` of that install), whatever flags you give uninstall. A
+`--scope project` install whose project folder you deleted or moved still uninstalls: the kit's marketplace is
+removed and a warning names the command to run in a moved project. When a plugin's CLI (claude, codex) is not on
+PATH, uninstall prints the commands to remove the plugin by hand and keeps UB_HOME/kit (the plugin may still load from
+it); run uninstall again once the CLI is back, or, if you no longer use that agent, `uninstall --purge`. Two steps
+stay manual and are printed at the end:
 
 - Kimi Code (if you installed the plugin there by hand): `/plugins remove ultimate-brainstorm`
 - ZCode: remove the plugin in Settings > Plugins, if you added it there
 
-Helper skills (Compound Engineering, mattpocock skills) are left installed; remove them with their own tools if you
-want.
+Helper skills (Compound Engineering, mattpocock skills) are left installed. Remove Compound Engineering with your
+agent's plugin commands if you want; uninstall lists the mattpocock skill folders the installer copied, which you can
+delete by hand.
 
 ## 10. Check the install
 

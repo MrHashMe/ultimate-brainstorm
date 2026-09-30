@@ -1,39 +1,53 @@
 """Detached worker launch, heartbeat, job state, foreground batch (KIT_SPEC 4.7, 6.3).
 
 Frozen API (4.8):
-    launch_job(job_path) -> dict                 {"pid": int, "job_id": str} (+ "relaunches", "launched", "state",
-                                                 "exit_code" attached; "state" is "done", "running" or "stuck")
+    launch_job(job_path, expect_gen=None) -> dict   {"pid": int, "job_id": str} (+ "relaunches", "launched", "state",
+                                                 "refused", "exit_code" attached; "state" is "done", "running",
+                                                 "stuck", "failed" or "pending"; "refused" is "stopped")
     job_state(run_dir, job) -> str               done|running|dead|failed|pending
     running_jobs(run_dir) -> list                job ids with live markers (or a held execution lock)
-    stop_all(run_dir) -> int                     tree-kills live workers; returns the count
+    stop_all(run_dir) -> int                     kills the run's verified workers; returns the count
+    stop_workers(run_dir, keep=None) -> dict     the same, {"stopped": int, "unverified": [pid, ...]}: a live worker
+                                                 whose identity cannot be read keeps its marker and is listed
     run_foreground(jobs, parallel=4, budget_s=None) -> dict   {"done": [...], "failed": [...], "pending": [...]}
 
 Extras: WorkerMarker (used by `family.py job`), JobLock, lock_state(run_dir, job_id), is_done(run_dir, job),
-        relaunch_count(run_dir, job), worker_argv(job_path), marker_path(run_dir, job_id), lock_path(run_dir, job_id),
-        stale_after_s(), RELAUNCH_LIMIT.
+        job_gen(run_dir, job_id), relaunch_count(run_dir, job), reset_relaunch(run_dir, job_id),
+        stop_requested(run_dir), worker_argv(job_path), marker_path(run_dir, job_id), lock_path(run_dir, job_id),
+        stale_after_s(), RELAUNCH_LIMIT, STOP_FILE, EXIT_STOPPED, STOP_GRACE_S.
 
-One worker per job (4.7, execution lock). A worker holds .ub/jobs/<id>.lock, an OS file lock (LockFile through
-msvcrt.locking on Windows, flock on POSIX), from before it writes its running marker until after it has deleted it. The OS
-drops the lock when the process ends, even when it is killed, so a dead worker never leaves a stale claim. Therefore:
+One worker per job (4.7, execution lock). A worker holds .ub/jobs/<id>.lock, an OS file lock (textio.try_lock_fd:
+msvcrt.locking on Windows, flock on POSIX), from before it writes its running marker until after it has deleted it.
+The OS drops the lock when the process ends, even when it is killed, so a dead worker never leaves a stale claim.
+Therefore:
   - a worker starts no model call while another process holds the job, and it re-checks the done rule once it holds
-    the lock: a job that finished meanwhile is never called again (the worker exits 0, "skipped"). Nor is a job for
-    which another worker wrote a meta (ok or failed) for the current prompt while this one waited for the lock;
+    the lock: a job that finished meanwhile is never called again (the worker exits 0, "skipped"). Nor is a job that
+    another worker finished running (ok or failed) since this one was launched: every worker that ran a job counts
+    one more run in .ub/jobs/<id>.gen (the job's outcome generation) before it lets the lock go, and launch_job hands
+    the generation it launched at to the worker (UB_EXPECT_GEN);
   - launch_job takes the same lock while it decides and spawns. It does not launch a job that is done, whose lock is
-    held or whose marker is live, and it writes the marker (with the child's pid and a launch token) before the child
-    can take the lock, so nothing races its write (a marker is never re-created after its worker deleted it). The
-    worker recognizes that marker as its own by the token (UB_LAUNCH_TOKEN), not by the pid: in a Windows venv the
-    pid launch_job sees is the venv redirector's, and the worker is its child;
-  - job_state reports a job whose lock is held as running whatever its heartbeat says, so a late heartbeat never
-    leads to a second worker.
+    held or whose marker stands, or whose generation moved since the caller read the job's state; and it writes the
+    marker (with the child's pid, its process identity and a launch token) before the child can take the lock, so
+    nothing races its write (a marker is never re-created after its worker deleted it). The worker recognizes that
+    marker as its own by the token (UB_LAUNCH_TOKEN), not by the pid: in a Windows venv the pid launch_job sees is the
+    venv redirector's, and the worker is its child;
+  - job_state reports a job whose lock is held as running whatever its heartbeat says. A marker the worker wrote
+    while it held the lock ("locked") is dead as soon as the lock is free. Only a launch marker (its worker has not
+    taken the lock yet) is judged by its process and heartbeat.
 On a file system without file locks the marker and heartbeat rules alone apply.
+
+Process identity: a marker records the process identity (creation time, proc.process_identity) of its worker and of
+the backend process the worker runs. A process is killed (stop_all, relaunch) only when its pid still has that
+identity; an unknown identity is never killed, so a reused pid never is.
+
+Stop: while <run>/.ub/STOP exists (`ub stop`), launch_job launches nothing and a starting worker exits with code 8
+(EXIT_STOPPED) before any backend call, without a meta.
 
 Test hooks (4.19): UB_NO_DETACH=1 runs the worker attached; UB_HEARTBEAT_STALE_S overrides the 60 s threshold.
 """
 
 import binascii
 import calendar
-import errno
-import json
 import os
 import subprocess
 import sys
@@ -46,18 +60,23 @@ from . import textio
 from . import validate
 
 __all__ = ["launch_job", "job_state", "running_jobs", "stop_all", "run_foreground", "WorkerMarker", "JobLock",
-           "lock_state", "is_done", "relaunch_count", "worker_argv", "marker_path", "lock_path", "stale_after_s",
-           "RELAUNCH_LIMIT", "HEARTBEAT_S"]
+           "lock_state", "is_done", "job_gen", "relaunch_count", "reset_relaunch", "stop_requested", "worker_argv",
+           "marker_path", "lock_path", "stale_after_s", "RELAUNCH_LIMIT", "HEARTBEAT_S", "STOP_FILE", "EXIT_STOPPED",
+           "STOP_GRACE_S", "stop_workers", "stopping", "stopping_path"]
 
 HEARTBEAT_S = 10.0
 STALE_DEFAULT_S = 60.0
 RELAUNCH_LIMIT = 3
 POLL_S = 0.2
+STOP_FILE = "STOP"         # <run>/.ub/STOP: the run is stopped (C3)
+EXIT_STOPPED = 8           # the worker's exit code for a stopped run (no call, no meta)
 LAUNCH_TOKEN_ENV = "UB_LAUNCH_TOKEN"  # launch_job -> worker: which launcher-written marker is the worker's own
+EXPECT_GEN_ENV = "UB_EXPECT_GEN"      # launch_job -> worker: the job's outcome generation at launch
 LOCK_WAIT_S = 30.0         # a starting worker waits this long for its launcher (or a state probe) to let go
 LAUNCH_LOCK_WAIT_S = 1.0   # launch_job waits this long for the lock before it reports the job as running
 MARKER_REMOVE_S = 2.0      # a worker retries deleting its marker this long (a reader may hold it open on Windows)
-_LOCK_OFFSET = 0x7FFFFFF0  # the locked byte lies far beyond EOF, so the lock file stays empty and readable
+STOP_GRACE_S = proc.ABORT_GRACE_S + 5.0  # SIGTERM -> SIGKILL for a worker: it stops its own backend process first
+STOPPING_MAX_AGE_S = 600.0  # a .ub/jobs/<id>.stopping file older than this is a crashed stopper's: ignored
 
 _LIVE = []  # Popen objects of workers we started and do not wait for (reaped by _reap, no ResourceWarning)
 
@@ -101,6 +120,20 @@ def _relaunch_path(run_dir, job_id):
     return os.path.join(_jobs_dir(run_dir), "%s.relaunch" % job_id)
 
 
+def _gen_path(run_dir, job_id):
+    return os.path.join(_jobs_dir(run_dir), "%s.gen" % job_id)
+
+
+def stopping_path(run_dir, job_id):
+    return os.path.join(_jobs_dir(run_dir), "%s.stopping" % job_id)
+
+
+def stop_requested(run_dir):
+    """True while <run>/.ub/STOP exists: `ub stop` creates it before it stops the workers, and an explicit resume
+    removes it. launch_job launches nothing then, and a starting worker exits (code 8) before any backend call."""
+    return os.path.exists(os.path.join(os.path.abspath(run_dir), ".ub", STOP_FILE))
+
+
 def _parse_iso(ts):
     try:
         return float(calendar.timegm(time.strptime(ts, "%Y-%m-%dT%H:%M:%SZ")))
@@ -142,52 +175,9 @@ def _pid_of(marker):
 
 # ---------------------------------------------------------------- execution lock
 
-def _os_lock(fd):
-    """Lock fd without blocking. True: locked; False: another process or handle holds it; None: no file locks here."""
-    if os.name == "nt":
-        try:
-            import msvcrt
-        except ImportError:
-            return None
-        try:
-            os.lseek(fd, _LOCK_OFFSET, 0)
-            msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
-            return True
-        except OSError as e:
-            if e.errno in (errno.EACCES, errno.EDEADLK) or getattr(e, "winerror", None) in (5, 33):
-                return False
-            return None
-    try:
-        import fcntl
-    except ImportError:
-        return None
-    try:
-        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        return True
-    except OSError as e:
-        if e.errno in (errno.EAGAIN, errno.EWOULDBLOCK, errno.EACCES):
-            return False
-        return None  # ENOLCK, EOPNOTSUPP, ...: this file system has no flock
-
-
-def _os_unlock(fd):
-    if os.name == "nt":
-        try:
-            import msvcrt
-            os.lseek(fd, _LOCK_OFFSET, 0)
-            msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
-        except (ImportError, OSError):
-            pass
-        return
-    try:
-        import fcntl
-        fcntl.flock(fd, fcntl.LOCK_UN)
-    except (ImportError, OSError):
-        pass
-
-
 class JobLock(object):
-    """The execution lock of one job (module note). The file is never deleted: deleting a lock file races with a
+    """The execution lock of one job (module note): textio.try_lock_fd on .ub/jobs/<id>.lock (a byte far beyond EOF on
+    Windows, so the file stays empty and readable). The file is never deleted: deleting a lock file races with a
     process that has just opened it. Locks are per open file, so a second JobLock in the same process conflicts too."""
 
     def __init__(self, run_dir, job_id):
@@ -220,7 +210,7 @@ class JobLock(object):
         except OSError:
             return True  # no usable lock file here (read-only or odd file system): the marker rules alone apply
         try:
-            got = _os_lock(fd)
+            got = textio.try_lock_fd(fd)
         except BaseException:
             os.close(fd)
             raise
@@ -246,7 +236,7 @@ class JobLock(object):
         self.exclusive = False
         if fd is None:
             return
-        _os_unlock(fd)
+        textio.unlock_fd(fd)
         try:
             os.close(fd)
         except OSError:
@@ -271,45 +261,143 @@ def lock_state(run_dir, job_id):
 
 # ---------------------------------------------------------------- marker
 
-def _marker_live(path):
-    """(exists, live, marker dict or None). Live = heartbeat newer than the stale threshold and the pid runs."""
+def _read_marker(path):
+    """(exists, marker dict, {} when unreadable). A marker that vanished while it was read does not exist."""
     if not os.path.isfile(path):
-        return False, False, None
+        return False, {}
     m = _read_json_quiet(path)
-    now = time.time()
-    hb = _parse_iso((m or {}).get("heartbeat_at")) if m else None
+    if m is None and not os.path.isfile(path):
+        return False, {}
+    return True, m or {}
+
+
+def _heartbeat_age(path, marker):
+    """Seconds since the marker's heartbeat (its file time when it has none). A heartbeat in the future (a clock step,
+    a copied run folder) counts as infinitely old: it would otherwise keep a dead job "running" for ever."""
+    hb = _parse_iso(marker.get("heartbeat_at"))
     if hb is None:
         try:
-            hb = os.path.getmtime(path)  # unreadable, or no heartbeat yet: use the file time
+            hb = os.path.getmtime(path)
         except OSError:
-            return False, False, None
-    fresh = (now - hb) <= stale_after_s()
-    pid = (m or {}).get("pid")
-    alive = True if not pid else proc.pid_alive(pid)
-    return True, bool(fresh and alive), m
+            return float("inf")
+    age = time.time() - hb
+    return age if age >= -5.0 else float("inf")
+
+
+def _alive(pid, ident):
+    """For liveness only (never enough to kill): pid runs and, when an identity was recorded, it is still that process
+    (a reused pid is not)."""
+    return proc.same_process(pid, ident) if ident else proc.pid_alive(pid)
+
+
+def _stands(path, marker, held):
+    """True while a running marker may still stand for a live worker, so the job must not be relaunched. held is the
+    job's lock_state() (a holder is running anyway). Where file locks work (held is False), a marker that its worker
+    wrote while holding the lock ("locked") is dead: the lock is free only once that worker is gone. A launch marker
+    (its worker has not taken the lock yet) and every marker on a file system without file locks (held is None) stand
+    while the process they name runs (with the recorded identity) and the heartbeat is at most 2 x stale_after_s()
+    old: a late heartbeat (sleep, heavy load) must not lead to a second worker."""
+    if held is False and marker.get("locked"):
+        return False
+    if _heartbeat_age(path, marker) > 2 * stale_after_s():
+        return False
+    pid = _pid_of(marker)
+    return not pid or _alive(pid, marker.get("ident"))
+
+
+LEGACY_START_SLACK_S = 5.0  # kit 2.0.3's rule for its markers: the process started at most this long after started_at
+
+
+def _legacy_ident(pid, marker):
+    """The identity of pid when a marker without an "ident" key (written by kit 2.0.3, before identities) names it by
+    2.0.3's own rule: the process that has pid now started no later than the marker's started_at + 5 s (a pid reused
+    later is another process). None when that cannot be shown."""
+    started_at = _parse_iso(marker.get("started_at"))
+    started = proc.process_start_time(pid)
+    if started_at is None or started is None or started > started_at + LEGACY_START_SLACK_S:
+        return None
+    return proc.process_identity(pid)
+
+
+def _marker_processes(marker):
+    """[(pid, identity)] of the worker a marker names and of the backend process that worker recorded (worker first).
+    A 2.0.3 marker has no identity: its worker's is established by _legacy_ident, so an in-flight 2.0.3 worker can be
+    stopped after an in-place update."""
+    return [(pid, ident) for pid, ident, _rec in _marker_records(marker)]
+
+
+def _marker_records(marker):
+    """[(pid, identity, record)] behind _marker_processes: the record is the marker or its "child" dict."""
+    child = marker.get("child") if isinstance(marker.get("child"), dict) else {}
+    out = []
+    for rec in (marker, child):
+        pid = _pid_of(rec)
+        if pid and pid != os.getpid():
+            out.append((pid, rec.get("ident") if "ident" in rec or rec is child else _legacy_ident(pid, rec), rec))
+    return out
+
+
+def _unverifiable(pid, ident, rec, legacy):
+    """True when pid runs but it cannot be told whether it is the process the marker names: no identity was recorded
+    (a worker that could not read its own), or the process's identity cannot be read now (ps unavailable or failing on
+    macOS). Such a process is never killed, and its marker is kept (#2). A 2.0.3 marker (legacy) is unverifiable only
+    when its start-time rule cannot be applied; a process shown to start later is a reused pid. Where identities come
+    from the system itself (Windows, Linux: this process reads its own), one that cannot be read belongs to another
+    user (a service, SYSTEM), never to a worker of the run, which runs as this user: that marker goes."""
+    if not proc.pid_alive(pid):
+        return False
+    now = proc.process_identity(pid)
+    if now is None and (proc.process_identity(os.getpid()) or "").split(":", 1)[0] in ("win", "linux"):
+        return False  # another user's process holds the pid (ps, by contrast, reads every user's processes)
+    if legacy:
+        started_at = _parse_iso(rec.get("started_at"))
+        return started_at is None or proc.process_start_time(pid) is None
+    return not ident or now is None
+
+
+def _expected_gen():
+    try:
+        return int(os.environ.get(EXPECT_GEN_ENV) or "")
+    except ValueError:
+        return None
 
 
 class WorkerMarker(object):
     """The worker's side of 4.7. On enter it takes the job's execution lock (waiting for its launcher to let go),
-    re-checks the done rule, writes the running marker and refreshes its heartbeat from a thread; on exit it deletes
-    the marker and only then releases the lock.
+    re-checks the done rule, writes the running marker and refreshes its heartbeat from a thread; while the job runs,
+    the marker also names the backend process the worker started (proc.set_spawn_hook), so that process can be stopped
+    even when the worker is killed hard. On exit it leaves the crash evidence below, counts the run in the job's outcome
+    generation, deletes the marker and only then releases the lock.
 
     `skipped` is set when the caller must not run the job: "running" (another process holds the job), "done" (the
-    done rule already holds, so there is nothing to call) or "finished" (another worker wrote a meta for the current
-    prompt while this one waited for the lock: it ran the job, even if it failed). A skipped worker never writes the
-    marker of the process that holds the job, nor any output.
+    done rule already holds, so there is nothing to call), "finished" (another worker finished a run of the job since
+    this one was launched, or since it started: its outcome stands, even a failure) or "stopped" (the run is stopped,
+    stop_requested()). A skipped worker never writes the marker of the process that holds the job, nor any output.
+
+    Crash evidence (4.7, C5): a worker that ran the job and ends without an outcome for its prompt (no meta, or a meta
+    without the prompt hash) writes a minimal failed meta itself, so the job reads "failed" rather than "pending". That
+    holds for an unexpected error (error_class "internal") and for a signal that ends the worker (error_class "killed":
+    SystemExit from SIGTERM or SIGBREAK, KeyboardInterrupt from Ctrl+C), except in three cases that leave no evidence,
+    so the job reads "pending": the run is stopped (`ub stop` creates STOP before it stops the workers; the stop exit
+    code EXIT_STOPPED), the kit itself is stopping this job (its .ub/jobs/<id>.stopping file, stopping()), or the job's
+    prompt changed or moved away while it ran (the job was superseded: a newer prompt is never marked). When even that
+    write fails (a full disk), the marker stays: the job reads "dead" and the relaunch limit applies.
     """
 
     def __init__(self, run_dir, job_id, pid=None, job=None, lock_wait_s=None):
         self.run_dir = run_dir
+        self.job_id = job_id
         self.job = job
         self.path = marker_path(run_dir, job_id)
         self.token = (os.environ.get(LAUNCH_TOKEN_ENV) or "").strip() or None
-        self.data = {"pid": pid or os.getpid(), "started_at": textio.now_iso(), "heartbeat_at": textio.now_iso(),
-                     "attempt": 0, "backend": None}
+        pid = pid or os.getpid()
+        self.data = {"pid": pid, "ident": proc.process_identity(pid), "started_at": textio.now_iso(),
+                     "heartbeat_at": textio.now_iso(), "attempt": 0, "backend": None}
         if self.token:
             self.data["token"] = self.token
-        self._meta_sig = _meta_sig(run_dir, job) if job is not None else None
+        gen = _expected_gen()  # the generation launch_job launched us at; else the one at our start
+        self._gen0 = job_gen(run_dir, job_id) if gen is None else gen
+        self._prompt_sha = None
         self.lock = JobLock(run_dir, job_id)
         self.lock_wait_s = LOCK_WAIT_S if lock_wait_s is None else lock_wait_s
         self.skipped = None
@@ -328,6 +416,15 @@ class WorkerMarker(object):
     def update(self, attempt, backend):
         self.data["attempt"] = attempt
         self.data["backend"] = backend
+        self._write()
+
+    def _child(self, pid, ident):
+        """proc's spawn hook: the backend process the worker runs now ({pid, ident}), removed once it is gone."""
+        with self._lock:
+            if pid:
+                self.data["child"] = {"pid": pid, "ident": ident}
+            else:
+                self.data.pop("child", None)
         self._write()
 
     def _beat(self):
@@ -351,27 +448,73 @@ class WorkerMarker(object):
         if not m or self._is_own(m):
             return False
         pid = _pid_of(m)
-        return bool(pid) and pid != os.getpid() and proc.pid_alive(pid) and _is_worker(pid, m)
+        return bool(pid) and pid != os.getpid() and _alive(pid, m.get("ident"))
 
     def _remove_own_marker(self):
         if self._is_own(_read_json_quiet(self.path)):
             _remove_quiet(self.path)
 
-    def _finished_meanwhile(self):
-        """True when a meta for the current prompt appeared or changed while we waited for the lock: another worker
-        ran the job (ok or failed). Running it again would be a second call for the same prompt."""
-        sig = _meta_sig(self.run_dir, self.job)
-        if sig is None or sig == self._meta_sig:
-            return False
+    def _remove_marker(self):
+        with self._lock:
+            deadline = time.monotonic() + MARKER_REMOVE_S
+            while True:
+                try:
+                    if os.path.exists(self.path):
+                        os.remove(self.path)
+                    break
+                except PermissionError:  # a reader has it open (Windows): retry briefly
+                    if time.monotonic() >= deadline:
+                        break
+                    time.sleep(0.05)
+                except OSError:
+                    break
+
+    def _record_outcome(self, exc_type):
+        """True when the job has an outcome for the prompt this run ran: it is done, or a failed meta exists for that
+        prompt (the adapter's, or a crash meta without the prompt hash, which gets it here), or a minimal failed meta
+        could be written now. False when nothing could be written."""
+        if not self._prompt_sha or is_done(self.run_dir, self.job):
+            return True
         job = _load(self.job)
-        _run, prompt_path, out_path = _paths(self.run_dir, job)
-        meta = _read_json_quiet(out_path + ".meta.json")
-        if not meta or not meta.get("status") or not os.path.isfile(prompt_path):
-            return False
+        _run, _prompt, out_path = _paths(self.run_dir, job)
+        meta = _read_json_quiet(out_path + ".meta.json") or {}
+        failed = meta.get("id") == job.get("id") and bool(meta.get("status")) and meta.get("status") != "ok"
+        if failed and meta.get("prompt_sha256") == self._prompt_sha:
+            return True
+        ours = (_parse_iso(meta.get("started")) or 0) >= (_parse_iso(self.data["started_at"]) or 0)
+        if failed and ours and meta.get("prompt_sha256") is None:  # a crash meta of this run: it never counted
+            rec, reason = dict(meta, prompt_sha256=self._prompt_sha), None
+        else:
+            # "killed": a signal stopped the worker (the engine's card then names hosts that stop background work)
+            by_signal = exc_type is not None and not issubclass(exc_type, Exception)
+            reason = ("the worker was stopped by a signal%s before it recorded an outcome" if by_signal else
+                      "the worker ended without recording an outcome%s") % (
+                " (%s)" % exc_type.__name__ if exc_type else "")
+            rec = {"schema": 1, "id": job.get("id"), "family": job.get("family"),
+                   "provisional": bool(job.get("provisional")), "status": "failed",
+                   "attempts": self.data.get("attempt") or 0, "exit_code": None,
+                   "error_class": "killed" if by_signal else "internal", "started": self.data["started_at"],
+                   "duration_s": None, "prompt_sha256": self._prompt_sha, "out_sha256": None, "reason": reason}
         try:
-            return meta.get("prompt_sha256") == textio.sha256_file(prompt_path)
+            textio.write_json_atomic(out_path + ".meta.json", rec)
         except OSError:
             return False
+        if reason:
+            try:
+                textio.write_text_atomic(out_path + ".failed.md", "FAMILY CALL FAILED: %s\n" % reason)
+            except OSError:
+                pass
+        return True
+
+    def _signal_evidence(self, exc):
+        """True when a worker that a signal ends (SystemExit, KeyboardInterrupt) records its outcome like a crash: not
+        in a stopped run, not while the kit itself stops this job (stopping()), and only while the job's prompt is
+        still the one this worker ran."""
+        if stop_requested(self.run_dir) or (isinstance(exc, SystemExit) and exc.code == EXIT_STOPPED):
+            return False
+        if stopping(self.run_dir, self.job_id):
+            return False
+        return bool(self._prompt_sha) and _prompt_sha(self.run_dir, self.job) == self._prompt_sha
 
     def __enter__(self):
         if not self.lock.acquire(self.lock_wait_s, give_up=self._held_elsewhere):
@@ -381,39 +524,45 @@ class WorkerMarker(object):
             if self.job is not None:
                 if is_done(self.run_dir, self.job):
                     self.skipped = "done"
-                elif self._finished_meanwhile():
+                elif job_gen(self.run_dir, self.job_id) != self._gen0:
                     self.skipped = "finished"
                 if self.skipped:
                     self._remove_own_marker()  # the launcher wrote it for us; the finished job needs no marker
                     return self
+            if self.lock.exclusive:
+                self.data["locked"] = True  # from now on, a free lock means this worker is gone
             os.makedirs(os.path.dirname(self.path), exist_ok=True)
             self._write()
+            # After the marker is written: `ub stop` creates STOP before it stops the workers, so it either sees this
+            # marker or this worker sees STOP.
+            if stop_requested(self.run_dir):
+                self.skipped = "stopped"
+                self._remove_own_marker()
+                return self
+            if self.job is not None:
+                self._prompt_sha = _prompt_sha(self.run_dir, self.job)
             self._thread = threading.Thread(target=self._beat, name="ub-heartbeat", daemon=True)
             self._thread.start()
+            proc.set_spawn_hook(self._child)
         except BaseException:
             self.lock.release()
             raise
         return self
 
-    def __exit__(self, *exc):
+    def __exit__(self, exc_type, exc, tb):
         try:
             if self.skipped is None:
+                proc.set_spawn_hook(None)
                 self._stop.set()
                 if self._thread is not None:
                     self._thread.join(timeout=5)
-                with self._lock:
-                    deadline = time.monotonic() + MARKER_REMOVE_S
-                    while True:
-                        try:
-                            if os.path.exists(self.path):
-                                os.remove(self.path)
-                            break
-                        except PermissionError:  # a reader has it open (Windows): retry briefly
-                            if time.monotonic() >= deadline:
-                                break
-                            time.sleep(0.05)
-                        except OSError:
-                            break
+                recorded = True
+                if self.job is not None:
+                    if exc_type is None or issubclass(exc_type, Exception) or self._signal_evidence(exc):
+                        recorded = self._record_outcome(exc_type)
+                    _bump_gen(self.run_dir, self.job_id)
+                if recorded:
+                    self._remove_marker()
         finally:
             self.lock.release()  # after the marker is gone: see job_state
         return False
@@ -421,32 +570,66 @@ class WorkerMarker(object):
 
 # ---------------------------------------------------------------- state
 
-def _meta_sig(run_dir, job):
-    """(mtime_ns, size) of the job's <out>.meta.json, or None when there is none."""
+def _prompt_sha(run_dir, job):
+    _run, prompt_path, _out = _paths(run_dir, _load(job))
     try:
-        _run, _prompt, out_path = _paths(run_dir, _load(job))
-        st_ = os.stat(out_path + ".meta.json")
-    except (OSError, ValueError):
+        return textio.sha256_file(prompt_path)
+    except OSError:
         return None
-    return (st_.st_mtime_ns, st_.st_size)
+
+
+def job_gen(run_dir, job_id):
+    """The job's outcome generation: how many worker runs of it have finished (.ub/jobs/<id>.gen; 0 when none). Read it
+    BEFORE job_state() and pass it to launch_job(expect_gen=...): if a run finished in between, the state read is stale
+    and launch_job launches nothing."""
+    try:
+        return int(textio.read_text(_gen_path(run_dir, job_id)).strip() or 0)
+    except (OSError, ValueError):
+        return 0
+
+
+def _bump_gen(run_dir, job_id):
+    """One more finished run (the worker counts it while it holds the job's execution lock)."""
+    try:
+        textio.write_text_atomic(_gen_path(run_dir, job_id), "%d\n" % (job_gen(run_dir, job_id) + 1))
+    except OSError:
+        pass
 
 
 def is_done(run_dir, job):
-    """The done rule (4.4): <out> exists, the contract validates, and <out>.meta.json has status ok and the
-    prompt_sha256 of the current prompt file."""
+    """The done rule (4.4): <out>.meta.json is this job's, has status ok and the prompt_sha256 of the current prompt
+    file, and its out_sha256 is the hash of <out> as it is now (the adapter validated <out> once, when it wrote it).
+    A meta without out_sha256 (older runs) instead needs <out> to validate against the contract. A host meta (backend
+    "host") may also carry the hash of the decoded text of <out>, the form kit 2.0.3 wrote for host outputs."""
     job = _load(job)
     run_dir, prompt_path, out_path = _paths(run_dir, job)
     meta = _read_json_quiet(out_path + ".meta.json")
-    if not meta or meta.get("status") != "ok" or not os.path.isfile(out_path) or not os.path.isfile(prompt_path):
+    if not meta or meta.get("status") != "ok" or meta.get("id") != job.get("id") or not os.path.isfile(out_path) \
+            or not os.path.isfile(prompt_path):
         return False
     try:
         if meta.get("prompt_sha256") != textio.sha256_file(prompt_path):
             return False
+        if meta.get("out_sha256"):
+            if meta["out_sha256"] == textio.sha256_file(out_path):
+                return True
+            return meta.get("backend") == "host" and \
+                meta["out_sha256"] == textio.sha256_text(textio.read_text(out_path))
         text = textio.read_text(out_path)
     except OSError:
         return False
     ok, _errors, _parsed = validate.check_contract(text, job.get("contract") or {"type": "text"}, run_dir)
     return ok
+
+
+def _failed_meta(prompt_path, meta):
+    """True when meta records a failed run (status set and not ok) of the current prompt."""
+    if not meta or not meta.get("status") or meta.get("status") == "ok" or not os.path.isfile(prompt_path):
+        return False
+    try:
+        return meta.get("prompt_sha256") == textio.sha256_file(prompt_path)
+    except OSError:
+        return False
 
 
 def job_state(run_dir, job):
@@ -458,32 +641,28 @@ def job_state(run_dir, job):
     # "pending" (not done yet, no marker any more), and the dispatcher would launch the finished job a second time.
     run_dir, prompt_path, out_path = _paths(run_dir, job)
     mpath = marker_path(run_dir, job.get("id"))
-    exists, live, m = _marker_live(mpath)
+    exists, m = _read_marker(mpath)
     held = lock_state(run_dir, job.get("id"))
     if is_done(run_dir, job):
         return "done"
     if held:
         return "running"  # a worker (or a launcher starting one) holds the job, whatever its heartbeat says
-    if exists and live:
-        return "running"
-    if exists and _stale_but_alive(mpath, m):
-        return "running"  # a late heartbeat (sleep, heavy load): not dead yet, never relaunched twice
+    if exists and _stands(mpath, m, held):
+        return "running"  # a starting worker, or no file locks here: a live process with a recent heartbeat
     meta = _read_json_quiet(out_path + ".meta.json")
-    finished = False
-    if meta and meta.get("status") and meta.get("status") != "ok" and os.path.isfile(prompt_path):
-        try:
-            finished = meta.get("prompt_sha256") == textio.sha256_file(prompt_path)
-        except OSError:
-            finished = False
     if exists:
         # A marker whose worker is gone although it wrote a failed meta during this launch: the job failed; it did not
         # die (a worker that fails writes its meta before it deletes its marker; a crash in between leaves both).
-        m_start = _parse_iso((m or {}).get("started_at"))
-        meta_start = _parse_iso((meta or {}).get("started"))
-        if finished and m_start is not None and meta_start is not None and meta_start >= m_start:
-            return "failed"
-        return "dead"
-    return "failed" if finished else "pending"
+        return "failed" if _failed_during(m, prompt_path, meta) else "dead"
+    return "failed" if _failed_meta(prompt_path, meta) else "pending"
+
+
+def _failed_during(marker, prompt_path, meta):
+    """True when meta records a failed run of the current prompt that started during the marker's launch (not an
+    older failure the launch was a retry of)."""
+    m_start = _parse_iso((marker or {}).get("started_at"))
+    meta_start = _parse_iso((meta or {}).get("started"))
+    return _failed_meta(prompt_path, meta) and m_start is not None and meta_start is not None and meta_start >= m_start
 
 
 def relaunch_count(run_dir, job):
@@ -516,41 +695,63 @@ def _note_relaunch(run_dir, job):
     return n
 
 
-def running_jobs(run_dir):
+def reset_relaunch(run_dir, job_id):
+    """Forget the job's relaunch count (the driver retries a BLOCKED step)."""
+    _remove_quiet(_relaunch_path(run_dir, job_id))
+
+
+def _markers(run_dir):
+    """[(job id, marker path)] of the run's running markers. Ids starting with "_" are reserved (the driver lock)."""
     d = _jobs_dir(run_dir)
-    out = []
     if not os.path.isdir(d):
-        return out
-    for name in sorted(os.listdir(d)):
-        if name.endswith(".running.json"):
-            jid = name[:-len(".running.json")]
-            _e, live, _m = _marker_live(os.path.join(d, name))
-            if live or lock_state(run_dir, jid):
-                out.append(jid)
+        return []
+    return [(name[:-len(".running.json")], os.path.join(d, name)) for name in sorted(os.listdir(d))
+            if name.endswith(".running.json") and not name.startswith("_")]
+
+
+def running_jobs(run_dir):
+    out = []
+    for jid, path in _markers(run_dir):
+        exists, m = _read_marker(path)
+        held = lock_state(run_dir, jid)
+        if held or (exists and _stands(path, m, held)):
+            out.append(jid)
     return out
 
 
-def stop_all(run_dir):
-    """Tree-kill every live worker of the run and remove its marker. Returns the number killed."""
-    d = _jobs_dir(run_dir)
+def stop_all(run_dir, keep=None):
+    """Stop every worker of the run, and the backend process each one recorded, and remove their markers. A process is
+    killed only when it verifiably is the one its marker names (same pid and process identity): an unknown identity
+    is never killed. The worker goes first, with a grace (STOP_GRACE_S) longer than the one it gives its own backend
+    process. keep: job ids whose workers go on untouched (a supersede stops only the jobs of the steps it redoes).
+    Returns the number of jobs whose processes were stopped (stop_workers also names the unverifiable ones)."""
+    return stop_workers(run_dir, keep)["stopped"]
+
+
+def stop_workers(run_dir, keep=None):
+    """stop_all's work: {"stopped": jobs whose processes were stopped, "unverified": [pids]}. A marker whose process
+    runs but cannot be verified (_unverifiable) is kept, not removed, and its pid is listed, so `ub stop` can say
+    which workers to stop by hand; every other marker is removed. While a job's processes are signalled, its
+    .ub/jobs/<id>.stopping file tells the worker that the kit stopped it (no 'killed' evidence)."""
     count = 0
-    if not os.path.isdir(d):
-        return 0
-    for name in sorted(os.listdir(d)):
-        if not name.endswith(".running.json"):
+    unverified = []
+    keep = set(keep or ())
+    for _jid, path in _markers(run_dir):
+        if _jid in keep:
             continue
-        path = os.path.join(d, name)
-        _e, live, m = _marker_live(path)
-        pid = (m or {}).get("pid")
-        # kill a live pid even when its heartbeat is stale (it would otherwise keep writing after the stop),
-        # but only when that pid is really the worker (it started no later than the marker)
-        if pid and int(pid) != os.getpid() and (live or (proc.pid_alive(pid) and _is_worker(pid, m))):
-            proc.kill_tree(int(pid), proc=_owned(int(pid)))
-            count += 1
-        try:
-            os.remove(path)
-        except OSError:
-            pass
+        m = _read_json_quiet(path) or {}
+        stopped, unknown = False, []
+        with _Stopping(run_dir, _jid):
+            for pid, ident, rec in _marker_records(m):
+                if proc.same_process(pid, ident):  # checked again for the backend process, after its worker's stop
+                    proc.kill_tree(pid, grace_s=STOP_GRACE_S, proc=_owned(pid))
+                    stopped = True
+                elif _unverifiable(pid, ident, rec, rec is m and "ident" not in m):
+                    unknown.append(pid)
+        count += 1 if stopped else 0
+        unverified += unknown
+        if not unknown:
+            _remove_quiet(path)
     _reap()
     try:  # killed workers never ran their finally: delete their per-call folders (they can hold a provider token)
         from . import families as _fam
@@ -560,17 +761,50 @@ def stop_all(run_dir):
         sweep_stale_calls(_fam.ub_home())
     except Exception:  # noqa: BLE001
         pass
-    return count
+    return {"stopped": count, "unverified": unverified}
+
+
+class _Stopping(object):
+    """.ub/jobs/<id>.stopping while the kit signals a job's processes (stop_workers, _stop_stale_worker): a worker that
+    such a signal ends leaves no 'killed' failure evidence (WorkerMarker._signal_evidence), since the kit stopped it and
+    the job reads pending again, not failed. A file older than STOPPING_MAX_AGE_S (a stopper that crashed) is
+    ignored."""
+
+    def __init__(self, run_dir, job_id):
+        self.path = stopping_path(run_dir, job_id)
+
+    def __enter__(self):
+        try:
+            os.makedirs(os.path.dirname(self.path), exist_ok=True)
+            textio.write_text_atomic(self.path, "%d\n" % os.getpid())
+        except OSError:
+            pass
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        _remove_quiet(self.path)
+        return False
+
+
+def stopping(run_dir, job_id):
+    """True while the kit is stopping the job's worker (a fresh .ub/jobs/<id>.stopping file)."""
+    try:
+        return time.time() - os.path.getmtime(stopping_path(run_dir, job_id)) < STOPPING_MAX_AGE_S
+    except OSError:
+        return False
 
 
 # ---------------------------------------------------------------- launch
 
-def _worker_env(token=None):
+def _worker_env(token=None, gen=None):
     env = dict(os.environ)
     env.setdefault("PYTHONIOENCODING", "utf-8")
     env.pop(LAUNCH_TOKEN_ENV, None)  # never inherited: only the launch that wrote the marker hands out its token
+    env.pop(EXPECT_GEN_ENV, None)
     if token:
         env[LAUNCH_TOKEN_ENV] = token
+    if gen is not None:
+        env[EXPECT_GEN_ENV] = str(gen)
     return env
 
 
@@ -583,45 +817,51 @@ def _detach_kwargs(with_breakaway=True):
     return {"start_new_session": True}
 
 
-def _spawn_detached(argv, logf, run_dir, token=None):
+def _spawn_detached(argv, logf, run_dir, token=None, gen=None):
     try:
         return subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=logf, stderr=subprocess.STDOUT,
-                                env=_worker_env(token), cwd=run_dir, close_fds=True, **_detach_kwargs(True))
+                                env=_worker_env(token, gen), cwd=run_dir, close_fds=True, **_detach_kwargs(True))
     except OSError:
         if os.name != "nt":
             raise
         # breakaway not allowed by the enclosing job object: retry without it  # [U-24]
         return subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=logf, stderr=subprocess.STDOUT,
-                                env=_worker_env(token), cwd=run_dir, close_fds=True, **_detach_kwargs(False))
+                                env=_worker_env(token, gen), cwd=run_dir, close_fds=True, **_detach_kwargs(False))
 
 
-def _stop_stale_worker(marker):
-    """A dead marker whose pid still runs and verifiably is its worker (a process without the execution lock, e.g. on
-    a file system without file locks): stop it before a new worker starts. Returns False when it still runs."""
-    pid = _pid_of(marker)
-    if not pid or pid == os.getpid() or not proc.pid_alive(pid):
-        return True
-    started = _parse_iso((marker or {}).get("started_at"))
-    t = proc.process_start_time(pid)
-    if started is None or t is None or t > started + 5:
-        return True  # a reused pid: the worker itself is gone
-    proc.kill_tree(pid, proc=_owned(pid))
-    deadline = time.monotonic() + 10
-    while proc.pid_alive(pid) and time.monotonic() < deadline:
-        time.sleep(0.1)
-    return not proc.pid_alive(pid)
+def _stop_stale_worker(marker, run_dir, job_id):
+    """A marker that no longer stands (job_state "dead"): stop the processes it names that verifiably still run (same
+    pid and process identity) before a new worker starts: a worker that never took the lock or stopped beating on a
+    file system without file locks, or the backend process of a worker that was killed hard. The job's .stopping file
+    is held meanwhile (the kit stopped it: no 'killed' evidence). Returns False when one of them still runs."""
+    procs = [(pid, ident) for pid, ident in _marker_processes(marker or {}) if proc.same_process(pid, ident)]
+    if not procs:
+        return True  # gone, or a reused pid (or unknown identity): never killed
+    with _Stopping(run_dir, job_id):
+        for pid, ident in procs:
+            proc.kill_tree(pid, grace_s=STOP_GRACE_S, proc=_owned(pid))
+            deadline = time.monotonic() + 10
+            while proc.same_process(pid, ident) and time.monotonic() < deadline:
+                time.sleep(0.1)
+            if proc.same_process(pid, ident):
+                return False
+    return True
 
 
-def launch_job(job_path):
+def launch_job(job_path, expect_gen=None):
     """Start `family.py job --job <abs job.json>` as a detached worker (attached with UB_NO_DETACH=1).
 
     The decision is re-checked under the job's execution lock: a job that is done, whose lock another process holds
-    or whose marker is live is not launched ({"launched": false, "state": "done"|"running"}). A dead marker is removed
-    (a process still behind it is stopped first) and the relaunch is counted in .ub/jobs/<id>.relaunch. When that
-    process cannot be stopped, nothing is launched and the state is "stuck" (the driver shows a BLOCKED card that
-    suggests `ub stop`). The running marker is written with the child's pid and a launch token while the lock is still
-    held, so a quick second poll never launches the job twice and the worker (which needs the lock) cannot finish and
-    delete its marker before the write.
+    or whose marker stands is not launched ({"launched": false, "state": "done"|"running"}). Nor is one whose outcome
+    generation moved from expect_gen, the job_gen() the caller read before its job_state(): a run finished since, so
+    the caller's state is stale ({"launched": false, "state": "failed"|"pending"}). A dead marker is removed (the
+    processes it names are stopped first when they verifiably still run) and the relaunch is counted in
+    .ub/jobs/<id>.relaunch. When such a process cannot be stopped, nothing is launched and the state is "stuck" (the
+    driver shows a BLOCKED card that suggests `ub stop`). While the run is stopped nothing is launched either
+    ({"launched": false, "refused": "stopped"}). The running marker is written with the child's pid, its process
+    identity and a launch token while the lock is still held, so a quick second poll never launches the job twice and
+    the worker (which needs the lock) cannot finish and delete its marker before the write. The worker gets the
+    generation it was launched at, and makes no call when another run finished before it got the lock.
     """
     job_path = os.path.abspath(os.fspath(job_path))
     job = _load(job_path)
@@ -635,16 +875,35 @@ def launch_job(job_path):
                 "relaunches": relaunch_count(run_dir, job), "launched": False, "state": "running"}
     try:
         relaunches = relaunch_count(run_dir, job)
+        if stop_requested(run_dir):
+            return {"pid": None, "job_id": jid, "relaunches": relaunches, "launched": False, "refused": "stopped"}
         if is_done(run_dir, job):
             return {"pid": None, "job_id": jid, "relaunches": relaunches, "launched": False, "state": "done"}
-        exists, live, m = _marker_live(mpath)
-        if exists and (live or _stale_but_alive(mpath, m)):
+        gen = job_gen(run_dir, jid)
+        if expect_gen is not None and gen != expect_gen:
+            _run, prompt_path, out_path = _paths(run_dir, job)
+            failed = _failed_meta(prompt_path, _read_json_quiet(out_path + ".meta.json"))
+            return {"pid": None, "job_id": jid, "relaunches": relaunches, "launched": False,
+                    "state": "failed" if failed else "pending"}
+        exists, m = _read_marker(mpath)
+        held = False if lock.exclusive else None  # we hold the lock, so no other process does
+        if exists and _stands(mpath, m, held):
             return {"pid": _pid_of(m) or None, "job_id": jid, "relaunches": relaunches, "launched": False,
                     "state": "running"}
-        if exists and not _stop_stale_worker(m):
+        if exists and not _stop_stale_worker(m, run_dir, jid):
             return {"pid": _pid_of(m) or None, "job_id": jid, "relaunches": relaunches, "launched": False,
                     "state": "stuck"}
         if exists:
+            # The stopped worker may have finished meanwhile (it records its outcome and counts its run in the job's
+            # generation on the way out): the outcome it recorded during its launch stands, and a new worker gets the
+            # generation as it is now, or it would skip the job as "finished" by that old run.
+            gen = job_gen(run_dir, jid)
+            _run, prompt_path, out_path = _paths(run_dir, job)
+            state = "done" if is_done(run_dir, job) else \
+                "failed" if _failed_during(m, prompt_path, _read_json_quiet(out_path + ".meta.json")) else None
+            if state:
+                _remove_quiet(mpath)
+                return {"pid": None, "job_id": jid, "relaunches": relaunches, "launched": False, "state": state}
             relaunches = _note_relaunch(run_dir, job)
             _remove_quiet(mpath)
         os.makedirs(os.path.join(run_dir, "logs"), exist_ok=True)
@@ -655,17 +914,18 @@ def launch_job(job_path):
             lock.release()  # the attached worker takes the lock itself
             with open(log_path, "ab") as logf:
                 p = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=logf, stderr=subprocess.STDOUT,
-                                     env=_worker_env(), cwd=run_dir)
+                                     env=_worker_env(gen=gen), cwd=run_dir)
                 rc = p.wait()
             return {"pid": p.pid, "job_id": jid, "relaunches": relaunches, "exit_code": rc, "launched": True}
         started = textio.now_iso()
         token = binascii.hexlify(os.urandom(12)).decode("ascii")
         with open(log_path, "ab") as logf:
-            p = _spawn_detached(argv, logf, run_dir, token)
+            p = _spawn_detached(argv, logf, run_dir, token, gen)
         _keep(p)
-        try:
-            textio.write_json_atomic(mpath, {"pid": p.pid, "started_at": started, "heartbeat_at": textio.now_iso(),
-                                             "attempt": 0, "backend": None, "token": token})
+        try:  # the identity is read while our Popen handle (Windows) or the unreaped child (POSIX) pins the pid
+            textio.write_json_atomic(mpath, {"pid": p.pid, "ident": proc.process_identity(p.pid), "started_at": started,
+                                             "heartbeat_at": textio.now_iso(), "attempt": 0, "backend": None,
+                                             "token": token})
         except OSError:
             pass  # the worker writes its own marker as soon as it holds the lock
         return {"pid": p.pid, "job_id": jid, "relaunches": relaunches, "launched": True}
@@ -676,30 +936,6 @@ def launch_job(job_path):
 def _keep(p):
     _reap()
     _LIVE.append(p)
-
-
-def _is_worker(pid, marker):
-    """True when pid plausibly is the worker named by marker: the process started no later than the marker's
-    started_at (a reused pid starts later). Unknown start times count only for markers younger than 6 h."""
-    started = _parse_iso((marker or {}).get("started_at"))
-    t = proc.process_start_time(pid)
-    if t is not None and started is not None:
-        return t <= started + 5
-    return started is not None and time.time() - started < 6 * 3600
-
-
-def _stale_but_alive(path, marker):
-    """A marker whose heartbeat is stale for less than 2 x stale_after_s while its worker pid still runs."""
-    pid = (marker or {}).get("pid")
-    if not pid or not proc.pid_alive(pid) or not _is_worker(pid, marker):
-        return False
-    hb = _parse_iso((marker or {}).get("heartbeat_at"))
-    if hb is None:
-        try:
-            hb = os.path.getmtime(path)
-        except OSError:
-            return False
-    return (time.time() - hb) <= 2 * stale_after_s()
 
 
 def _owned(pid):
@@ -792,6 +1028,9 @@ def run_foreground(jobs, parallel=4, budget_s=None):
                     pending.append(jid)  # another driver's live worker owns it
                     continue
                 run_dir = os.path.abspath(job.get("run") or ".")
+                if stop_requested(run_dir):
+                    pending.append(jid)  # the run is stopped: its worker would exit without a call
+                    continue
                 os.makedirs(os.path.join(run_dir, "logs"), exist_ok=True)
                 logf = open(os.path.join(run_dir, "logs", "%s.log" % jid), "ab")
                 try:
@@ -815,7 +1054,3 @@ def run_foreground(jobs, parallel=4, budget_s=None):
             pending.append(jid)
     pending += [jid for jid, _p, _j in queue]
     return {"done": done, "failed": failed, "pending": pending, "elapsed_s": round(time.monotonic() - t0, 2)}
-
-
-def dumps(obj):
-    return json.dumps(obj, ensure_ascii=True)

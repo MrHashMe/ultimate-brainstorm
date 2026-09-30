@@ -6,7 +6,6 @@ import os
 import re
 import shutil
 import sys
-import time
 import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "fixtures", "engine"))
@@ -109,34 +108,30 @@ class NamingTests(tl.EngineTestCase):
 
 
 class LockTests(tl.EngineTestCase):
-    def test_lock_acquire_release_and_staleness(self):
+    def test_lock_acquire_release_and_holder_record(self):
         ctx = self.make_ctx()
-        lock = st.Lock(ctx.run_dir, "claude-code")
+        lock = st.DriverLock(ctx.run_dir, "claude-code")
         self.assertTrue(lock.acquire())
-        self.assertTrue(os.path.exists(lock.path))
-        # a live foreign holder blocks
-        other = st.Lock(ctx.run_dir, "codex")
-        data = textio.read_json(lock.path)
-        data["pid"] = os.getppid() if hasattr(os, "getppid") else 1
-        textio.write_json_atomic(lock.path, data)
-        with tl.mock.patch.object(st, "_pid_alive", return_value=True):
-            self.assertIsNotNone(other.holder())
-            self.assertFalse(other.acquire())
-            # stale after 120 s
-            data["heartbeat_ts"] = time.time() - 200
-            textio.write_json_atomic(lock.path, data)
-            self.assertIsNone(other.holder())
-            self.assertTrue(other.acquire())
+        lock.announce()
+        self.assertTrue(os.path.exists(os.path.join(ctx.run_dir, ".ub", "jobs", "_driver.lock")))
+        # the OS lock excludes a second holder, whatever lock.json says or however old it is
+        other = st.DriverLock(ctx.run_dir, "codex")
+        self.assertFalse(other.acquire())
+        self.assertEqual(other.holder()["pid"], os.getpid())
+        self.assertEqual(other.holder()["host"], "claude-code")
+        textio.write_json_atomic(lock.info_path, {"pid": 999999, "host": "x", "since": "2000-01-01T00:00:00Z"})
+        self.assertFalse(other.acquire())
+        lock.release()
+        self.assertTrue(other.acquire())
         other.release()
-        self.assertFalse(os.path.exists(lock.path))
 
-    def test_dead_pid_is_stale(self):
+    def test_release_keeps_another_holders_record(self):
         ctx = self.make_ctx()
-        lock = st.Lock(ctx.run_dir)
-        os.makedirs(os.path.dirname(lock.path), exist_ok=True)
-        textio.write_json_atomic(lock.path, {"pid": 999999, "host": "x", "heartbeat_ts": time.time()})
-        with tl.mock.patch.object(st, "_pid_alive", return_value=False):
-            self.assertIsNone(lock.holder())
+        lock = st.DriverLock(ctx.run_dir)
+        self.assertTrue(lock.acquire())
+        textio.write_json_atomic(lock.info_path, {"pid": 999999, "host": "x"})
+        lock.release()
+        self.assertTrue(os.path.exists(lock.info_path))  # only its own record is removed
 
 
 class MigrationTests(tl.EngineTestCase):
@@ -211,7 +206,8 @@ class SupersedeTests(tl.EngineTestCase):
         ctx.write("a/b.md", "y\n")
         st.supersede_paths(ctx.run_dir, ["a/b.md"], "S1")  # the target exists: nothing is overwritten
         self.assertEqual(textio.read_text(os.path.join(ctx.run_dir, "_superseded", "S1", "a", "b.md")), "x\n")
-        self.assertTrue(ctx.exists("a/b.md"))
+        self.assertEqual(textio.read_text(os.path.join(ctx.run_dir, "_superseded", "S1", "a", "b.md.2")), "y\n")
+        self.assertFalse(ctx.exists("a/b.md"))  # and the source never stays in place
 
 
 class DiscoveryTests(tl.EngineTestCase):

@@ -26,15 +26,13 @@ from unittest import mock
 
 _KIT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.join(_KIT, "tests", "fixtures", "adapter"))
+sys.path.append(os.path.join(_KIT, "tests", "harness"))
 
 import adapter_testlib as tl  # noqa: E402
+import procfix  # noqa: E402
 from ublib import adapter, batch, filesproto, proc, textio  # noqa: E402
 
-try:
-    from ublib import stubs as _stubs  # noqa: F401  (B4)
-    HAVE_STUBS = True
-except ImportError:  # pragma: no cover
-    HAVE_STUBS = False
+HAVE_STUBS = os.path.isfile(os.path.join(tl.KIT, "tests", "harness", "stubs.py"))  # the fake-mode responder
 
 FAMILY_PY = os.path.join(tl.SCRIPTS, "family.py")
 TEXT = {"type": "text", "min_chars": 5}
@@ -184,7 +182,7 @@ class SiblingCreatesTheFolder(RaceBase):
         self.assertEqual([os.path.normcase(p) for p in written],
                          [os.path.normcase(os.path.join(self.folder, "05.md"))])
 
-    @unittest.skipUnless(HAVE_STUBS, "ublib.stubs (B4) not present")
+    @unittest.skipUnless(HAVE_STUBS, "tests/harness/stubs.py not present")
     def test_no_second_model_call_for_the_job(self):
         job, path = self.job("13.2-B", **files_job_fields("13.2-B"))
         patch, state = racing_finalpath(self.folder)
@@ -210,7 +208,7 @@ class SplitIoErrors(unittest.TestCase):
         self.assertEqual((res["ok"], res.get("io_error")), (False, False))
 
 
-@unittest.skipUnless(HAVE_STUBS, "ublib.stubs (B4) not present")
+@unittest.skipUnless(HAVE_STUBS, "tests/harness/stubs.py not present")
 class WriteErrorsAreNotRepaired(RaceBase):
     """Valid output that cannot be written is a local problem: retried here, never answered with a repair call."""
 
@@ -248,7 +246,7 @@ class WriteErrorsAreNotRepaired(RaceBase):
 
 # ---------------------------------------------------------------- 2. one worker per job
 
-@unittest.skipUnless(HAVE_STUBS, "ublib.stubs (B4) not present")
+@unittest.skipUnless(HAVE_STUBS, "tests/harness/stubs.py not present")
 class OneWorkerPerJob(RaceBase):
     def test_a_second_worker_for_a_running_job_makes_no_call(self):
         os.environ["UB_STUB_DELAY_S"] = "3"
@@ -305,17 +303,23 @@ class OneWorkerPerJob(RaceBase):
         job, path = self.job("r4")
         marker = batch.marker_path(self.run_dir, "r4")
         meta_path = self.out_path(job) + ".meta.json"
+        signal = os.path.join(self.tmp, "r4.lockwait")
+        os.environ[procfix.LOCK_SIGNAL_ENV] = signal
         real_write = textio.write_json_atomic
+        real_argv = batch.worker_argv
 
         def slow_launcher_write(p, obj):
             launcher_record = isinstance(obj, dict) and obj.get("pid") and obj.get("attempt") == 0 and \
                 not obj.get("backend")
             if launcher_record and os.path.normcase(os.fspath(p)) == os.path.normcase(marker):
-                wait_until(lambda: os.path.exists(meta_path), timeout=4)  # the worker gets every chance to finish
+                # the worker gets every chance to finish first: until it has finished, or found the lock taken
+                wait_until(lambda: os.path.exists(meta_path) or os.path.exists(signal), timeout=60)
             return real_write(p, obj)
 
-        with mock.patch.object(batch.textio, "write_json_atomic", side_effect=slow_launcher_write):
+        with mock.patch.object(batch.textio, "write_json_atomic", side_effect=slow_launcher_write), \
+                mock.patch.object(batch, "worker_argv", side_effect=lambda p: procfix.argv(*real_argv(p)[2:])):
             batch.launch_job(path)
+        self.assertTrue(os.path.exists(signal), "under the launch lock the worker must wait for it")
         self.assertTrue(wait_until(lambda: batch.job_state(self.run_dir, job) == "done", timeout=40))
         self.assertTrue(wait_until(lambda: not os.path.exists(marker), timeout=10),
                         "a marker outlived its worker: %r" % read_marker(marker))
@@ -354,9 +358,11 @@ class OneWorkerPerJob(RaceBase):
         wrapper = os.path.join(self.tmp, "wrapper.py")
         with open(wrapper, "w") as f:
             f.write("import subprocess, sys\nsys.exit(subprocess.call([sys.executable] + sys.argv[1:]))\n")
+        gate, signal = os.path.join(self.tmp, "r6.go"), os.path.join(self.tmp, "r6.lockwait")
+        os.environ.update({procfix.START_GATE_ENV: gate, procfix.LOCK_SIGNAL_ENV: signal})
         real_argv = batch.worker_argv
         with mock.patch.object(batch, "worker_argv", side_effect=lambda p: [sys.executable, wrapper] +
-                               real_argv(p)[1:]):
+                               procfix.argv(*real_argv(p)[2:])[1:]):
             info = batch.launch_job(path)
         self.assertTrue(info.get("launched", True))
         probe = batch.JobLock(self.run_dir, "r6")  # e.g. another driver's lock probe while the worker starts
@@ -364,7 +370,9 @@ class OneWorkerPerJob(RaceBase):
         try:
             if not probe.exclusive:
                 self.skipTest("no file locks on this file system")
-            time.sleep(1.5)
+            procfix.touch(gate)  # only now may the worker start and try the lock
+            self.assertTrue(wait_until(lambda: os.path.exists(signal), timeout=60),
+                            "the worker's first lock try never failed: the contended path was not exercised")
         finally:
             probe.release()
         self.assertTrue(wait_until(lambda: batch.job_state(self.run_dir, job) == "done", timeout=40),
@@ -377,18 +385,24 @@ class OneWorkerPerJob(RaceBase):
     def test_a_waiting_worker_does_not_repeat_a_job_another_worker_ran(self):
         """A worker that waited for the lock while another one ran the job (and failed) makes no second call."""
         job, path = self.job("r7")
+        signal = os.path.join(self.tmp, "r7.lockwait")
         holder = batch.JobLock(self.run_dir, "r7")
         self.assertTrue(holder.try_acquire())
         try:
             if not holder.exclusive:
                 self.skipTest("no file locks on this file system")
-            waiter = subprocess.Popen([sys.executable, FAMILY_PY, "job", "--job", path], env=dict(os.environ),
+            waiter = subprocess.Popen(procfix.argv("job", "--job", path),
+                                      env=dict(os.environ, **{procfix.LOCK_SIGNAL_ENV: signal}),
                                       stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-            time.sleep(1.5)  # the waiter has started and waits for the lock
+            self.assertTrue(wait_until(lambda: os.path.exists(signal), timeout=60),
+                            "the waiter never reached the lock")
+            # the other worker's run ends as a real one does: a failed meta for the current prompt, one more
+            # finished run in the job's outcome generation, then the lock is free
             prompt = os.path.join(self.run_dir, job["prompt_file"])
             textio.write_json_atomic(self.out_path(job) + ".meta.json", {
                 "schema": 1, "id": "r7", "status": "failed", "error_class": "timeout",
                 "prompt_sha256": textio.sha256_file(prompt), "started": textio.now_iso()})
+            batch._bump_gen(self.run_dir, "r7")
         finally:
             holder.release()
         out, err = waiter.communicate(timeout=60)
@@ -401,8 +415,8 @@ class OneWorkerPerJob(RaceBase):
         """launch_job used to answer "running" here, while job_state kept saying "dead": the driver waited forever."""
         job, path = self.job("r8")
         with mock.patch.object(batch, "_stop_stale_worker", return_value=False), \
-                mock.patch.object(batch, "_stale_but_alive", return_value=False), \
-                mock.patch.object(batch, "_marker_live", return_value=(True, False, {"pid": 4242})):
+                mock.patch.object(batch, "_stands", return_value=False), \
+                mock.patch.object(batch, "_read_marker", return_value=(True, {"pid": 4242})):
             info = batch.launch_job(path)
         self.assertEqual((info.get("launched"), info.get("state"), info.get("pid")), (False, "stuck", 4242))
         self.assertEqual(batch.relaunch_count(self.run_dir, job), 0)
@@ -411,7 +425,7 @@ class OneWorkerPerJob(RaceBase):
 
 # ---------------------------------------------------------------- 3. reads of files being replaced
 
-@unittest.skipUnless(HAVE_STUBS, "ublib.stubs (B4) not present")
+@unittest.skipUnless(HAVE_STUBS, "tests/harness/stubs.py not present")
 class ReadsDuringReplace(RaceBase):
     def test_a_finished_job_stays_done(self):
         job, _path = self.job("p1")

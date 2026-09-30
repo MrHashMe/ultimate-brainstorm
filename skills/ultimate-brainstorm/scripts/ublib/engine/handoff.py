@@ -3,24 +3,35 @@
 Scripts: handoff_seed (14.3), handoff_final (14.4).
 """
 
+import binascii
 import filecmp
 import json
 import os
 import posixpath
 import re
 import shutil
+import stat
 import tempfile
+import time
 
-from .. import textio
+from .. import filesproto, textio
+from . import EngineError
 from . import registry
+from . import render
 from . import state as st
 
 SEEDS = ("ce", "speckit", "superpowers", "openspec")
 SEED_TEMPLATE = {"ce": "HANDOFF-CE", "speckit": "HANDOFF-SPECKIT", "superpowers": "HANDOFF-SUPERPOWERS",
                  "openspec": "HANDOFF-OPENSPEC"}
 CLOSING = "Do not reopen the choice of idea or architecture."
-PUBLISH = {"architecture": ("10_ARCHITECTURE", "docs/architecture"), "adr": ("10_ARCHITECTURE/adr", "docs/adr"),
-           "proposal": ("11_PROPOSAL", "docs/proposal")}
+# a seed or handoff of an idea its probe killed with no runner-up left says so instead of CLOSING (render.k6_dead)
+K6_WARNING = ("WARNING: the pre-registered probe missed (K6) and no runner-up is left: do not build this idea; switch "
+              "to another finalist first.")
+# item -> the run folder it copies. A copy keeps the run's layout under docs/<run>/ (docs/<run>/10_ARCHITECTURE/ with
+# its adr/, docs/<run>/11_PROPOSAL/), so every relative link in it (the README's adr/..., the proposal's
+# ../10_ARCHITECTURE/adr/...) resolves as it does in the run, and no published file is rewritten.
+PUBLISH = {"architecture": "10_ARCHITECTURE", "adr": "10_ARCHITECTURE/adr", "proposal": "11_PROPOSAL"}
+ALL_ITEMS = tuple(PUBLISH)
 SKIP_DIRS = ("_raw", "_packs", "export")
 RUN_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 
@@ -46,28 +57,28 @@ def publish_items(ctx):
     return []
 
 
-PUBLISHED_MARKER = ".ub-published"
-# Marker schema 2 (written since the cross-run fix): {"schema": 2, "run", "files": this run's files there,
-# "legacy_files": files a pre-schema marker listed that the run's package does not have (kit 2.0.2 may have mixed
-# another run in; they are left alone)}. A marker without "schema" comes from kit 2.0.2 or earlier.
-MARKER_SCHEMA = 2
-# What the files moved to _superseded by the current G14 answer's publish were, per item (so a retry after an
-# interruption still reports them in 12_HANDOFF.md).
-PUBLISH_PROGRESS = "handoff/publish-progress.json"
-# Files an OS, a file browser or an editor drops into any folder: never published, and never make a folder "taken".
-_IGNORED_NAMES = (".ds_store", "thumbs.db", "desktop.ini", ".gitkeep", ".keep")
-_TMP_PREFIX = ".ub-copy."
-
-
-def _kit_temp(name):
-    low = name.lower()
-    return low.endswith(".tmp") and low.startswith((_TMP_PREFIX, "." + PUBLISHED_MARKER + "."))
+# What this run published: paths under docs/<run>/, kept in the run folder, with the id of this run's claim. It is
+# written before a publish changes anything, so an interrupted publish still knows every file it may have written.
+PUBLISH_RECORD = "handoff/published.json"
+# docs/<run>/.ub-run.json: the claim of the run that owns the folder ({"schema", "run", "id", "run_dir": the run
+# folder relative to the project}), created whole in one step on the first publish (_create_claim). Two runs share a name when they sit in
+# different run roots of one project (the name is unique only within a root); a folder another run claimed is never
+# written.
+CLAIM = ".ub-run.json"
+# The marker kit 2.0.x wrote into each docs folder it published to: read only to name this run's old copies.
+LEGACY_MARKER = ".ub-published"
+# Files an OS, a file browser or an editor drops into any folder: never published.
+_IGNORED_NAMES = (".ds_store", "thumbs.db", "desktop.ini", ".gitkeep", ".keep", CLAIM)
+# The tail of textio's atomic-write temp file names (.<name>.<8 random chars>.tmp)
+_TEMP_TAIL_RE = re.compile(r"^[a-z0-9_]{8}\.tmp$")
 
 
 def _ignored(name):
+    """OS and editor litter, the folder's claim, and the files of a FILE-protocol commit in progress (its
+    .ub-split-*.json journal and the hidden .tmp / .bak files next to its targets): never published."""
     low = name.lower()
-    return (low in _IGNORED_NAMES or low.startswith(("._", ".#")) or low.endswith((".swp", ".swo", "~"))
-            or _kit_temp(name))
+    return (low in _IGNORED_NAMES or low.startswith(("._", ".#", filesproto.JOURNAL_PREFIX))
+            or low.endswith((".swp", ".swo", "~")) or (low.startswith(".") and low.endswith((".tmp", ".bak"))))
 
 
 def _is_link(path):
@@ -87,7 +98,7 @@ def _source_files(src):
     for dirpath, dirs, files in os.walk(src):
         dirs[:] = sorted(d for d in dirs if d not in SKIP_DIRS)
         for f in sorted(files):
-            if f.endswith((".meta.json", ".failed.md")) or f == PUBLISHED_MARKER or _ignored(f):
+            if f.endswith((".meta.json", ".failed.md")) or _ignored(f):
                 continue
             full = os.path.join(dirpath, f)
             out.append((os.path.relpath(full, src).replace("\\", "/"), full))
@@ -95,67 +106,12 @@ def _source_files(src):
 
 
 def _safe_rel(rel):
-    """A relative posix path that stays inside its folder and names a publishable file (marker entries are read from
-    the repository)."""
+    """A relative posix path that stays inside its folder and names a publishable file (record entries are read from
+    disk)."""
     if not (isinstance(rel, str) and rel and not rel.startswith("/") and "\\" not in rel and ":" not in rel):
         return False
     parts = rel.split("/")
-    return all(p not in ("", ".", "..") for p in parts) and parts[-1] != PUBLISHED_MARKER and not _ignored(parts[-1])
-
-
-def _shown(text, limit=80):
-    """A run name or path read from disk, safe to put on a card: one line, ASCII; cut at limit, visibly."""
-    if len(text) <= 160 and all(32 <= ord(c) < 127 for c in text):
-        return text
-    if len(text) > limit:
-        return json.dumps(text[:limit], ensure_ascii=True)[:-1] + '..."'
-    return json.dumps(text, ensure_ascii=True)
-
-
-def _marker(dst):
-    """The .ub-published marker of a target folder, every field checked (it is read from the repository)."""
-    try:
-        data = textio.read_json(os.path.join(dst, PUBLISHED_MARKER))
-    except (OSError, ValueError):
-        data = None
-    data = data if isinstance(data, dict) else {}
-
-    def rels(key):
-        v = data.get(key)
-        return sorted(set(f for f in v if _safe_rel(f))) if isinstance(v, list) else []
-    run = data.get("run")
-    return {"run": run if isinstance(run, str) and run else None, "files": rels("files"),
-            "legacy_files": rels("legacy_files"),
-            "schema": data.get("schema") if isinstance(data.get("schema"), int) else None}
-
-
-def _write_marker(dst, run_name, files, legacy_files=()):
-    data = {"schema": MARKER_SCHEMA, "run": run_name, "files": sorted(set(files))}
-    if legacy_files:
-        data["legacy_files"] = sorted(set(legacy_files))
-    textio.write_json_atomic(os.path.join(dst, PUBLISHED_MARKER), data)
-
-
-def _scan(dst):
-    """(files, link): the files under dst (posix relpaths; the marker and OS/editor litter left out) and the first
-    folder or file under dst that is a link or junction (publish could write through it), or None."""
-    files, link = [], None
-    for dirpath, dirs, names in os.walk(dst):
-        keep = []
-        for d in sorted(dirs):
-            if _is_link(os.path.join(dirpath, d)):
-                link = link or os.path.relpath(os.path.join(dirpath, d), dst).replace("\\", "/")
-            else:
-                keep.append(d)
-        dirs[:] = keep
-        for f in names:
-            full = os.path.join(dirpath, f)
-            if os.path.islink(full):
-                link = link or os.path.relpath(full, dst).replace("\\", "/")
-            if f == PUBLISHED_MARKER or _ignored(f):
-                continue
-            files.append(os.path.relpath(full, dst).replace("\\", "/"))
-    return files, link
+    return all(p not in ("", ".", "..") for p in parts) and not _ignored(parts[-1])
 
 
 def _link_on_path(pd, rel):
@@ -172,199 +128,213 @@ def _run_name(ctx):
     return os.path.basename(ctx.state.get("run") or os.path.abspath(ctx.run_dir))
 
 
-def _holder(pd, rel, run_name):
-    """Who holds the target folder pd/rel: ("mine", None) this run's marker lists every file in it (also when only the
-    marker is left); ("run", <name>) another run's marker is there with files, or a schema-2 one listing files;
-    ("free", None) absent or empty (an old marker of another run or OS litter alone does not count); ("foreign",
-    None) it holds files the kit did not publish; ("link", <relpath>) it, a folder above it (up to docs/) or
-    something inside it is a link or junction."""
-    link = _link_on_path(pd, rel)
-    if link:
-        return "link", link
-    dst = os.path.join(pd, *rel.split("/"))
-    if not os.path.exists(dst):
-        return "free", None
-    if not os.path.isdir(dst):
-        return "foreign", None
-    files, inner = _scan(dst)
-    if inner:
-        return "link", "%s/%s" % (rel, inner)
-    marker = _marker(dst)
-    if marker["run"] == run_name and set(files) <= set(marker["files"]) | set(marker["legacy_files"]):
-        return "mine", None
-    if marker["run"] and marker["run"] != run_name and (files or (marker["schema"] == MARKER_SCHEMA
-                                                                  and marker["files"])):
-        return "run", marker["run"]
-    if not files:
-        return "free", None
-    return "foreign", None
-
-
-def _taken(rel, holder, other):
-    if holder == "link":
-        return "%s is a link or junction" % _shown(other)
-    if holder == "run":
-        return "%s holds run %s" % (rel, _shown(other))
-    return "%s holds files the kit did not publish" % rel
-
-
-ALL_ITEMS = ("architecture", "adr", "proposal")
-
-
-def _place(ctx, item, planned):
-    """Where one item goes (the target half of plan_target): the fixed folder (docs/architecture, docs/adr,
-    docs/proposal) when it is free or this run published it; when another run's package or the project's own files are
-    there, or it is a link or junction, the run's own folder docs/<run>/<item>, so two runs never mix (two ADR sets both
-    numbered 0001, say) and nothing already there is touched or written through. A copy this run made earlier (also
-    in the 2.0.x fallback docs/<item>/ub-<run>/) is updated where it is, even when the package has no files any more."""
-    src_rel, base_rel = PUBLISH[item]
-    pd = ctx.state.get("project_dir") or "."
-    run_name = _run_name(ctx)
-    own_rel = "docs/%s/%s" % (run_name, item)
-    legacy_rel = "%s/ub-%s" % (base_rel, run_name)
-    plan = {"item": item, "src": src_rel, "base": base_rel, "dst": None, "state": "refused", "empty": False,
-            "other_run": None, "why": "", "blocker": None, "legacy_dst": legacy_rel, "retire": []}
-    base, other = _holder(pd, base_rel, run_name)
-    own, own_other = _holder(pd, own_rel, run_name)
-    mines = [rel for rel, held in ((base_rel, base), (own_rel, own), (legacy_rel, _holder(pd, legacy_rel, run_name)[0]))
-             if held == "mine"]
-    mine = mines[0] if mines else None
-    if mine:
-        # this run's other copies of the item (a link that came and went, say) are retired, so no two remain
-        plan.update(dst=mine, state="update", empty=not planned, retire=mines[1:])
-    elif not planned:
-        plan.update(state="empty", why="no files")
-    elif base == "free":
-        plan.update(dst=base_rel, state="new")
-    elif own != "free" or not RUN_NAME_RE.match(run_name):
-        reasons = [_taken(base_rel, base, other), _taken(own_rel, own, own_other) if own != "free"
-                   else "the run name is not a safe folder name"]
-        plan.update(why="; ".join(r for i, r in enumerate(reasons) if r not in reasons[:i]),
-                    blocker=(_shown(own_other, 4096) if own == "link" else own_rel) if own != "free" else None)
-    else:
-        plan.update(dst=own_rel, state={"run": "other-run", "link": "linked"}.get(base, "foreign"), other_run=other,
-                    why=_taken(base_rel, base, other))
-    return plan
-
-
 def _abs(ctx, rel):
     return os.path.join(ctx.state.get("project_dir") or ".", *rel.split("/"))
 
 
-def _layout(ctx, items=None):
-    """Where every item goes, and "home": the adr copy's folder, the one place the ADRs are published to and every
-    ADR link of the architecture and proposal copies points at (None when the run has no ADRs or the adr folder cannot
-    be placed; the links are then left as they are). Publishing `architecture` or `proposal` publishes the ADRs too,
-    so every link is written against a fresh copy; the architecture copy never holds adr/. items None: all three (the
-    card shows the plan for the answer `publish`)."""
-    asked = list(ALL_ITEMS) if items is None else [i for i in ALL_ITEMS if i in items]
-    sources = dict((i, _source_files(ctx.path(PUBLISH[i][0]))) for i in ALL_ITEMS)
-    places = dict((i, _place(ctx, i, set(rel for rel, _f in sources[i]))) for i in ALL_ITEMS)
-    run_items = list(asked)
-    if "adr" not in asked and sources["adr"] and any(places[i]["dst"] for i in ("architecture", "proposal")
-                                                     if i in asked):
-        run_items.append("adr")
-    home = places["adr"]["dst"] if sources["adr"] else None
-    return {"asked": asked, "items": [i for i in ALL_ITEMS if i in run_items], "sources": sources, "places": places,
-            "home": home, "cache": {}}
+def _record(ctx, base):
+    """The files this run published (paths under base = docs/<run>), from PUBLISH_RECORD."""
+    data = ctx.read_json(PUBLISH_RECORD, {})
+    if not isinstance(data, dict) or data.get("docs") != base or not isinstance(data.get("files"), list):
+        return set()
+    return set(f for f in data["files"] if _safe_rel(f))
 
 
-def _relpath(to_rel, from_rel):
-    """Project-relative folder to_rel as seen from folder from_rel (forward slashes)."""
-    return posixpath.relpath("/" + to_rel, "/" + from_rel)
+def _claim_id(ctx):
+    """The id of this run's claim on docs/<run>/ (kept in PUBLISH_RECORD), or None before its first publish."""
+    data = ctx.read_json(PUBLISH_RECORD, {})
+    cid = data.get("claim") if isinstance(data, dict) else None
+    return cid if isinstance(cid, str) and re.match(r"^[0-9a-f]{32}$", cid) else None
 
 
-def _adr_links(src_rel, dst_rel, rel, target):
-    """(old, new) link prefix to the ADRs for file rel of a copy: the run's 10_ARCHITECTURE/adr as seen from the
-    file's folder in the run, and the ADRs' target folder as seen from the file's folder in the copy."""
-    folder = posixpath.dirname(rel)
-    return (_relpath(PUBLISH["adr"][0], posixpath.join(src_rel, folder)) + "/",
-            _relpath(target, posixpath.join(dst_rel, folder)) + "/")
+_KEEP = object()
 
 
-def _relink(raw, old, new):
-    """raw (bytes) with every Markdown link, <angle> link, reference definition and HTML href/src whose target starts
-    with old (optionally written as ./old) pointed at new instead. Works on the bytes, so the encoding, a BOM and the
-    line endings stay as they are; UTF-16 files are left alone."""
-    if raw.startswith((b"\xff\xfe", b"\xfe\xff")):
-        return raw
-    pattern = (br"(\]\([ \t]*<?|(?:href|src)=[\"']|^[ \t]{0,3}\[[^\]\r\n]+\]:[ \t]*<?)(?:\./)?"
-               + re.escape(old.encode("utf-8")))
-    return re.sub(pattern, lambda m: m.group(1) + new.encode("utf-8"), raw, flags=re.M)
+def _save_record(ctx, base, files, claim=_KEEP):
+    ctx.write_json(PUBLISH_RECORD, {"schema": 1, "docs": base, "files": sorted(files),
+                                    "claim": _claim_id(ctx) if claim is _KEEP else claim})
 
 
-# the link forms _relink rewrites, as targets: ](x), ](<x>), href="x" / src='x', and [ref]: x (any line ending/title)
-_LINK_TARGET_RE = re.compile(br"\]\([ \t]*<?([^)\s>]+)|(?:href|src)=[\"']([^\"']+)"
-                             br"|^[ \t]{0,3}\[[^\]\r\n]+\]:[ \t]*<?([^\s>]+)", re.M)
+# An empty claim is one whose creation was interrupted before its bytes were written: kit 2.1 before the hard-linked
+# claim, or a POSIX disk without hard links. It is this run's to replace (_read_claim: _EMPTY) when this run's record
+# names docs/<run> and the id of the claim it was creating (saved first; a run that lost the race to claim keeps no
+# id: _claim), once it is older than this: a younger one may be another run's claim being written.
+EMPTY_CLAIM_GRACE_S = 60
+_EMPTY = object()  # _read_claim: the claim is an empty one this run left
+_EMPTY_OWNER = ("a publish whose claim %s/%s is empty (interrupted while it claimed the folder: the run that left it "
+                "takes it over after %d s; for any other run, delete that file)")
 
 
-def _link_targets(ctx, dst_rel):
-    """The project-relative paths the Markdown and HTML files of the published copy at dst_rel link to (only the
-    files its marker lists)."""
-    out = set()
-    dst = _abs(ctx, dst_rel)
-    for f in _marker(dst)["files"]:
-        if not f.lower().endswith((".md", ".html")):
-            continue
+def _left_empty(ctx, base, path):
+    try:
+        info = os.lstat(path)
+    except OSError:
+        return False
+    record = ctx.read_json(PUBLISH_RECORD, {})
+    return (stat.S_ISREG(info.st_mode) and info.st_size == 0 and time.time() - info.st_mtime > EMPTY_CLAIM_GRACE_S
+            and isinstance(record, dict) and record.get("docs") == base and _claim_id(ctx) is not None)
+
+
+def _read_claim(ctx, base):
+    """(the claim of docs/<run>/ as read, None when there is none, _EMPTY for an empty claim this run left; and who
+    holds the folder by that claim: None when it is this run's to write (no claim yet, this run's claim: its id, or its
+    run folder, or an empty claim this run left), else 'the run at <path>'). One read decides both, so a claim is only
+    ever adopted after it was judged."""
+    path = _abs(ctx, "%s/%s" % (base, CLAIM))
+    if not os.path.lexists(path):
+        return None, None
+    data = textio.read_json_or(path)
+    if not isinstance(data, dict):
+        if _left_empty(ctx, base, path):
+            return _EMPTY, None
+        if os.path.isfile(path) and os.path.getsize(path) == 0:
+            return data, _EMPTY_OWNER % (base, CLAIM, EMPTY_CLAIM_GRACE_S)
+        return data, "a run whose claim %s/%s cannot be read (an interrupted publish, or not the kit's)" % (base, CLAIM)
+    mine = _claim_id(ctx)
+    if mine and data.get("id") == mine:
+        return data, None
+    if data.get("run_dir") and _claim_path(ctx) == data["run_dir"]:
+        return data, None
+    return data, "the run at %s (a run of the same name in another run root)" % (
+        data.get("run_dir") or "a folder on another drive")
+
+
+def _owner(ctx, base):
+    """None when docs/<run>/ is this run's to write, else who holds it (_read_claim)."""
+    return _read_claim(ctx, base)[1]
+
+
+def _claim_path(ctx):
+    """The run folder as a claim names it: relative to the project folder (the claim is committed with the copies,
+    so it never holds the user's absolute paths), posix; None on another drive (then only the id identifies it)."""
+    try:
+        rel = os.path.relpath(os.path.abspath(ctx.run_dir), os.path.abspath(ctx.state.get("project_dir") or "."))
+    except ValueError:
+        return None
+    return rel.replace("\\", "/")
+
+
+def _held_id(held):
+    return held.get("id") if isinstance(held, dict) and isinstance(held.get("id"), str) else None
+
+
+def _claim(ctx, base, files):
+    """Claim docs/<run>/ for this run before its first change, then write the record of the files it may write.
+    Returns None, or who holds the folder. A claim is adopted only as judged by the read that found it (this run's:
+    its id, or its run folder); where none was found, this run's claim is created only if the name is still free
+    (_create_claim), so of two runs that publish at the same moment exactly one gets it, and a claim that appeared in
+    between is judged, never adopted. An empty claim this run left (_EMPTY) is written over, then read again. A run
+    that loses the claim keeps the claim id its record held before, so it never takes over another run's empty claim."""
+    held, owner = _read_claim(ctx, base)
+    if owner:
+        return owner
+    prior = _claim_id(ctx)
+    cid = _held_id(held) or prior or binascii.hexlify(os.urandom(16)).decode("ascii")
+    if held is None or held is _EMPTY:
+        path = _abs(ctx, "%s/%s" % (base, CLAIM))
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        _save_record(ctx, base, _record(ctx, base), claim=cid)  # the id first: an interrupted publish keeps it
+        body = json.dumps({"schema": 1, "run": _run_name(ctx), "id": cid, "run_dir": _claim_path(ctx)},
+                          ensure_ascii=True) + "\n"
+        if held is _EMPTY:
+            _write_public(path, body.encode("ascii"), _public_mode())  # read again below: the last writer holds it
+        if held is _EMPTY or not _create_claim(path, body.encode("ascii")):
+            held, owner = _read_claim(ctx, base)  # another run claimed it a moment ago (or this run did, elsewhere)
+            if held is _EMPTY:  # empty after this run wrote it, or one that appeared empty: never adopted unread
+                owner = _EMPTY_OWNER % (base, CLAIM, EMPTY_CLAIM_GRACE_S)
+            if owner:
+                _save_record(ctx, base, _record(ctx, base), claim=prior)
+                return owner
+            cid = _held_id(held) or cid
+    _save_record(ctx, base, files, claim=cid)
+    return None
+
+
+def _create_claim(path, data):
+    """Create the claim file with its whole content in one step: a temp file (fsynced, with the umask mode) is hard
+    linked to the claim's name, which fails when the name exists. So of two runs exactly one gets the name, no reader
+    finds an empty claim, and an interrupted publish leaves either no claim or a whole one. On a disk without hard links
+    (exFAT, FAT32, some network shares): on Windows a rename of the temp file, which never replaces an existing name,
+    so the same holds; elsewhere O_EXCL and a write, whose interruption leaves an empty claim that the run which left
+    it takes over later (_read_claim). Returns False when the name was taken."""
+    fd, tmp = tempfile.mkstemp(prefix=textio.temp_prefix(path), suffix=".tmp", dir=os.path.dirname(path))
+    try:
+        with os.fdopen(fd, "wb") as f:
+            f.write(data)
+            f.flush()
+            os.fsync(f.fileno())
+        if _POSIX_MODES:
+            os.chmod(tmp, _public_mode())
         try:
-            with open(os.path.join(dst, *f.split("/")), "rb") as fh:
-                raw = fh.read()
+            os.link(tmp, path)
+            return True
+        except FileExistsError:
+            return False
         except OSError:
-            continue
-        for m in _LINK_TARGET_RE.finditer(raw):
-            link = (m.group(1) or m.group(2) or m.group(3) or b"").decode("utf-8", "replace")
-            link = link.split("#")[0].split("?")[0]
-            if not link or link.startswith("/") or re.match(r"^[A-Za-z][A-Za-z0-9+.-]*:", link):
-                continue
-            out.add(posixpath.normpath(posixpath.join(dst_rel, posixpath.dirname(f), link)))
-    return out
+            pass  # no hard links here
+        if not _POSIX_MODES:
+            try:
+                os.rename(tmp, path)  # MoveFileEx without REPLACE_EXISTING: an existing name is refused
+                return True
+            except FileExistsError:
+                return False
+        try:
+            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0), 0o644)
+        except FileExistsError:
+            return False
+        try:
+            view = memoryview(data)
+            while view:
+                view = view[os.write(fd, view):]
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+        return True
+    finally:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
 
 
-def _outside_links(ctx, layout):
-    """Every path that a published copy of this run links to, other than the copies this answer rewrites: the
-    folders whose marker names this run (fixed, docs/<run>/<item>, 2.0.x ub-<run>), whatever their state."""
-    if "outside" not in layout["cache"]:
-        pd = ctx.state.get("project_dir") or "."
-        run_name = _run_name(ctx)
-        rewritten = set(layout["places"][i]["dst"] for i in layout["items"] if layout["places"][i]["dst"])
-        rewritten |= set(r for i in layout["items"] for r in layout["places"][i]["retire"])
-        out = set()
-        for item in ALL_ITEMS:
-            base = PUBLISH[item][1]
-            for rel in (base, "docs/%s/%s" % (run_name, item), "%s/ub-%s" % (base, run_name)):
-                if rel in rewritten or _link_on_path(pd, rel) or not os.path.isdir(_abs(ctx, rel)):
-                    continue
-                if _marker(_abs(ctx, rel))["run"] == run_name:
-                    out |= _link_targets(ctx, rel)
-        layout["cache"]["outside"] = out
-    return layout["cache"]["outside"]
+_POSIX_MODES = os.name != "nt"
 
 
-def _package(ctx, item, layout):
-    """rel -> (source path, bytes to write or None to copy the file as it is): what the item's copy holds. The
-    architecture copy leaves out adr/ (the ADRs live only in the adr copy), and the ADR links of the Markdown and HTML
-    files of the architecture and proposal copies point at home."""
-    place, target = layout["places"][item], layout["home"]
-    src_rel, dst_rel = place["src"], place["dst"]
-    out = {}
-    for rel, full in layout["sources"][item]:
-        if item == "architecture" and rel.startswith("adr/"):
-            continue
-        data = None
-        if target and dst_rel and item != "adr" and rel.lower().endswith((".md", ".html")):
-            old, new = _adr_links(src_rel, dst_rel, rel, target)
-            if old != new:
-                try:
-                    with open(full, "rb") as fh:
-                        raw = fh.read()
-                except OSError:
-                    raw = None
-                if raw is not None:
-                    relinked = _relink(raw, old, new)
-                    if relinked != raw:
-                        data = relinked
-        out[rel] = (full, data)
-    return out
+def _public_mode():
+    """The mode a new file gets under this process's umask (0o644 under umask 022). textio's atomic writes create
+    owner-only files (right for run files); the published copies are for everyone who can read the repository."""
+    umask = os.umask(0o022)
+    os.umask(umask)
+    return 0o666 & ~umask
+
+
+def _write_public(path, data, mode):
+    """Write a published file through a temp file (named as textio names them, so _tidy finds an interrupted one) and
+    a rename, with the umask mode set on the temp file first: the file never exists with the owner-only mode of
+    textio's temp files, so a mode found on an unchanged file was set by someone on purpose and stays."""
+    path = os.path.abspath(path)
+    tmp = None
+    try:
+        fd, tmp = tempfile.mkstemp(prefix=textio.temp_prefix(path), suffix=".tmp", dir=os.path.dirname(path))
+        with os.fdopen(fd, "wb") as f:
+            f.write(data)
+            f.flush()
+            os.fsync(f.fileno())
+        if _POSIX_MODES:
+            os.chmod(tmp, mode)
+        textio._replace_with_retry(tmp, path)
+        tmp = None
+    except OSError as e:
+        err = textio.explain_long_path(e, path)
+        if err is e:
+            raise
+        raise err from e
+    finally:
+        if tmp is not None:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
 
 
 def _samefile(a, b):
@@ -374,119 +344,125 @@ def _samefile(a, b):
         return False
 
 
-def _same(path, full, data):
-    """True when the file at path already holds what the copy would write."""
-    if data is None:
-        return filecmp.cmp(path, full, shallow=False)
-    with open(path, "rb") as fh:
-        return fh.read() == data
+def _holds(path, src):
+    """True when path is a regular file (not a link) with the bytes of the file src."""
+    return not os.path.islink(path) and os.path.isfile(path) and filecmp.cmp(path, src, shallow=False)
+
+
+def _scan(ctx, rel, base):
+    """The files under the folder rel (paths under base), OS and editor litter left out; folders that are links or
+    junctions are not entered."""
+    out = []
+    for dirpath, dirs, names in os.walk(_abs(ctx, rel)):
+        dirs[:] = [d for d in dirs if not _is_link(os.path.join(dirpath, d))]
+        folder = os.path.relpath(dirpath, _abs(ctx, base)).replace("\\", "/")
+        out += ["%s/%s" % (folder, n) for n in names if not _ignored(n)]
+    return out
+
+
+def _layout(ctx, items=None):
+    """What an answer publishes: "asked" (the items it names; None = all three), "items" (those, plus the ADRs when
+    the proposal, which links to them, is published; `architecture` holds them anyway), the source files of every
+    item, "base" (docs/<run>), the "record" of the files this run published there that are still there, and
+    "partial": the answer leaves out a copy this run published, which may link to any old file, so no old file leaves
+    this time."""
+    asked = list(ALL_ITEMS) if items is None else [i for i in ALL_ITEMS if i in items]
+    for root in sorted(set(PUBLISH[i].split("/")[0] for i in ALL_ITEMS)):
+        filesproto.recover(ctx.path(root))  # a FILE-protocol commit a crash interrupted is finished before any copy
+    if "proposal" in asked:
+        render.refresh_page(ctx)  # a page an older kit rendered (no pinned script) is rendered again first
+    sources = dict((i, _source_files(ctx.path(PUBLISH[i]))) for i in ALL_ITEMS)
+    chosen = set(asked)
+    if "proposal" in chosen and sources["adr"]:
+        chosen.add("adr")
+    base = "docs/%s" % _run_name(ctx)
+    record = set(f for f in _record(ctx, base) if os.path.lexists(_abs(ctx, "%s/%s" % (base, f))))
+    roots = tuple(PUBLISH[i] + "/" for i in chosen)
+    owner = _owner(ctx, base) if RUN_NAME_RE.match(_run_name(ctx)) else None
+    return {"asked": asked, "items": [i for i in ALL_ITEMS if i in chosen], "sources": sources, "base": base,
+            "record": record if not owner else set(), "partial": any(not f.startswith(roots) for f in record),
+            "owner": owner}
 
 
 def _plan(ctx, item, layout):
-    plan = dict(layout["places"][item], stale=[], kept=[], clash=[], pinned=[], relocated=[], renamed=[],
-                home=layout["home"])
-    if plan["state"] != "update":
+    src, base = PUBLISH[item], layout["base"]
+    dst = "%s/%s" % (base, src)
+    files = dict(("%s/%s" % (src, rel), full) for rel, full in layout["sources"][item])
+    ours = set(f for f in layout["record"] if f.startswith(src + "/"))
+    plan = {"item": item, "src": src, "dst": None, "state": "refused", "why": "", "blocker": None,
+            "within": "architecture" if item == "adr" and "architecture" in layout["items"] else None,
+            "files": files, "changed": [], "stale": [], "kept": [], "renamed": [], "other": []}
+    if not files and not ours:
+        plan.update(state="empty", why="no files")
         return plan
-    package = _package(ctx, item, layout)
-    planned = set(package)
-    dst = _abs(ctx, plan["dst"])
-    marker = _marker(dst)
+    if not RUN_NAME_RE.match(_run_name(ctx)):
+        plan["why"] = "the run name is not a safe folder name"
+        return plan
+    if layout.get("owner"):
+        plan.update(why="%s belongs to %s" % (base, layout["owner"]), blocker=base)
+        return plan
+    pd = ctx.state.get("project_dir") or "."
+    for folder in sorted(set([dst]) | set(posixpath.dirname("%s/%s" % (base, f)) for f in set(files) | ours)):
+        link = _link_on_path(pd, folder)
+        if link:
+            plan.update(why="%s is a link or junction" % link, blocker=link)
+            return plan
 
-    def on_disk(rel):
-        return os.path.isfile(os.path.join(dst, *rel.split("/")))
-
-    def alias(f):
-        """f names the same file as a planned name of other letter case (a case-insensitive disk)."""
-        return any(q.lower() == f.lower() and q != f and _samefile(os.path.join(dst, *f.split("/")),
-                                                                  os.path.join(dst, *q.split("/"))) for q in planned)
-    if marker["schema"] is None and plan["dst"] != plan["legacy_dst"]:
-        # written by kit 2.0.2 or earlier: its list may include another run's files (the cross-run bug), so the
-        # files the package does not have stay, and the ones it replaces are flagged
-        plan["kept"] = sorted(f for f in set(marker["files"]) - planned if on_disk(f))
-        suspect = set(marker["files"]) if plan["kept"] else set()
-        stale = []
-    else:
-        stale = sorted(f for f in set(marker["files"]) - planned if on_disk(f))
-        plan["kept"] = sorted(f for f in set(marker["legacy_files"]) - planned if on_disk(f))
-        suspect = set(marker["legacy_files"])
-    # a case-only rename on a case-insensitive disk: the old name is the same file as a new one (links to it still
-    # resolve), so it is moved out before the new file is written, never kept or moved later
-    plan["renamed"] = sorted(f for f in stale if alias(f))
-    stale = sorted(set(stale) - set(plan["renamed"]))
-    if stale:
-        # never take away a file that another published copy of this run, not rewritten now, links to
-        linked = _outside_links(ctx, layout)
-        by_lower = {}
-        for target in linked:
-            by_lower.setdefault(target.lower(), []).append(target)
-
-        def is_linked(f):
-            rel = posixpath.join(plan["dst"], f)
-            if rel in linked:
-                return True
-            # a link spelled with other letter case reaches the same file on a case-insensitive disk
-            return any(_samefile(_abs(ctx, target), _abs(ctx, rel)) for target in by_lower.get(rel.lower(), []))
-        plan["pinned"] = sorted(f for f in stale if is_linked(f))
-    plan["stale"] = sorted(set(stale) - set(plan["pinned"]))
-    if item == "architecture":
-        plan["relocated"] = [f for f in stale if f.startswith("adr/")]
-    plan["clash"] = sorted(f for f in suspect & planned if on_disk(f) and not _same(
-        os.path.join(dst, *f.split("/")), *package[f]))
-    # a leftover that is a case variant of a new file is that file: it is replaced (backed up), not kept
-    for f in [f for f in plan["kept"] if alias(f)]:
-        plan["kept"].remove(f)
-        twin = [q for q in planned if q.lower() == f.lower()][0]
-        if twin not in plan["clash"] and not _same(os.path.join(dst, *f.split("/")), *package[twin]):
-            plan["clash"] = sorted(plan["clash"] + [twin])
+    def at(f):
+        return _abs(ctx, "%s/%s" % (base, f))
+    plan.update(dst=dst, state="update" if ours else "new")
+    plan["changed"] = sorted(f for f in files if os.path.lexists(at(f)) and not _holds(at(f), files[f]))
+    stale = sorted(f for f in ours - set(files) if os.path.lexists(at(f)) and not os.path.isdir(at(f)))
+    # a case-only rename on a case-insensitive disk: the old name is the new file, so it moves out before the write
+    plan["renamed"] = [f for f in stale if any(q.lower() == f.lower() and _samefile(at(f), at(q)) for q in files)]
+    plan["kept" if layout["partial"] else "stale"] = [f for f in stale if f not in plan["renamed"]]
+    plan["other"] = sorted(f for f in _scan(ctx, dst, base) if f not in files and f not in layout["record"])
     return plan
 
 
 def plan_target(ctx, item, items=None):
-    """What publishing one item does: where it goes and what happens there. The G14 card shows this plan (for the
-    answer `publish`, items None) and publish() follows it.
-    Returns {"item", "src", "base", "dst" (None = not published), "state" (new, update, other-run, foreign, refused,
-    empty), "empty" (update of an earlier copy by a package with no files), "other_run", "why", "blocker" (the folder
-    to move aside when refused), "stale" (files of this run's earlier copy that its package no longer has: moved to
-    the backup), "relocated" (the stale adr/ files of an architecture copy whose ADRs now live in the adr copy),
-    "pinned" (stale files another published copy of this run links to: kept), "kept" (files a pre-schema marker
-    listed that the package does not have: left in place), "clash" (files a pre-schema publish left there that the
-    package replaces with other content: backed up first)}."""
+    """What publishing one item does, for the answer `items` (None = `publish`, all three; the G14 card shows that).
+    Returns {"item", "src", "dst" (docs/<run>/<run folder>; None = not published), "state" (new, update, empty,
+    refused), "why", "blocker" (the link or junction to move aside when refused), "within" ("architecture" when the adr
+    copy is part of the architecture copy), "files" (path under docs/<run>/ -> source file), "changed" (files there
+    with other content: backed up first), "stale" (files this run published there before and no longer has: moved to
+    the backup), "kept" (the same, kept because the answer leaves out a copy this run published), "renamed" (old names
+    that are the same file as a new one on a case-insensitive disk: moved to the backup first), "other" (files there
+    this run did not publish: left alone)}."""
     return _plan(ctx, item, _layout(ctx, items))
 
 
-def adr_card_note(ctx, layout):
-    """The G14 card line that says where the ADRs end up ("" when there is nothing to say)."""
-    adr = layout["places"]["adr"]
-    linking = [i for i in ("architecture", "proposal") if layout["places"][i]["dst"]]
-    names = " and ".join("`%s`" % i for i in linking)
-    if layout["sources"]["adr"]:
-        if adr["dst"] and linking:
-            return ("ADRs are published once, to %s: %s %s them there too, and %s ADR links point there. An old ADR "
-                    "file that a copy not published in the same answer still links to stays until nothing links to it."
-                    % (adr["dst"], names, "publish" if len(linking) > 1 else "publishes",
-                       "their" if len(linking) > 1 else "its"))
-        if adr["dst"]:
-            return "ADRs are published once, to %s." % adr["dst"]
-        if linking:
-            return ("The adr folder cannot be used (see above), so the ADR links of the %s %s are left as they are "
-                    "and will not resolve; move that folder aside and redo step 14.2." % (
-                        " and ".join(linking), "copies" if len(linking) > 1 else "copy"))
-        return ""
-    if adr["state"] == "update":
-        return ("This run has no ADRs now: `adr` moves its old ADR copy in %s to the backup (except files a published "
-                "copy of this run still links to)." % adr["dst"])
-    return ""
+def _legacy_copies(ctx):
+    """This run's copies that kit 2.0.x published (docs/<item>, docs/<item>/ub-<run> or docs/<run>/<item>, with a
+    marker naming this run). Publishing leaves them alone; the card names them."""
+    run = _run_name(ctx)
+    out = []
+    for item in ALL_ITEMS:
+        for rel in ("docs/%s" % item, "docs/%s/ub-%s" % (item, run), "docs/%s/%s" % (run, item)):
+            marker = textio.read_json_or(os.path.join(_abs(ctx, rel), LEGACY_MARKER))
+            if isinstance(marker, dict) and marker.get("run") == run:
+                out.append(rel)
+    return out
 
 
 def card_lines(ctx):
-    """The G14 card's publish block: one line per item (for the answer `publish`), then where the ADRs end up."""
+    """The G14 card's publish block: one line per item (for the answer `publish`), then where the copies go."""
     layout = _layout(ctx)
-    note = adr_card_note(ctx, layout)
-    return [card_line(_plan(ctx, item, layout)) for item in ALL_ITEMS] + ([note] if note else [])
-
-
-def _count(n, one, many):
-    return "%d %s" % (n, one if n == 1 else many)
+    plans = [_plan(ctx, item, layout) for item in ALL_ITEMS]
+    lines = [card_line(plan) for plan in plans]
+    if any(plan["dst"] for plan in plans):
+        lines.append("Each copy goes to %s/, a folder no other run writes, and keeps the run's layout, so its links "
+                     "resolve unchanged: `architecture` holds the ADRs and `proposal` brings them along."
+                     % layout["base"])
+    if any(plan["stale"] for plan in plans):
+        lines.append("Files this run no longer has leave only when every copy it published is published again; with a "
+                     "partial answer they stay, so no copy loses a file it links to.")
+    old = _legacy_copies(ctx)
+    if old:
+        lines.append("Kit 2.0.x published this run to %s: %s left as %s and no longer updated (move or delete %s "
+                     "yourself)." % (", ".join(old), "that copy is" if len(old) == 1 else "those copies are",
+                                     "it is" if len(old) == 1 else "they are", "it" if len(old) == 1 else "them"))
+    return lines
 
 
 def card_line(plan):
@@ -499,95 +475,21 @@ def card_line(plan):
         if plan["blocker"]:
             line += " To publish it, move %s aside and redo step 14.2." % plan["blocker"]
         return line
+    notes = []
     if plan["state"] == "update":
-        line = head + "%s (this run published here before; %s)" % (
-            plan["dst"], "its package now has no files" if plan["empty"] else "files it replaces are backed up first")
-        moving = [f for f in plan["stale"] if f in plan["relocated"]]
-        other = [f for f in plan["stale"] + plan["renamed"] if f not in plan["relocated"]]
-        pinned_adrs = [f for f in plan["pinned"] if f in plan["relocated"]]
-        pinned_other = [f for f in plan["pinned"] if f not in plan["relocated"]]
-        if moving:
-            n = len(moving)
-            line += ". Its old %s of %s (%s) %s to the backup" % (
-                "copy" if n == 1 else "copies", _count(n, "ADR", "ADRs"),
-                "ADRs live only in the adr copy now" if plan["home"] else "the architecture copy holds no ADRs now",
-                "moves" if n == 1 else "move")
-        if other:
-            n = len(other)
-            line += ". %s this run published there before and no longer has %s to the backup" % (
-                _count(n, "file", "files"), "moves" if n == 1 else "move")
-        if pinned_adrs:
-            n = len(pinned_adrs)
-            line += ". Its old %s of %s %s, because another published copy of this run links to %s" % (
-                "copy" if n == 1 else "copies", _count(n, "ADR", "ADRs"), "stays" if n == 1 else "stay",
-                "it" if n == 1 else "them")
-        if pinned_other:
-            n = len(pinned_other)
-            line += ". %s this run no longer has %s, because another published copy of this run links to %s" % (
-                _count(n, "file", "files"), "stays" if n == 1 else "stay", "it" if n == 1 else "them")
-        if plan["kept"]:
-            n = len(plan["kept"])
-            line += (". WARNING: it also holds %s that this run's package does not have, published by kit 2.0.2 or "
-                     "earlier and possibly from another run; %s in place" % (
-                         _count(n, "file", "files"), "it stays" if n == 1 else "they stay"))
-        if plan["clash"]:
-            line += (". WARNING: it replaces %s that kit 2.0.2 or earlier published there, possibly another run's "
-                     "(backed up first)" % _count(len(plan["clash"]), "file", "files"))
-        if plan["retire"]:
-            line += (". This run's other copy in %s moves to the backup (files another published copy links to stay)"
-                     % " and ".join(plan["retire"]))
-        return line + ("." if plan["stale"] or plan["renamed"] or plan["pinned"] or plan["kept"] or plan["clash"]
-                       or plan["retire"] else "")
-    if plan["state"] == "other-run":
-        return head + "%s. WARNING: %s already holds another run's package (%s); nothing there is changed." % (
-            plan["dst"], plan["base"], _shown(plan["other_run"]))
-    if plan["state"] == "foreign":
-        return head + "%s. %s already holds files the kit did not publish; nothing there is changed." % (
-            plan["dst"], plan["base"])
-    if plan["state"] == "linked":
-        return head + "%s. %s; nothing is written through it." % (plan["dst"], plan["why"])
-    return head + plan["dst"]
-
-
-def _tidy(dst, moved):
-    """Remove the kit's own temp files an interrupted publish left under dst, and the folders that moving this run's
-    old files (moved: relpaths) left empty."""
-    for dirpath, _dirs, names in os.walk(dst):
-        for f in names:
-            full = os.path.join(dirpath, f)
-            if _kit_temp(f) and os.path.isfile(full) and not os.path.islink(full):
-                try:
-                    os.unlink(full)
-                except OSError:
-                    pass
-    top = os.path.normcase(os.path.abspath(dst))
-    for rel in sorted(moved, key=lambda r: -r.count("/")):
-        d = os.path.dirname(os.path.abspath(os.path.join(dst, *rel.split("/"))))
-        while os.path.normcase(d).startswith(top + os.sep):
-            try:
-                os.rmdir(d)
-            except OSError:
-                break
-            d = os.path.dirname(d)
-
-
-def _copy_replace(src, dst, data=None):
-    """Copy src (or write data, when given) over dst through a temp file and a rename, so a hard link at dst is
-    replaced, never written through."""
-    tmp = None
-    try:
-        fd, tmp = tempfile.mkstemp(prefix=_TMP_PREFIX, suffix=".tmp", dir=os.path.dirname(dst))
-        os.close(fd)
-        if data is None:
-            shutil.copy2(src, tmp)
-        else:
-            with open(tmp, "wb") as fh:
-                fh.write(data)
-        textio._replace_with_retry(tmp, dst)
-        tmp = None
-    finally:
-        if tmp is not None and os.path.exists(tmp):
-            os.unlink(tmp)
+        notes.append("this run published it before" + ("" if plan["files"] else "; its package now has no files"))
+    for files, one, many in (
+            (plan["changed"], "1 file it replaces is backed up to _superseded/ first",
+             "%d files it replaces are backed up to _superseded/ first"),
+            (plan["stale"] + plan["renamed"], "1 file this run no longer has moves to _superseded/",
+             "%d files this run no longer has move to _superseded/"),
+            (plan["kept"], "1 file this run no longer has stays: a copy not in the answer may link to it",
+             "%d files this run no longer has stay: a copy not in the answer may link to them"),
+            (plan["other"], "1 file this run did not publish stays as it is",
+             "%d files this run did not publish stay as they are")):
+        if files:
+            notes.append(one if len(files) == 1 else many % len(files))
+    return head + plan["dst"] + ((" (%s)" % "; ".join(notes)) if notes else "")
 
 
 def _backup_stamp(ctx):
@@ -599,164 +501,124 @@ def _backup_stamp(ctx):
     return stamp if n == 1 else "%s-%d" % (stamp, n)
 
 
-def _rels(value):
-    """A list of safe relpaths from the progress file (it is only ever written by publish(); checked anyway)."""
-    return sorted(set(f for f in value if _safe_rel(f))) if isinstance(value, list) else []
-
-
-def _progress(ctx):
-    """The moves already made for the current G14 answer (reset when G14 is answered again)."""
-    session = ((ctx.state.get("gates") or {}).get("G14") or {}).get("at") or ""
-    prog = ctx.read_json(PUBLISH_PROGRESS, {}) if session else {}
-    if not isinstance(prog, dict) or prog.get("g14_at") != session or not isinstance(prog.get("items"), dict):
-        prog = {"g14_at": session, "items": {}}
-    return prog
-
-
-def _retire(ctx, layout, item, plan, run_name, backup):
-    """Move this run's other copies of the item (plan["retire"]) to the backup, except files a published copy of this
-    run that stays links to. Returns [(folder, moved, kept)]."""
-    out = []
-    linked = _outside_links(ctx, layout)
-    for k, old_rel in enumerate(plan["retire"], 1):
-        old = _abs(ctx, old_rel)
-        marker = _marker(old)
-        files = [f for f in marker["files"] + marker["legacy_files"]
-                 if os.path.isfile(os.path.join(old, *f.split("/")))]
-        keep = [f for f in files if posixpath.join(old_rel, f) in linked]
-        moved = 0
-        for f in files:
-            path = os.path.join(old, *f.split("/"))
-            if f in keep or os.path.islink(path):
-                continue
-            shutil.move(path, backup("%s-retired%d" % (item, k), f))
-            moved += 1
-        if keep:
-            _write_marker(old, run_name, keep)
-        else:
-            shutil.move(os.path.join(old, PUBLISHED_MARKER), backup("%s-retired%d" % (item, k), PUBLISHED_MARKER))
-        _tidy(old, files)
-        for folder in (old, os.path.dirname(old)) if old_rel.startswith("docs/%s/" % run_name) else (old,):
+def _tidy(ctx, base, written, moved):
+    """Remove the temp files an interrupted atomic write left next to the files written (paths under base), and the
+    folders that moving this run's old files (moved) left empty (never base itself)."""
+    prefixes = {}
+    for f in written:
+        folder, name = posixpath.split(f)
+        prefixes.setdefault(folder, set()).add(textio.temp_prefix(name))  # the writer's own prefix, whatever its length
+    for folder, heads in sorted(prefixes.items()):
+        path = _abs(ctx, "%s/%s" % (base, folder))
+        for name in (os.listdir(path) if os.path.isdir(path) else []):
+            full = os.path.join(path, name)
+            if (any(name.startswith(h) and _TEMP_TAIL_RE.match(name[len(h):]) for h in heads)
+                    and os.path.isfile(full) and not os.path.islink(full)):
+                os.unlink(full)
+    top = os.path.normcase(_abs(ctx, base))
+    for f in sorted(moved, key=lambda r: -r.count("/")):
+        d = os.path.dirname(_abs(ctx, "%s/%s" % (base, f)))
+        while os.path.normcase(d).startswith(top + os.sep):
             try:
-                os.rmdir(folder)
+                os.rmdir(d)
             except OSError:
                 break
-        out.append((old_rel, moved, len(keep)))
-    return out
+            d = os.path.dirname(d)
 
 
 def publish(ctx, items):
-    """Copy each approved item into <project>/docs/... file by file, at the place plan_target() names; `architecture`
-    and `proposal` publish the ADRs too (the one folder their ADR links point at). Nothing is ever deleted, and only
-    this run's own files are ever touched: a file that would be overwritten, or a file of this run's earlier copy that
-    its package no longer has, goes to _superseded/<stamp>/published/<item>/ first. Two phases: every copy gets its new
-    files first (the adr copy before the copies that link to it); only then do old files leave, except the ones a
-    published copy of this run outside the answer still links to. The marker is written before the first change, so
-    an interrupted publish resumes in the same folder.
+    """Copy each approved item into <project>/docs/<run>/, where it keeps the run's layout, so no file is rewritten;
+    `proposal` also publishes the ADRs it links to. Only docs/<run>/ is written, a folder this run claims before its
+    first change (CLAIM; a folder another run of the same name claimed is refused), so runs never mix, also when two
+    publish at the same moment. The copy is unconditional and idempotent: a file that already holds the run's bytes is
+    left alone, its mode too; any other file or link at a planned name goes to
+    _superseded/<stamp>/published/<path under docs/<run>/> first, and so does each file this run published there before
+    and no longer has, but only when the answer publishes every copy this run published (a copy left out may link to
+    it). Files are written through a temp file that already has the umask mode and a rename (a hard link is replaced,
+    never written through). The record of what was published (PUBLISH_RECORD) is written before the first change, so
+    an interrupted publish just runs again. Folders a link or junction sits on are never written.
     Returns {"published": [...], "not_published": [...]} (one short line each, for 12_HANDOFF.md)."""
-    pd = ctx.state.get("project_dir")
     out = {"published": [], "not_published": []}
-    if not pd:
+    if not ctx.state.get("project_dir"):
         return out
-    stamp = _backup_stamp(ctx)
-    run_name = _run_name(ctx)
-    prog = _progress(ctx)
     layout = _layout(ctx, items)
-    home = layout["home"]
-    lines = {}
-    work = []
+    base = layout["base"]
+    plans = [_plan(ctx, item, layout) for item in layout["items"]]
+    # the adr copy of a published architecture copy is part of it: written once, with it
+    written_with = set(p["item"] for p in plans if p["dst"])
+    work = [p for p in plans if p["dst"] and p["within"] not in written_with]
+    stamp = _backup_stamp(ctx)
 
-    def backup(item, rel):
-        path = ctx.path("_superseded", stamp, "published", item, *rel.split("/"))
+    def at(f):
+        return _abs(ctx, "%s/%s" % (base, f))
+
+    def backup(f):
+        path = ctx.path("_superseded", stamp, "published", *f.split("/"))
         os.makedirs(os.path.dirname(path), exist_ok=True)
         return path
-    for item in sorted(layout["items"], key=lambda i: i != "adr"):
-        plan = _plan(ctx, item, layout)
-        src_rel, dst_rel = plan["src"], plan["dst"]
-        if not dst_rel:
-            if item in layout["asked"] or plan["state"] != "empty":
-                lines[item] = ("not_published", "%s (%s)" % (src_rel, plan["why"]))
-            continue
-        dst = os.path.join(pd, *dst_rel.split("/"))
-        package = _package(ctx, item, layout)
-        planned = set(package)
-        entry = prog["items"].get(item)
-        entry = entry if isinstance(entry, dict) and entry.get("dst") == dst_rel else {}
-        entry = {"dst": dst_rel, "moved": _rels(entry.get("moved")),
-                 "moving": sorted(set(_rels(entry.get("moving"))) | set(plan["stale"])),
-                 "clash": sorted(set(_rels(entry.get("clash"))) | set(plan["clash"]))}
-        prog["items"][item] = entry
-        textio.write_json_atomic(ctx.path(PUBLISH_PROGRESS), prog)
-        os.makedirs(dst, exist_ok=True)
-        # until a clashing file is replaced it stays a leftover, so a re-asked card still warns about it
-        _write_marker(dst, run_name, (planned - set(plan["clash"])) | set(plan["stale"]) | set(plan["pinned"])
-                      | set(plan["renamed"]), set(plan["kept"]) | set(plan["clash"]))
-        for rel in plan["renamed"]:
-            # a case-only rename on a case-insensitive disk: the old name is the new file, so move it out first
-            path = os.path.join(dst, *rel.split("/"))
-            if os.path.isfile(path) and not os.path.islink(path):
-                shutil.move(path, backup(item, rel))
-                entry["moved"] = sorted(set(entry["moved"]) | {rel})
-                textio.write_json_atomic(ctx.path(PUBLISH_PROGRESS), prog)
-        for rel in sorted(package):
-            full, data = package[rel]
-            target = os.path.join(dst, *rel.split("/"))
-            if os.path.isdir(target):
+    planned = dict((f, full) for p in work for f, full in p["files"].items())
+    moved = dict((p["item"], []) for p in work)
+    owner = _claim(ctx, base, layout["record"] | set(planned)) if work else None
+    if owner:  # another run claimed docs/<run>/ between the plan and now: nothing is written
+        for p in plans:
+            if p["dst"]:
+                p.update(dst=None, state="refused", why="%s belongs to %s" % (base, owner), blocker=base)
+        work = []
+    if work:
+        mode = _public_mode()
+        for p in work:
+            for f in p["renamed"]:
+                shutil.move(at(f), backup(f))
+                moved[p["item"]].append(f)
+        # the ADRs first, so a copy that links to them never points at a file that is not there yet
+        for f in sorted(planned, key=lambda f: (not f.startswith(PUBLISH["adr"] + "/"), f)):
+            target = at(f)
+            if os.path.isdir(target) and not os.path.islink(target):
                 continue
-            if os.path.isfile(target):
-                if _same(target, full, data):
-                    continue
-                shutil.copy2(target, backup(item, rel))
+            if _holds(target, planned[f]):
+                continue  # an unchanged file keeps its mode: a mode set on purpose stays
+            if os.path.islink(target):
+                shutil.move(target, backup(f))  # a link is moved aside, never followed or written through
+            elif os.path.isfile(target):
+                textio._write_bytes_atomic(backup(f), textio.read_bytes(target))  # fsynced, like every write
             os.makedirs(os.path.dirname(target), exist_ok=True)
-            _copy_replace(full, target, data)
-        work.append((item, plan, dst_rel, dst, planned, entry))
-    for item, plan, dst_rel, dst, planned, entry in work:
-        keep = [os.path.join(dst, *q.split("/")) for q in sorted(planned | set(plan["pinned"]))]
-        for rel in plan["stale"]:
-            path = os.path.join(dst, *rel.split("/"))
-            if any(_samefile(path, q) for q in keep if q.lower() == path.lower()):
-                continue  # another name for a file that stays (a case-insensitive disk)
-            if os.path.isfile(path) and not os.path.islink(path):
-                shutil.move(path, backup(item, rel))
-                entry["moved"] = sorted(set(entry["moved"]) | {rel})
-                textio.write_json_atomic(ctx.path(PUBLISH_PROGRESS), prog)
-        _write_marker(dst, run_name, planned | set(plan["pinned"]), plan["kept"])
-        retired = _retire(ctx, layout, item, plan, run_name, backup)
-        moved = set(entry["moved"]) | set(f for f in entry["moving"] if f not in planned
-                                          and not os.path.lexists(os.path.join(dst, *f.split("/"))))
-        _tidy(dst, sorted(moved))
-        textio.write_json_atomic(ctx.path(PUBLISH_PROGRESS), prog)
-        notes = [plan["why"]] if plan["why"] else []
-        if item not in layout["asked"]:
-            notes.append("published with the copies that link to it")
-        if plan["empty"]:
+            _write_public(target, textio.read_bytes(planned[f]), mode)
+        # old files last: every copy already holds its new files
+        for p in work:
+            for f in p["stale"]:
+                if os.path.lexists(at(f)):
+                    shutil.move(at(f), backup(f))
+                    moved[p["item"]].append(f)
+        gone = set(f for fs in moved.values() for f in fs)
+        _tidy(ctx, base, set(planned) | {CLAIM}, gone)  # (the claim's temp too, if a crash left it)
+        _save_record(ctx, base, set(f for f in (layout["record"] | set(planned)) - gone if os.path.lexists(at(f))))
+    for p in plans:
+        if not p["dst"]:
+            if p["item"] in layout["asked"] or p["state"] != "empty":
+                out["not_published"].append("%s (%s)" % (p["src"], p["why"]))
+            continue
+        if p not in work:
+            if p["item"] in layout["asked"]:
+                out["published"].append("%s -> %s (in the architecture copy)" % (p["src"], p["dst"]))
+            continue
+        notes = [] if p["item"] in layout["asked"] else ["published with the proposal, which links to it"]
+        if not p["files"]:
             notes.append("the package has no files; nothing copied")
-        if item == "architecture" and home:
-            notes.append("its ADRs are in %s" % home)
-        if item in ("architecture", "proposal") and not home and layout["sources"]["adr"]:
-            notes.append("its ADR links are not rewritten: the adr folder cannot be used")
-        if moved:
-            notes.append("%s moved to _superseded" % _count(len(moved), "old file", "old files"))
-        for old_rel, n_moved, n_kept in retired:
-            notes.append("this run's other copy in %s: %s moved to _superseded%s" % (
-                old_rel, _count(n_moved, "file", "files"), ("; %d kept (linked)" % n_kept) if n_kept else ""))
-        if plan["pinned"]:
-            notes.append("%s kept: another published copy of this run links to %s" % (
-                _count(len(plan["pinned"]), "old file", "old files"), "it" if len(plan["pinned"]) == 1 else "them"))
-        if entry["clash"]:
-            notes.append("%s from kit 2.0.2 or earlier replaced, backed up" % _count(len(entry["clash"]), "file",
-                                                                                        "files"))
-        if plan["kept"]:
-            notes.append("%s from kit 2.0.2 or earlier left in place" % _count(len(plan["kept"]), "file", "files"))
-        lines[item] = ("published", "%s -> %s%s" % (plan["src"], dst_rel,
-                                                    (" (%s)" % "; ".join(notes)) if notes else ""))
-    for item in ALL_ITEMS:
-        if item in lines:
-            out[lines[item][0]].append(lines[item][1])
+        for files, one, many in (
+                (moved[p["item"]], "1 old file moved to _superseded", "%d old files moved to _superseded"),
+                (p["kept"], "1 old file kept: a copy not in the answer may link to it",
+                 "%d old files kept: a copy not in the answer may link to them"),
+                (p["other"], "1 file this run did not publish left as it is",
+                 "%d files this run did not publish left as they are")):
+            if files:
+                notes.append(one if len(files) == 1 else many % len(files))
+        out["published"].append("%s -> %s%s" % (p["src"], p["dst"], (" (%s)" % "; ".join(notes)) if notes else ""))
     return out
 
 
 def seed_text(ctx, kind):
+    """The handoff seed for `kind` from templates/docs/HANDOFF-<KIND>.md, ending with CLOSING; without it once the
+    chosen idea's probe missed with no runner-up left (render.k6_dead): that choice is not settled."""
     s = ctx.state
     run_rel = "brainstorm/%s" % s.get("run", "")
     iid = registry.chosen_idea(ctx) or "?"
@@ -764,37 +626,33 @@ def seed_text(ctx, kind):
     check = ctx.read("checks/%s.md" % iid)
     dec = ctx.read("08_DECISION.md")
     not_doing = "; ".join(m.group(1).strip() for m in re.finditer(r"^Not doing[^:]*:\s*(.*)$", dec, re.M))
-    kills = re.findall(r"(Fails if[^\n|]*)", check + "\n" + ctx.read("07_REDTEAM.md"))[:3]
+    kills = re.findall(r"(Fails if[^\n|]*)",
+                       registry._unfenced(check) + "\n" + registry._unfenced(ctx.read("07_REDTEAM.md")))[:3]
     dissent = "; ".join(m.group(1).strip() for m in re.finditer(r"^Dissent recorded:\s*(.*)$", dec, re.M))
-    why = ""
-    m = re.search(r"^Chosen[^:]*:\s*[IEQ]-\d+[^-]*-\s*(.*)$", dec, re.M)
-    if m:
-        why = m.group(1).strip()
     verdict, diff = registry.check_verdict(ctx, iid)
-    mapping = {
-        "IDEA_TITLE": registry.clean(info.get("title") or s.get("topic", "")),
-        "IDEA_ONE_LINER": registry.clean(info.get("pitch") or info.get("title") or s.get("topic", "")).rstrip("."),
-        "BASIS": "prior-art verdict %s%s" % (verdict or "NOT CHECKED", ("; differentiator: %s" % diff) if diff else ""),
-        "WHY_IT_MATTERS": why or "see 08_DECISION.md",
-        "TRADEOFFS": "; ".join(kills + ([dissent] if dissent and dissent != "none" else [])) or "see 07_REDTEAM.md",
-        "SETTLED": "Not doing: %s" % (not_doing or "see 08_DECISION.md"), "PROBE_STATUS": probe_status(ctx),
-        "DOMAIN_CLAUSE": domain_clause(ctx, run_rel), "RUN_NAME": s.get("run", ""),
-        "NOT_DOING": not_doing or "see 08_DECISION.md"}
-    # the names of the first engine version's mapping (templates may use either set)
     passed = "RESULT: PASSED" in ctx.read("09_PROBE.md")
-    mapping.update({"TITLE": mapping["IDEA_TITLE"], "DESCRIPTION": mapping["IDEA_ONE_LINER"], "IDEA_ID": iid,
-                    "RUN_PATH": run_rel, "PROBE_RESULT": mapping["PROBE_STATUS"],
-                    "ARCH_README": "%s/10_ARCHITECTURE/README.md" % run_rel,
-                    "PROPOSAL": "%s/11_PROPOSAL/PROPOSAL.md" % run_rel, "DATE": textio.now_iso()[:10],
-                    "PROBE_WARNING": "" if passed else "WARNING: riskiest assumption untested (09_PROBE.md has no "
-                                                        "RESULT: PASSED)."})
+    dead = render.k6_dead(s)
+    warning = K6_WARNING if dead else "" if passed else \
+        "WARNING: riskiest assumption untested (09_PROBE.md has no RESULT: PASSED)."
+    mapping = {
+        "TITLE": registry.clean(info.get("title") or s.get("topic", "")),
+        "DESCRIPTION": registry.clean(info.get("pitch") or info.get("title") or s.get("topic", "")).rstrip("."),
+        "IDEA_ID": iid, "RUN_PATH": run_rel,
+        "BASIS": "prior-art verdict %s%s" % (verdict or "NOT CHECKED", ("; differentiator: %s" % diff) if diff else ""),
+        "TRADEOFFS": "; ".join(kills + ([dissent] if dissent and dissent != "none" else [])) or "see 07_REDTEAM.md",
+        "SETTLED": "Not doing: %s" % (not_doing or "see 08_DECISION.md"), "PROBE_RESULT": probe_status(ctx),
+        "ARCH_README": "%s/10_ARCHITECTURE/README.md" % run_rel, "PROPOSAL": "%s/11_PROPOSAL/PROPOSAL.md" % run_rel,
+        "DOMAIN_CLAUSE": domain_clause(ctx, run_rel), "DATE": textio.now_iso()[:10], "PROBE_WARNING": warning}
     from . import builders
     text = builders.render_doc(SEED_TEMPLATE[kind], mapping)
     if not text:
-        text = builtin_seed(kind, dict(mapping, RUN_PATH=run_rel, ARCH_README="%s/10_ARCHITECTURE/README.md" % run_rel,
-                                       PROPOSAL="%s/11_PROPOSAL/PROPOSAL.md" % run_rel))
+        raise EngineError("template %s is missing or uses a placeholder the engine does not fill (templates/docs/%s.md)"
+                          % (SEED_TEMPLATE[kind], SEED_TEMPLATE[kind]),
+                          fix=["reinstall the kit (templates and engine versions differ): install.py update"])
     text = text.rstrip()
-    if not text.endswith(CLOSING):
+    if dead:
+        text = "\n".join(ln for ln in text.split("\n") if ln.strip() != CLOSING).rstrip()
+    elif not text.endswith(CLOSING):
         text += "\n" + CLOSING
     return text + "\n"
 
@@ -812,29 +670,6 @@ def domain_clause(ctx, run_rel):
             "CONTEXT.md, CONCEPTS.md or any other repo doc." % run_rel)
 
 
-def builtin_seed(kind, m):
-    arch = ("Architecture decisions: %s (ADRs accepted). Milestone 0 (09_PROBE.md) runs first; do not plan beyond "
-            "its kill criterion." % m["ARCH_README"])
-    if kind == "ce":
-        body = ("%s - %s. Basis: %s. Why it matters: %s. Known tradeoffs: %s. Settled decisions: %s. Probe result: "
-                "%s. %s %s" % (m["IDEA_TITLE"], m["IDEA_ONE_LINER"], m["BASIS"], m["WHY_IT_MATTERS"], m["TRADEOFFS"],
-                               m["SETTLED"], m["PROBE_STATUS"], m["DOMAIN_CLAUSE"], arch))
-    elif kind == "speckit":
-        body = ("%s - %s. Specify what %s describes in sections 3, 6, 7 and 8, using %s/10_ARCHITECTURE/chosen/. "
-                "Out of scope: %s. Probe result: %s. %s" % (m["IDEA_TITLE"], m["IDEA_ONE_LINER"], m["PROPOSAL"],
-                                                            m["RUN_PATH"], m["NOT_DOING"], m["PROBE_STATUS"], arch))
-    elif kind == "superpowers":
-        body = ("Architectural path. Inputs: %s/08_DECISION.md, %s/09_PROBE.md and %s - read them fully first. The "
-                "decision, scope, Not doing list and kill criteria are approved by me. Stop after the spec for my "
-                "review. Probe result: %s. %s" % (m["RUN_PATH"], m["RUN_PATH"], m["ARCH_README"], m["PROBE_STATUS"],
-                                                  arch))
-    else:
-        body = ("Direction already chosen: %s/08_DECISION.md and %s. Test it against the current specs and code and "
-                "raise conflicts one question at a time. Do not write anything until I ask. Probe result: %s."
-                % (m["RUN_PATH"], m["ARCH_README"], m["PROBE_STATUS"]))
-    return "%s\n%s\n" % (body, CLOSING)
-
-
 def handoff_seed(ctx, step):
     items = publish_items(ctx)
     res = publish(ctx, items) if items else {"published": [], "not_published": []}
@@ -849,7 +684,8 @@ def handoff_seed(ctx, step):
 
 
 def handoff_final(ctx, step):
-    """12_HANDOFF.md (templates/docs/HANDOFF.md) + the LEDGER probe row."""
+    """12_HANDOFF.md (templates/docs/HANDOFF.md) + the LEDGER probe row. It ends with CLOSING, or with K6_WARNING once
+    the chosen idea's probe missed with no runner-up left."""
     from . import builders
     from . import render
     s = ctx.state
@@ -888,13 +724,14 @@ def handoff_final(ctx, step):
                  "- Seed: %(SEED_PATH)s" % mapping, "- Published: %(PUBLISHED)s" % mapping]
         if mapping["NOT_PUBLISHED"]:
             lines.append("- Not published: %(NOT_PUBLISHED)s" % mapping)
-        lines += ["- Domain docs: %(DOMAIN_DOCS)s" % mapping, CLOSING]
+        lines += ["- Domain docs: %(DOMAIN_DOCS)s" % mapping, K6_WARNING if render.k6_dead(s) else CLOSING]
         return "\n".join(lines) + "\n"
     mapping["HANDOFF_BODY"] = builtin().rstrip("\n")
     mapping["DATE"] = textio.now_iso()[:10]
     ctx.write("12_HANDOFF.md", builders.render_doc("HANDOFF", mapping, fallback=builtin))
     probe = s.get("probe") or {}
-    if probe.get("result") and not s.get("ledger_probe_written"):
+    # only a result for the chosen idea (a probe of an idea that was switched away from has its own MISSED row)
+    if probe.get("result") and probe.get("idea") in (None, iid) and not s.get("ledger_probe_written"):
         registry.append_ledger(ctx, ["| %s | %s | %s | %s | probe %s | 09_PROBE.md | - |" % (
             textio.now_iso()[:10], s.get("run"), iid, registry.clean(info.get("title", "")),
             probe["result"].lower())])

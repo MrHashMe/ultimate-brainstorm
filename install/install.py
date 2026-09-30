@@ -15,9 +15,15 @@ Common flags: --agents auto|claude-code,codex,kimi,zcode  --scope user|project  
               --source DIR|github  --tag vX.Y.Z  --components core|none|core,+<extra>,...
               --with-clis claude,codex,kimi  --login  --force  --migrate-v1  --routing-block
               --claude-config-dir DIR  --codex-home DIR  --kimi-home DIR  --no-native  --backup-dir DIR
+              --require-attestation   (a downloaded release must pass `gh attestation verify`)
 
 Exit codes: 0 ok (also "nothing to do"), 1 failure, 2 usage, 3 no supported agent detected and none named,
-            4 blocked rows present with --yes, 5 cancelled by the user.
+            4 blocked rows present with --yes, or the install changed after the plan was made (nothing applied),
+            5 cancelled by the user.
+
+Apply writes install-manifest.json and install.log after every row, under an exclusive lock on UB_HOME/install.lock.
+Rows that would swap a kit tree wait (are blocked) while a run has live workers or a live driver; once the lock is
+held, the plan's assumptions (no other installer changed the install, no run became live) are checked again.
 
 Hard limits (10.4 item 8): no sudo or admin; refuses root without UB_ALLOW_ROOT=1; never edits PATH or shell rc files;
 never reads or writes API key values (only variable NAMES are checked); never edits settings.json, config.toml,
@@ -32,6 +38,7 @@ import argparse  # noqa: E402
 import codecs  # noqa: E402
 import importlib.util  # noqa: E402
 import datetime  # noqa: E402
+import errno  # noqa: E402
 import hashlib  # noqa: E402
 import json  # noqa: E402
 import os  # noqa: E402
@@ -46,7 +53,7 @@ import tempfile  # noqa: E402
 import time  # noqa: E402
 import urllib.request  # noqa: E402
 
-KIT_VERSION = "2.0.3"
+KIT_VERSION = "2.1.0"
 INSTALL_DIR = os.path.dirname(os.path.abspath(__file__))
 KIT_ROOT = os.path.dirname(INSTALL_DIR)
 _SCRIPTS_DIR = os.path.join(KIT_ROOT, "skills", "ultimate-brainstorm", "scripts")
@@ -63,7 +70,7 @@ except ImportError as _exc:  # pragma: no cover - only when install.py was copie
 IS_WINDOWS = os.name == "nt"
 SKILL = "ultimate-brainstorm"
 MARKER = ".ub-owned"
-PLUGIN_ID = "ultimate-brainstorm@ultimate-brainstorm"  # the experimental bundles/stack entry is never used [U-15]
+PLUGIN_ID = "ultimate-brainstorm@ultimate-brainstorm"
 MARKETPLACE = "ultimate-brainstorm"
 AGENTS = ("claude-code", "codex", "kimi", "zcode")
 DISPLAY = {"claude-code": "Claude Code", "codex": "Codex", "kimi": "Kimi Code", "zcode": "ZCode"}
@@ -97,37 +104,44 @@ ROUTING_BLOCK = "\n".join([
     ROUTING_END,
 ])
 
-# Provider data used only when SK/scripts/families.default.json (B2) cannot be read. Values copied from 4.9 / 4.16.
-FALLBACK_PROVIDERS = {
-    "glm": {"token_env": "ZAI_API_KEY",
-            "base_url": {"global": "https://api.z.ai/api/anthropic", "cn": "https://open.bigmodel.cn/api/anthropic"}},
-    "kimi": {"token_env": "KIMI_API_KEY", "base_url": {"global": "https://api.moonshot.ai/anthropic"}},
-    "kimi-code": {"token_env": "KIMI_CODE_API_KEY",
-                  "base_url": {"global": "https://api.kimi.ai/coding/", "cn": "https://api.kimi.com/coding/"}},
-}
-CODEX_HOMES = {
-    # [U-6] CODEX_HOME isolation, never model_providers inside a --profile file.
-    # [U-33] the Z.ai Responses endpoint for Coding Plan keys (and its cn twin) is not vendor-confirmed: doctor --live.
-    # 4.16: never experimental_bearer_token, wire_api = "chat" or [profiles.*]. model_catalog_json omitted [U-28].
-    "glm": {"model": "glm-5.3", "provider_id": "zai", "name": "Z.ai", "env_key": "ZAI_API_KEY",
-            "base_url": {"global": "https://api.z.ai/api/v1", "cn": "https://open.bigmodel.cn/api/v1"},  # cn: [L]
-            "extra": ['model_reasoning_effort = "high"']},
-    "kimi": {"model": "kimi-k3", "provider_id": "kimi", "name": "Kimi", "env_key": "KIMI_API_KEY",
-             "base_url": {"global": "https://api.moonshot.ai/v1"},
-             "extra": ["model_context_window = 1048576"]},
-}
 POLICY_GLM = ("The GLM Coding Plan may be used only in supported tools; this kit sends GLM traffic only through "
               "Claude Code or Codex.")
 
-# 10.5 --purge deletes only what the kit creates in UB_HOME; anything else is listed and kept.
+# 10.5 --purge deletes only what the kit creates in UB_HOME; anything else is listed and kept. Inside codex-homes/<p>/
+# only the installer's config.toml is the kit's: Codex's own data (sessions, history) is moved to backups/ first.
 PURGE_NAMES = ("kit", "bin", "codex-homes", "tmp", "config.json", "families.json", "install-manifest.json",
-               "install.log", "runs.json")
+               "install.log", "runs.json", "install.lock")
 PURGE_RE = re.compile(r"^kit\.(new|old)-[a-z0-9]{8}$")
+# Staging and trash trees an installer killed mid-apply leaves behind (rand_suffix names; only installers make them):
+# the kit's skill copies and the component skills it copies from a pinned archive.
+LEFTOVER_SKILL_RE = re.compile(r"^(%s)\.ub-(new|old)-[a-z0-9]{8}$" % "|".join(re.escape(s) for s in STACK_SKILLS))
+LEFTOVER_TMP_RE = re.compile(r"^old-[a-z0-9]{8}$")
+LOCK_NAME = "install.lock"
+# The first release whose assets carry a build provenance attestation (release.yml attest-build-provenance).
+ATTESTED_SINCE = (2, 1, 0)
+# The only workflow whose attestations count: a run of any other workflow in the repository can attest too.
+RELEASE_WORKFLOW = ".github/workflows/release.yml"
 
 RE_ALREADY = re.compile(r"already\s+(installed|exists|added|present|enabled|registered|configured)|is already",
                         re.IGNORECASE)
 RE_ABSENT = re.compile(r"not\s+(installed|found|present|registered)|no such|does not exist|unknown (plugin|marketplace)",
                        re.IGNORECASE)
+# [U-52] gh's exit code for "authentication required" (`gh help exit-codes`): the check could not run, not a verdict.
+GH_EXIT_AUTH = 4
+# a gh older than the identity flags of provenance_args (it cannot check the signer; not a verdict either). Matched in
+# gh's own words only (gh_own_text): a refusal quotes the certificate's identity, which whoever minted it chose.
+RE_GH_TOO_OLD = re.compile(r"unknown flag|unknown shorthand flag", re.IGNORECASE)
+# [U-52] gh fails with these words, before it reads any attestation, when it cannot load its Sigstore trust root (the
+# TUF repository is out of reach, for example behind a proxy that blocks it): the check could not run, not a verdict.
+# Matched at the start of a line of gh's own words only (gh_own_text).
+RE_GH_NO_VERIFIER = re.compile(r"^\s*(?:Error:\s*)?error creating Sigstore verifier\b", re.IGNORECASE | re.MULTILINE)
+# [U-52] The releases' host. The sign-in pre-check asks about the account verify uses there: a bare `gh auth status`
+# exits 1 when any account on any host has a problem. verify names it too, so GH_HOST (an enterprise default) cannot
+# redirect it.
+GH_HOST_ARGS = ["--hostname", "github.com"]
+RE_QUOTED = re.compile(r'"(?:[^"\\]|\\.)*"')  # a double-quoted value as Go's %q writes it (backslash escapes)
+# A git commit SHA (components.json "commit" pins).
+RE_SHA = re.compile(r"\b[0-9a-f]{40}\b")
 
 
 class InstallError(Exception):
@@ -218,6 +232,64 @@ def read_bytes(path):
         return None
 
 
+def manifest_digest(path):
+    """SHA-256 of install-manifest.json (None when missing). Every apply rewrites it (installed_at), so a changed
+    digest means another installer applied changes."""
+    raw = read_bytes(path)
+    return hashlib.sha256(raw).hexdigest() if raw is not None else None
+
+
+class InstallLock(object):
+    """UB_HOME/install.lock: an exclusive OS lock (msvcrt.locking / fcntl.flock, like the engine's job locks) held by
+    the apply phase of every mutating command, so two installers never interleave their writes to the manifest and the
+    agents' folders. The OS drops it when the process ends, even when it is killed."""
+
+    _OFFSET = 0x7FFFFFF0  # the locked byte lies beyond EOF: the file stays empty
+
+    def __init__(self, path):
+        self.path = path
+        self.fd = None
+
+    def acquire(self):
+        """True when held (or when this file system has no locks); False when another process holds it."""
+        try:
+            os.makedirs(os.path.dirname(self.path), exist_ok=True)
+            fd = os.open(self.path, os.O_RDWR | os.O_CREAT | getattr(os, "O_BINARY", 0), 0o600)
+        except OSError:
+            return True  # no lock file here; the apply itself reports why UB_HOME is not writable
+        try:
+            if IS_WINDOWS:
+                import msvcrt
+                os.lseek(fd, self._OFFSET, 0)
+                msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+            else:
+                import fcntl
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError as exc:
+            os.close(fd)
+            busy = exc.errno in (errno.EACCES, errno.EAGAIN, errno.EDEADLK, getattr(errno, "EWOULDBLOCK", 11)) or \
+                getattr(exc, "winerror", None) in (5, 33)
+            return not busy
+        self.fd = fd
+        return True
+
+    def release(self):
+        fd, self.fd = self.fd, None
+        if fd is None:
+            return
+        try:
+            if IS_WINDOWS:
+                import msvcrt
+                os.lseek(fd, self._OFFSET, 0)
+                msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+            else:
+                import fcntl
+                fcntl.flock(fd, fcntl.LOCK_UN)
+        except OSError:
+            pass
+        os.close(fd)
+
+
 def rmtree(path):
     """Remove a tree; clears read-only bits (Windows) and never follows links out of it."""
     if not os.path.lexists(path):
@@ -264,12 +336,43 @@ def walk_files(root, top_exclude=True):
     return out
 
 
+def unrecorded(root):
+    """Relpaths (posix) under root that walk_files leaves out but a user may have put there: .git and .build content
+    (an empty folder in them as `<relpath>/`: git refuses a .git without refs/ or objects/, which `git gc` leaves
+    empty) and symlinks (one entry each, never followed). The marker and Python caches (__pycache__, *.pyc, *.pyo),
+    which running the kit's scripts creates, do not count. A copy holding any of them counts as edited."""
+    walked = walk_files(root, top_exclude=False)
+    out = []
+    root = os.path.abspath(root)
+    for dirpath, dirnames, filenames in os.walk(root):
+        rel_dir = os.path.relpath(dirpath, root)
+        pre = "" if rel_dir == "." else rel_dir.replace("\\", "/") + "/"
+        if not dirnames and not filenames and EXCLUDE_ANYWHERE & set(pre.split("/")):
+            out.append(pre)
+        links = [d for d in dirnames if os.path.islink(os.path.join(dirpath, d))]
+        dirnames[:] = sorted(d for d in dirnames if d != "__pycache__" and d not in links)
+        names = links + [n for n in filenames if n != MARKER and not n.endswith(EXCLUDE_SUFFIX)]
+        out.extend(pre + n for n in names if pre + n not in walked)
+    return sorted(out)
+
+
 def hash_files(files):
     return {rel: textio.sha256_file(p) for rel, p in sorted(files.items())}
 
 
+def doctor_hashes(p):
+    """(hash_files of the folder p, None), or (None, "<file>: <error>") when a file in it cannot be read (held open
+    without sharing, no read permission, or removed meanwhile): doctor reports it instead of crashing."""
+    try:
+        return hash_files(walk_files(p, top_exclude=False)), None
+    except OSError as exc:
+        return None, "%s: %s" % (posix(getattr(exc, "filename", None) or p), exc.strerror or exc)
+
+
 def copy_files(files, dest):
-    for rel, src in sorted(files.items()):
+    """Copy {rel: src} into dest. Every SKILL.md is copied last: a tree cut short by a hard kill (no finally runs)
+    never holds a SKILL.md, so no agent registers it as a skill whose scripts are missing."""
+    for rel, src in sorted(files.items(), key=lambda kv: (kv[0].rsplit("/", 1)[-1] == "SKILL.md", kv[0])):
         target = os.path.join(dest, *rel.split("/"))
         os.makedirs(os.path.dirname(target), exist_ok=True)
         shutil.copy2(src, target)
@@ -438,6 +541,7 @@ class Ctx(object):
         self.manifest = load_json_file(self.manifest_path)
         if not isinstance(self.manifest, dict):
             self.manifest = None
+        self.manifest_digest = manifest_digest(self.manifest_path)  # the install state this plan is made from
         self.source = KIT_ROOT
         self.source_is_temp = False
         # a random suffix keeps two runs in the same second from merging their backups
@@ -447,6 +551,7 @@ class Ctx(object):
         self.purged = False
         self.cleanup = []
         self.cache = {}
+        self.notes = []  # warnings found before the plan exists (release provenance), shown in the plan's warnings
 
     def _home(self, agent, flag):
         if flag:
@@ -480,6 +585,8 @@ class Ctx(object):
             env["CLAUDE_CONFIG_DIR"] = self.homes["claude-code"]
         if agent == "codex" and getattr(args, "codex_home", None):
             env["CODEX_HOME"] = self.homes["codex"]
+        if agent == "kimi" and getattr(args, "kimi_home", None):
+            env["KIMI_CODE_HOME"] = self.homes["kimi"]
         if extra:
             env.update(extra)
         return env
@@ -531,15 +638,35 @@ def cmd_version(ctx, argv):
     return ctx.cache[key]
 
 
-def plugin_list(ctx, agent, codex_home=None):
-    """Parsed `<cli> plugin list --json` for claude-code or codex, cached; None when unavailable [U-18]."""
-    key = ("plugins", agent, codex_home)
+def home_env(agent, home):
+    """The environment that points agent's CLI at agent home `home` (CLAUDE_CONFIG_DIR or CODEX_HOME); None for no
+    home (the invocation's own home: its flags and environment)."""
+    if not home:
+        return None
+    return {("CLAUDE_CONFIG_DIR" if agent == "claude-code" else "CODEX_HOME"): os.path.normpath(home)}
+
+
+def entry_home(ctx, agent, e):
+    """The agent home native manifest entry e was installed in (10.5): a setup-glm/-kimi provider CODEX_HOME, or a
+    --claude-config-dir / --codex-home (or CLAUDE_CONFIG_DIR / CODEX_HOME) other than this invocation's home. None when
+    it is this invocation's home, so a default-home entry runs exactly as before."""
+    e = e or {}
+    if agent == "codex" and e.get("profile"):
+        return e.get("codex_home")
+    rec = e.get("config_dir") if agent == "claude-code" else e.get("codex_home")
+    return rec if rec and not _same(rec, ctx.homes.get(agent)) else None
+
+
+def plugin_list(ctx, agent, home=None):
+    """Parsed `<cli> plugin list --json` for claude-code or codex (in agent home `home`, else this invocation's),
+    cached; None when unavailable [U-18]."""
+    key = ("plugins", agent, home)
     if key in ctx.cache:
         return ctx.cache[key]
     native = ctx.targets["agents"][agent].get("native")
     result = None
     if native:
-        extra = {"CODEX_HOME": codex_home} if codex_home else None
+        extra = home_env(agent, home)
         rc, out, err = run_cmd(ctx, native["list"], timeout=60, env=ctx.child_env(extra, agent))
         if rc == 0:
             try:
@@ -548,6 +675,86 @@ def plugin_list(ctx, agent, codex_home=None):
                 result = None
     ctx.cache[key] = result
     return result
+
+
+def marketplace_list(ctx, agent, home=None):
+    """Parsed `<cli> plugin marketplace list --json` for claude-code or codex (in agent home `home`, else this
+    invocation's), cached; None when unavailable [U-18]."""
+    key = ("marketplaces", agent, home)
+    if key not in ctx.cache:
+        result = None
+        native = ctx.targets["agents"][agent].get("native") or {}
+        if native.get("marketplace_list"):
+            extra = home_env(agent, home)
+            rc, out, _err = run_cmd(ctx, native["marketplace_list"], timeout=60, env=ctx.child_env(extra, agent))
+            if rc == 0:
+                try:
+                    result = textio.extract_json(out)
+                except ValueError:
+                    result = None
+        ctx.cache[key] = result
+    return ctx.cache[key]
+
+
+def _strings(obj, key=None):
+    """(key, string) for every string value in a JSON tree (key = the nearest dict key, None in a top-level list)."""
+    if isinstance(obj, str):
+        yield key, obj
+    elif isinstance(obj, dict):
+        for k, v in obj.items():
+            for item in _strings(v, k):
+                yield item
+    elif isinstance(obj, list):
+        for v in obj:
+            for item in _strings(v, key):
+                yield item
+
+
+def _local_path(ctx, value):
+    """value as an absolute local path (plain, ~-relative or a file:// URL), else None."""
+    v = value
+    if v.lower().startswith("file://"):
+        v = re.sub(r"^/([A-Za-z]:)", r"\1", v[len("file://"):])
+    if v == "~" or v.startswith(("~/", "~\\")):
+        v = ctx.home + v[1:]
+    return v if os.path.isabs(v) else None
+
+
+def _is_kit_path(ctx, value):
+    v = _local_path(ctx, value)
+    return v is not None and _same_real(v, ctx.kit_dir)
+
+
+def marketplace_source(ctx, agent, home=None):
+    """Where the kit's marketplace registration points [U-50]. Returns (state, text): ("kit", path) when a source value
+    of the `ultimate-brainstorm` marketplace is UB_HOME/kit; ("foreign", source) when it names another source (a
+    GitHub slug or URL, another marketplace folder, or a local folder that no longer exists), for example route 2 of
+    10.2 or another (earlier) UB_HOME;
+    ("absent", None) when no marketplace of that name is registered; (None, None) when the list is unavailable or its
+    entry names nothing recognizable (then the caller keeps the name-only behavior of [U-18])."""
+    listed = marketplace_list(ctx, agent, home)
+    if listed is None:
+        return None, None
+    node = json_find(listed, lambda n: isinstance(n, dict) and n.get("name") == MARKETPLACE)
+    if node is None:
+        return "absent", None
+    values = [(k, s) for k, s in _strings(node) if s and s != MARKETPLACE]
+    if any(_is_kit_path(ctx, s) for _k, s in values):
+        return "kit", posix(ctx.kit_dir)
+    for k, s in values:
+        if k not in ("source", "repo", "repository", "url", "path", "directory"):
+            continue  # e.g. an install location (a clone or cache) says nothing about where it came from
+        v = s.replace("\\", "/")
+        path = _local_path(ctx, s)
+        if path is not None:
+            if os.path.isfile(os.path.join(path, ".claude-plugin", "marketplace.json")):
+                return "foreign", s  # another marketplace folder (another UB_HOME, a clone)
+            if not os.path.exists(path):  # an earlier UB_HOME/kit, moved or deleted: never the staged kit
+                return "foreign", "%s (a folder that no longer exists)" % s
+            continue
+        if "://" in v or v.startswith("git@") or re.match(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(@\S+|#\S+)?$", v):
+            return "foreign", s
+    return None, None
 
 
 def find_git_bash(ctx):
@@ -663,9 +870,12 @@ def detect_agents(ctx):
 # source kit
 
 
-def runtime_files(ctx, root):
+def runtime_file_map(root, runtime_paths):
+    """{relpath (posix): abspath} of the kit's runtime files under root (10.4 item 1). The installer stages exactly this
+    set, read from the source kit's own targets.json (runtime_files), and tools/release.py archives it from the same
+    list, so the two can never diverge."""
     files = {}
-    for rp in ctx.targets.get("runtime_paths", []):
+    for rp in runtime_paths:
         full = os.path.join(root, *rp.split("/"))
         if os.path.isfile(full):
             files[rp] = full
@@ -673,6 +883,26 @@ def runtime_files(ctx, root):
             for rel, p in walk_files(full).items():
                 files[rp + "/" + rel] = p
     return files
+
+
+def source_runtime_paths(ctx, root):
+    """runtime_paths of the kit at root (its install/targets.json, which validate_source requires), as release.py
+    reads them: an update run by an older installer still stages every path the newer kit adds. The running
+    installer's list is the fallback for a missing or malformed list; an entry that could reach outside root (absolute,
+    `..`, a drive or a backslash) makes the list malformed."""
+    def inside(p):
+        return isinstance(p, str) and p and not p.startswith("/") and ":" not in p and "\\" not in p and \
+            ".." not in p.split("/")
+
+    t = load_json_file(os.path.join(root, "install", "targets.json"))
+    rps = t.get("runtime_paths") if isinstance(t, dict) else None
+    if isinstance(rps, list) and rps and all(inside(p) for p in rps):
+        return list(rps)
+    return ctx.targets.get("runtime_paths", [])
+
+
+def runtime_files(ctx, root):
+    return runtime_file_map(root, source_runtime_paths(ctx, root))
 
 
 def skill_source(ctx):
@@ -688,10 +918,14 @@ def kit_version(root):
 
 
 def source_commit(ctx):
-    if not os.path.isdir(os.path.join(ctx.source, ".git")):
-        return "local"
-    rc, out, _ = run_cmd(ctx, ["git", "-C", ctx.source, "rev-parse", "--short", "HEAD"], timeout=15)
-    return out.strip() if rc == 0 and out.strip() else "local"
+    key = ("commit", ctx.source)
+    if key not in ctx.cache:  # the manifest is written after every applied row
+        commit = "local"
+        if os.path.isdir(os.path.join(ctx.source, ".git")):
+            rc, out, _ = run_cmd(ctx, ["git", "-C", ctx.source, "rev-parse", "--short", "HEAD"], timeout=15)
+            commit = out.strip() if rc == 0 and out.strip() else "local"
+        ctx.cache[key] = commit
+    return ctx.cache[key]
 
 
 def validate_source(root):
@@ -714,12 +948,15 @@ def resolve_source(ctx, command):
         ctx.source = fetch_release(ctx, tag)
         ctx.source_is_temp = True
         return
-    if command == "update" and ctx.manifest:
+    # the staged kit, also when run through another spelling of UB_HOME (a junction, a symlink, subst, an 8.3 name)
+    staged = _same_real(KIT_ROOT, ctx.kit_dir)
+    if command == "update" and ctx.manifest and staged:
+        # only the staged kit re-stages the clone it was installed from; any other kit copy stages itself (below)
         prev = ctx.manifest.get("source")
-        if prev and not _same(prev, ctx.kit_dir) and validate_source(prev):
+        if prev and not _same_real(prev, ctx.kit_dir) and validate_source(prev):
             ctx.source = os.path.abspath(prev)
             return
-    if command == "update" and _same(KIT_ROOT, ctx.kit_dir):
+    if command == "update" and staged:
         # 10.5: the staged kit cannot update itself; it re-stages from the latest release instead.
         repo = ctx.targets["kit"]["repo"]
         if not ctx.env.get("UB_RELEASE_DIR") and (ctx.offline or repo.startswith("OWNER/")):
@@ -741,6 +978,8 @@ def under_temp(path):
 
 
 def _safe_extract(archive, dest):
+    """Extract a release archive: absolute, `..` and drive-letter names are refused, and links and device members are
+    dropped. install/install.sh applies the same member filter before anything from the archive runs."""
     with tarfile.open(archive, "r:gz") as tf:
         members = []
         for m in tf.getmembers():
@@ -750,10 +989,98 @@ def _safe_extract(archive, dest):
             if m.issym() or m.islnk() or m.isdev():
                 continue
             members.append(m)
-        if sys.version_info >= (3, 12):
+        if hasattr(tarfile, "data_filter"):  # 3.12+, and the 3.9-3.11 security backports
             tf.extractall(dest, members=members, filter="data")
         else:
             tf.extractall(dest, members=members)
+
+
+def release_dir_version(rel_dir):
+    """The newest X.Y.Z archive in a UB_RELEASE_DIR folder, compared as numbers (2.0.10 > 2.0.9). When the folder has
+    a SHA256SUMS, only the archives it lists count, so the pick always has a checksum. Pre-release archives
+    (2.1.0-rc1) are skipped, as releases/latest skips them."""
+    rx = re.compile(r"^ultimate-brainstorm-(\d+(?:\.\d+)+)\.tar\.gz$")
+    names = os.listdir(rel_dir)
+    sums = os.path.join(rel_dir, "SHA256SUMS")
+    if os.path.isfile(sums):
+        listed = set(line.split()[-1].lstrip("*") for line in textio.read_text(sums).splitlines() if line.split())
+        names = [n for n in names if n in listed]
+    found = [(tuple(int(x) for x in m.group(1).split(".")), m.group(1)) for m in (rx.match(n) for n in names) if m]
+    if not found:
+        raise InstallError("UB_RELEASE_DIR has no ultimate-brainstorm-<ver>.tar.gz")
+    return max(found)[1]
+
+
+def provenance_args(repo, ver):
+    """The identity `gh attestation verify` enforces for a release asset: built by this repository's release workflow
+    (--signer-workflow) from the tag v<ver> (--source-ref), not by any other workflow run in the repository."""
+    return ["--repo", repo, "--signer-workflow", "%s/%s" % (repo, RELEASE_WORKFLOW), "--source-ref",
+            "refs/tags/v%s" % ver]
+
+
+def gh_own_text(text):
+    """gh's output without its double-quoted values: the words gh wrote itself. A refusal quotes the identity found in
+    the certificate (workflow path, branch, tag), which whoever minted the attestation chose, so no verdict is read
+    from inside the quotes."""
+    return RE_QUOTED.sub('""', text or "")
+
+
+def verify_provenance(ctx, archive, ver, latest=False):
+    """Check the build provenance of a downloaded release archive with `gh attestation verify <archive>
+    provenance_args(...) --hostname github.com` [U-52]. It first runs `gh attestation --help` and `gh auth status
+    --active --hostname github.com` (the account verify uses; another account or host does not matter); after they
+    pass, every failed verification raises, except a timeout, gh's exit code 4 (authentication required), a gh
+    without the --signer-workflow / --source-ref / --hostname flags (`unknown flag` in gh's own words) and a gh that
+    could not build its Sigstore verifier (RE_GH_NO_VERIFIER). Those, a failed pre-check, gh missing, local
+    UB_RELEASE_DIR assets and a release older than ATTESTED_SINCE named with --tag cannot be checked: a note is added
+    to the plan warnings, or with --require-attestation an InstallError is raised. A refusal names the way out when gh
+    cannot reach GitHub or Sigstore: the check by hand elsewhere, then --source DIR.
+    latest: ver was resolved from releases/latest. A latest release older than ATTESTED_SINCE is refused: every
+    release from ATTESTED_SINCE on is attested, so an older one marked latest was not asked for."""
+    repo = ctx.targets["kit"]["repo"]
+    name = os.path.basename(archive)
+    check = provenance_args(repo, ver) + GH_HOST_ARGS
+    manual = "gh attestation verify %s %s" % (name, " ".join(check))
+    required = bool(getattr(ctx.args, "require_attestation", False))
+
+    def cannot(why):
+        msg = "provenance of %s was not checked (%s); check it by hand: %s" % (name, why, manual)
+        if required:
+            raise InstallError("--require-attestation: " + msg)
+        ctx.notes.append(msg)
+
+    v = parse_version(ver)
+    if v is not None and v < ATTESTED_SINCE:
+        if latest:
+            raise InstallError("the latest release is v%s, older than %s, the first release with a provenance "
+                               "attestation: not installing a release that cannot be verified and was not asked for "
+                               "(name it with --tag v%s to install it anyway)" % (ver, vtext(ATTESTED_SINCE), ver))
+        return cannot("release %s predates provenance attestations" % ver)
+    if ctx.env.get("UB_RELEASE_DIR"):
+        return cannot("local release assets from UB_RELEASE_DIR")
+    if not proc.resolve_exe("gh", ctx.env):
+        return cannot("the GitHub CLI gh is not installed")
+    for pre in (["gh", "attestation", "--help"], ["gh", "auth", "status", "--active"] + GH_HOST_ARGS):
+        if run_cmd(ctx, pre, timeout=60)[0] != 0:
+            return cannot("gh is not signed in, or has no attestation command: `%s` failed" % " ".join(pre))
+    rc, o, e = run_cmd(ctx, ["gh", "attestation", "verify", archive] + check, timeout=120)
+    if rc == 0:
+        return None
+    text = (e or o or "").strip()
+    last = text.splitlines()[-1][:200] if text else "no output"
+    own = gh_own_text(text)
+    if RE_GH_TOO_OLD.search(own):
+        return cannot("this gh has no --signer-workflow / --source-ref / --hostname: update the GitHub CLI")
+    if RE_GH_NO_VERIFIER.search(own):
+        return cannot("gh could not build its Sigstore verifier: is the Sigstore TUF repository "
+                      "(tuf-repo-cdn.sigstore.dev) reachable from here? gh: %s" % last)
+    if rc is None or rc == GH_EXIT_AUTH:
+        return cannot("gh could not run the check: %s" % last)
+    raise InstallError("provenance check failed for %s: gh attestation verify did not confirm that it was built by "
+                       "%s's %s for the tag v%s (gh: %s). Do not install this archive. If gh could not reach GitHub or "
+                       "Sigstore, run the command again; if they stay out of reach, run the check by hand where gh "
+                       "reaches them (%s) and install that checked archive's extracted folder with "
+                       "`install.py update --source DIR`." % (name, repo, RELEASE_WORKFLOW, ver, last, manual))
 
 
 def fetch_release(ctx, tag):
@@ -767,11 +1094,9 @@ def fetch_release(ctx, tag):
             raise InstallError("this kit copy names no GitHub owner (repo %s); use --source DIR" % repo)
     ver = tag[1:] if tag and tag.startswith("v") else tag
     if not ver and rel_dir:
-        found = sorted(n for n in os.listdir(rel_dir) if re.match(r"^ultimate-brainstorm-[\d.]+\.tar\.gz$", n))
-        if not found:
-            raise InstallError("UB_RELEASE_DIR has no ultimate-brainstorm-<ver>.tar.gz")
-        ver = found[-1][len("ultimate-brainstorm-"):-len(".tar.gz")]
-    if not ver:  # [L] releases/latest redirects to .../releases/tag/vX.Y.Z
+        ver = release_dir_version(rel_dir)
+    latest = not ver
+    if latest:  # [L] releases/latest redirects to .../releases/tag/vX.Y.Z
         try:
             with urllib.request.urlopen("https://github.com/%s/releases/latest" % repo, timeout=30) as r:
                 final = r.geturl()
@@ -810,10 +1135,20 @@ def fetch_release(ctx, tag):
             want = parts[0].lower()
     if not want or textio.sha256_file(archive) != want:
         raise InstallError("SHA-256 check failed for %s" % name)
+    # SHA256SUMS comes from the same release as the archive: integrity only. The attestation adds authenticity.
+    verify_provenance(ctx, archive, ver, latest=latest)
     out = os.path.join(tmp, "src")
     _safe_extract(archive, out)
     for cand in [out] + [os.path.join(out, d) for d in sorted(os.listdir(out))]:
         if validate_source(cand):
+            # the downgrade guard (stage_row) and the provenance rules read the version: it must be the tag's
+            try:
+                inner = textio.read_text(os.path.join(cand, "VERSION")).strip()
+            except OSError:
+                inner = ""
+            if inner != ver:
+                raise InstallError("the release archive %s holds kit %s, not %s (its tag v%s): not installing it"
+                                   % (name, inner or "without a VERSION", ver, ver))
             return cand
     raise InstallError("the release archive holds no kit")
 
@@ -849,9 +1184,11 @@ def manifest_entry(ctx, route, path=None, agent=None):
 
 
 def native_entry(ctx, agent):
-    """The manifest's native entry for agent in the default home (not a setup-glm/-kimi provider CODEX_HOME)."""
+    """The manifest's native entry for agent in this invocation's home (the one native_installed checks), not a
+    setup-glm/-kimi provider CODEX_HOME or another home recorded by an earlier --claude-config-dir / --codex-home."""
     for e in (ctx.manifest or {}).get("entries", []):
-        if e.get("route") == "native" and e.get("agent") == agent and not e.get("profile"):
+        if e.get("route") == "native" and e.get("agent") == agent and not e.get("profile") and \
+                entry_home(ctx, agent, e) is None:
             return e
     return None
 
@@ -871,24 +1208,35 @@ def cmd_refusal(ctx, exe):
     return None
 
 
-def uninstall_native_row(ctx, agent, e, last_for_marketplace=True, action="remove"):
-    """Row removing the kit's native plugin recorded by manifest entry e (10.5): the recorded scope and project,
-    and the marketplace only when no other native entry of this agent and home still uses it."""
+def uninstall_native_row(ctx, agent, e, last_for_marketplace=True, action="remove", warnings=None):
+    """Row removing the kit's native plugin recorded by manifest entry e (10.5), in the agent home e was installed in
+    (entry_home, whatever this invocation's flags): the recorded scope and project, and the marketplace only when no
+    other native entry of this agent and home still uses it. A local-scope entry whose project folder is gone keeps
+    only the marketplace removal (a user-level registration): its plugin setting went with the folder."""
     native = ctx.targets["agents"][agent]["native"]
-    codex_home = e.get("codex_home") if (agent == "codex" and e and e.get("profile")) else None
-    un = list(native["uninstall"])
+    home = entry_home(ctx, agent, e)
+    cmds = [list(native["uninstall"])]
     cwd = None
     if agent == "claude-code":
         scope = (e or {}).get("scope") or "user"
-        un += ["--scope", scope]
+        cmds[0] += ["--scope", scope]
         if scope == "local":
             cwd = (e or {}).get("project") or ctx.project
-    cmds = [un]
+            if not os.path.isdir(cwd):
+                if warnings is not None:
+                    warnings.append("%s no longer exists: its local plugin setting (.claude/settings.local.json) went "
+                                    "with it, so only the marketplace registration is removed. If you moved the "
+                                    "project, run `claude plugin uninstall %s --scope local` in its new folder"
+                                    % (posix(cwd), PLUGIN_ID))
+                cmds, cwd = [], None
     if last_for_marketplace:
         cmds.append([ctx.expand(a) for a in native["marketplace_remove"]])
-    item = "plugin %s" % SKILL + (" (CODEX_HOME=%s)" % codex_home if codex_home else "")
+    env_extra = home_env(agent, home)
+    item = "plugin %s" % SKILL
+    for k, v in (env_extra or {}).items():
+        item += " (%s=%s)" % (k, posix(v))  # a row for another home than this invocation's names it
     return new_row(agent, item, action, "native", None, cmds, _kind="uninstall-native", native_agent=agent,
-                   env_extra={"CODEX_HOME": codex_home} if codex_home else None, cwd=cwd, entry=e)
+                   env_extra=env_extra, cwd=cwd, entry=e)
 
 
 def copy_dest(ctx, agent):
@@ -911,14 +1259,25 @@ def analyze_copy(ctx, agent, dest, warnings):
         return new_row(agent, item, "create", "copy", dest, _kind="copy", dest=dest, src=src, backup=None, hashes=src_hash)
     if os.path.isfile(os.path.join(dest, MARKER)):
         cur = hash_files(walk_files(dest, top_exclude=False))
-        if cur == src_hash:
-            return new_row(agent, item, "unchanged", "copy", dest, _kind="copy", dest=dest, src=src, hashes=src_hash)
         entry = manifest_entry(ctx, "copy", dest)
+        if cur == src_hash:
+            record = None
+            if (entry or {}).get("files") != src_hash:
+                # the copy is byte-identical to the kit, but the manifest lost it (or holds stale hashes): an apply
+                # that was interrupted before it wrote the manifest. Record it again, or uninstall would keep it.
+                record = {"agent": agent, "route": "copy", "path": posix(dest), "scope": ctx.scope, "files": src_hash}
+                if (entry or {}).get("replaced_backup"):
+                    record["replaced_backup"] = entry["replaced_backup"]
+                warnings.append("%s: install-manifest.json has no current record of this copy (an interrupted "
+                                "install?): applying records it again" % posix(dest))
+            return new_row(agent, item, "unchanged", "copy", dest, _kind="copy", dest=dest, src=src, hashes=src_hash,
+                           record=record)
         recorded = (entry or {}).get("files")
         if isinstance(recorded, dict):
             edited = sorted(r for r, h in cur.items() if recorded.get(r) != h)
         else:
             edited = sorted(r for r, h in cur.items() if src_hash.get(r) != h)
+        edited += unrecorded(dest)  # a .git or a link the user put there goes with the old tree: back it up
         action = "backup+update" if edited else "update"
         return new_row(agent, item, action, "copy", dest, _kind="copy", dest=dest, src=src, backup=edited or None,
                        hashes=src_hash)
@@ -946,30 +1305,82 @@ def removal_row(ctx, agent, dest, reason, warnings):
     entry = manifest_entry(ctx, "copy", dest)
     recorded = (entry or {}).get("files") if entry else None
     edited = sorted(r for r, h in cur.items() if not isinstance(recorded, dict) or recorded.get(r) != h)
+    edited += unrecorded(dest)
     warnings.append("%s: removing the owned copy at %s (%s)" % (agent, posix(dest), reason))
     return new_row(agent, "skill %s (duplicate)" % SKILL, "remove", "copy", dest, _kind="remove", dest=dest,
                    backup=edited or None)
 
 
-def native_row(ctx, agent, mode, codex_home=None):
+def native_manifest_entry(ctx, agent, codex_home=None):
+    """The manifest entry for the kit's plugin of agent (default home, or a setup-glm/-kimi provider CODEX_HOME)."""
+    e = {"agent": agent, "route": "native", "marketplace": MARKETPLACE, "plugin": PLUGIN_ID,
+         "scope": "local" if (agent == "claude-code" and ctx.scope == "project") else "user"}
+    if agent == "claude-code":
+        e["config_dir"] = posix(ctx.homes["claude-code"])
+        if e["scope"] == "local":
+            e["project"] = posix(ctx.project)  # uninstall runs `--scope local` from this folder
+    else:
+        e["codex_home"] = posix(codex_home or ctx.homes["codex"])
+        if codex_home:
+            e["profile"] = True
+    return e
+
+
+def has_entry(ctx, entry):
+    """True when the manifest already holds an entry with the same key as entry."""
+    k = entry_key(entry)
+    return any(entry_key(x) == k for x in (ctx.manifest or {}).get("entries", []) if isinstance(x, dict))
+
+
+def native_row(ctx, agent, mode, codex_home=None, warnings=None):
+    """Row for the kit's native plugin. The `ultimate-brainstorm` marketplace must point at UB_HOME/kit [U-50]: one
+    registered from anywhere else (route 2 of 10.2, another UB_HOME) is never trusted by name alone. Its row is
+    blocked (--force replaces it), and a plugin the installer did not install is never recorded as the kit's."""
     native = ctx.targets["agents"][agent]["native"]
     subst = lambda argv: [ctx.expand(a) for a in argv]  # noqa: E731
     listed = plugin_list(ctx, agent, codex_home)
     installed = bool(listed is not None and plugin_listed(listed, SKILL, MARKETPLACE))
+    source, source_text = marketplace_source(ctx, agent, codex_home)
     extra_env = {"CODEX_HOME": codex_home} if codex_home else None
     cwd = ctx.project if (agent == "claude-code" and ctx.scope == "project") else None
     item = "plugin %s" % SKILL + (" (CODEX_HOME=%s)" % posix(codex_home) if codex_home else "")
-    common = dict(_kind="native", env_extra=extra_env, cwd=cwd, native_agent=agent, codex_home=codex_home)
+    common = dict(_kind="native", env_extra=extra_env, cwd=cwd, native_agent=agent, codex_home=codex_home,
+                  mk_add=subst(native["marketplace_add"]))
+    entry = native_manifest_entry(ctx, agent, codex_home)
+    if source == "foreign":
+        un = list(native["uninstall"]) + (["--scope", entry["scope"]] if agent == "claude-code" else [])
+        replace = ([un] if installed else []) + [subst(native["marketplace_remove"]), subst(native["marketplace_add"]),
+                                                 subst(native["install"])]
+        if getattr(ctx.args, "force", False):
+            if warnings is not None:
+                warnings.append("%s: the marketplace %s is registered from %s: --force replaces it with the staged kit "
+                                "%s" % (DISPLAY[agent], MARKETPLACE, source_text, posix(ctx.kit_dir)))
+            return new_row(agent, item, "install", "native", None, replace, **common)
+        reason = ("%s: the marketplace %s is registered from %s, not from the staged kit %s, so %s would run that "
+                  "code: remove it (%s), or pass --force to replace it"
+                  % (DISPLAY[agent], MARKETPLACE, source_text, posix(ctx.kit_dir), DISPLAY[agent],
+                     " ; ".join(" ".join(c) for c in replace[:-2])))
+        if warnings is not None:
+            warnings.append(reason)
+        return new_row(agent, item, "blocked", "native", None, replace, _kind="noop", reason=reason)
     if installed and mode == "update":
+        # never adopt a plugin whose origin is unknown and that the manifest does not already hold
+        adopt = source == "kit" or has_entry(ctx, entry)
         if agent == "claude-code":  # [U-16] the local marketplace loads in place; this refresh may fail
             cmds = [["claude", "plugin", "marketplace", "update", MARKETPLACE]]
-            return new_row(agent, item, "update", "native", None, cmds, allow_fail=True, **common)
+            return new_row(agent, item, "update", "native", None, cmds, allow_fail=True, no_record=not adopt,
+                           **common)
         cmds = [["codex", "plugin", "marketplace", "upgrade", MARKETPLACE, "--json"], subst(native["install"])]
         # [U-10] whether `codex plugin add` upgrades in place is unverified: fall back to remove + add
-        return new_row(agent, item, "update", "native", None, cmds,
+        return new_row(agent, item, "update", "native", None, cmds, no_record=not adopt,
                        fallback=[subst(native["uninstall"]), subst(native["install"])], **common)
     if installed:
-        return new_row(agent, item, "unchanged", "native", None, [], **common)
+        # a plugin from the staged kit that the manifest lost (an interrupted apply) is recorded again
+        record = entry if (source == "kit" and not has_entry(ctx, entry)) else None
+        if record is not None and warnings is not None:
+            warnings.append("%s: install-manifest.json has no record of the kit's plugin (an interrupted install?): "
+                            "applying records it again" % DISPLAY[agent])
+        return new_row(agent, item, "unchanged", "native", None, [], record=record, **common)
     cmds = [subst(native["marketplace_add"]), subst(native["install"])]
     return new_row(agent, item, "install", "native", None, cmds, **common)
 
@@ -1008,9 +1419,10 @@ def skill_dirs_for(ctx, agent):
 
 
 def component_present(ctx, cid, agent):
-    if cid == "mattpocock-grilling":
+    if ctx.components["components"][cid].get("archive"):
         dirs = skill_dirs_for(ctx, agent)
-        return all(any(os.path.isdir(os.path.join(d, s)) for d in dirs) for s in ("grilling", "domain-modeling"))
+        skills = ctx.components["components"][cid].get("skills") or []
+        return all(any(os.path.isdir(os.path.join(d, s)) for d in dirs) for s in skills)
     if agent in ("claude-code", "codex") and cid in ("compound-engineering", "pm-skills"):
         agents = detect_agents(ctx)
         if not agents[agent]["bin"]:
@@ -1034,9 +1446,18 @@ def step_how(argv):
     return "native"
 
 
+def archive_manual(ctx, c, dest):
+    """The by-hand step for an archive component: which folders of the pinned commit go where."""
+    spec = c["archive"]
+    return "download %s and copy %s into %s" % (spec["url"], " and ".join(
+        s["path"] for _n, s in sorted(spec["skills"].items())), posix(dest))
+
+
 def component_rows(ctx, agents, warnings, manual):
-    """Rows for the stack components (10.4 item 4). # [U-27] npx sources are pinned by CLI version only
-    (skills@1.7.0 in components.json), never by upstream commit."""
+    """Rows for the stack components (10.4 item 4). Every source is pinned in components.json: skill folders by an
+    upstream commit archive plus the SHA-256 of each folder's content (do_component_archive checks it, no npx and no
+    npm dependency tree), marketplaces by tag plus a "commit" that do_component checks, uv tools by commit. [U-27]
+    doctor compares the installed component skills with the hashes recorded at install."""
     rows = []
     comps = ctx.components["components"]
     system = detect_system(ctx)
@@ -1052,6 +1473,29 @@ def component_rows(ctx, agents, warnings, manual):
             entry = c[key]
             item = "component %s" % cid
             man_text = entry.get("manual")
+            if entry.get("copy_to") and c.get("archive"):
+                dest = ctx.expand(entry["copy_to"])
+                if component_present(ctx, cid, key):
+                    rows.append(new_row(key, item, "unchanged", "archive", dest, [], _kind="noop"))
+                    planned[key] = "unchanged"
+                    continue
+                if key == "kimi" and entry.get("skip_if_codex_step_ran") and planned.get("codex") == "install":
+                    warnings.append("kimi: %s comes from the Codex step (~/.agents/skills, which Kimi reads)" % cid)
+                    continue
+                local = ctx.env.get("UB_COMPONENTS_DIR")  # a local archive needs no network, also offline
+                reason = "UB_INSTALL_OFFLINE=1" if ctx.offline and not local else None
+                if local and not os.path.isfile(os.path.join(local, c["archive"]["file"])):
+                    reason = "UB_COMPONENTS_DIR has no %s" % c["archive"]["file"]
+                if reason:
+                    rows.append(new_row(key, item, "manual", "print", None, [], _kind="noop"))
+                    manual.append("%s: %s   (%s)" % (DISPLAY.get(key, "All agents"), archive_manual(ctx, c, dest),
+                                                     reason))
+                    planned[key] = "manual"
+                    continue
+                rows.append(new_row(key, item, "install", "archive", dest, [], _kind="component", cid=cid,
+                                    archive=c["archive"], dest=dest, ref=c.get("ref"), commit=c.get("commit")))
+                planned[key] = "install"
+                continue
             if "steps" not in entry:
                 rows.append(new_row(key, item, "manual", "print", None, [], _kind="noop"))
                 manual.append("%s: %s" % (DISPLAY.get(key, "All agents"), man_text))
@@ -1095,7 +1539,7 @@ def component_rows(ctx, agents, warnings, manual):
                 env_extra["DISABLE_TELEMETRY"] = "1"
             rows.append(new_row(key, item, "install", step_how(steps[0]), None, cmds, _kind="component", cid=cid,
                                 resolve=resolve, cwd=cwd, env_extra=env_extra, manual_text=man_text,
-                                ref=c.get("ref")))
+                                ref=c.get("ref"), commit=c.get("commit"), source_match=c.get("source_match")))
             planned[key] = "install"
     return rows
 
@@ -1171,96 +1615,227 @@ def stage_row(ctx, warnings=None):
                     warnings.append(reason)
     else:
         action = "create"
-    return new_row("all", item, action, "copy", ctx.kit_dir, [], _kind="stage", reason=reason)
+    return new_row("all", item, action, "copy", ctx.kit_dir, [], _kind="stage", reason=reason,
+                   downgrade=action == "blocked")
+
+
+def block_downgrade(stage, rows):
+    """A blocked downgrade (stage_row) blocks every row that would apply something from the older source: the copies,
+    launchers and plugins would otherwise take the older kit while UB_HOME/kit stays newer, and the manifest would
+    record the older version. `unchanged` rows that only re-record an entry (_record) are blocked too."""
+    if not stage.get("_downgrade"):
+        return
+    for r in actionable(rows):
+        r["action"], r["_kind"], r["_reason"] = "blocked", "noop", stage["_reason"]
+        r.pop("_record", None)
+
+
+def scanned_dirs(ctx):
+    """[(agent, dir)]: the folders each agent scans for skills (skill_dirs_for) plus the parent of its copy destination
+    (the project folder in project scope), once per agent and folder."""
+    out = []
+    for a in AGENTS:
+        seen = set()
+        for d in skill_dirs_for(ctx, a) + [os.path.dirname(copy_dest(ctx, a))]:
+            key = os.path.normcase(os.path.abspath(d))
+            if key not in seen:
+                seen.add(key)
+                out.append((a, d))
+    return out
+
+
+def skill_folders(ctx, skills=STACK_SKILLS):
+    """[(agent, skill, path)] for every <dir>/<skill> folder in scanned_dirs(ctx). doctor and list share this scan."""
+    out = []
+    for a, d in scanned_dirs(ctx):
+        for skill in skills:
+            p = os.path.join(d, skill)
+            if os.path.isdir(p):
+                out.append((a, skill, p))
+    return out
+
+
+def leftovers(ctx):
+    """Trees an installer killed mid-apply left behind (a hard kill runs no finally): <skills>/ultimate-brainstorm.ub-
+    (new|old)-<rand> next to the agents' skill folders, and UB_HOME/kit.(new|old)-<rand> and UB_HOME/tmp/old-<rand>.
+    Their random suffixes are made only by installers, so deleting them is safe (apply holds UB_HOME/install.lock)."""
+    found, seen = [], set()
+    places = [(d, LEFTOVER_SKILL_RE) for _a, d in scanned_dirs(ctx)]
+    places += [(ctx.ub_home, PURGE_RE), (ctx.tmp_dir, LEFTOVER_TMP_RE)]
+    for d, rx in places:
+        key = os.path.normcase(os.path.abspath(d))
+        if key in seen or not os.path.isdir(d):
+            continue
+        seen.add(key)
+        for n in sorted(os.listdir(d)):
+            p = os.path.join(d, n)
+            if rx.match(n) and os.path.isdir(p) and not os.path.islink(p):
+                found.append(p)
+    return found
+
+
+def leftover_rows(ctx):
+    return [new_row("all", "installer leftover %s" % os.path.basename(p), "remove", "copy", p, [], _kind="sweep",
+                    dest=p) for p in leftovers(ctx)]
+
+
+def legacy_driver_alive(run_dir):
+    """The .ub/lock.json record while a kit 2.0.x driver holds the run, else None: proc.legacy_driver_live, the one
+    rule the engine applies too (KIT_SPEC 6.3, 10.4 item 8), on this installer's clock. A 2.0.x record {pid, host,
+    heartbeat_at, heartbeat_ts} counts while its pid lives and its heartbeat is at most 120 s old, or older while the
+    driver that wrote it still runs (for example a 2.0.x `ub run` waiting at a human gate, which beats no more): the
+    process started no later than 1 s after the beat, or it runs ub.py on this run (proc.runs_ub_on). Kit 2.1+ records
+    {pid, host, since, heartbeat_at, heartbeat_ts} carry "since" and decide nothing here: their heartbeat_ts, refreshed
+    every 30 s while the 2.1 driver holds its kernel lock, is for 2.0.x drivers only, and a 2.1 driver is seen through
+    that kernel lock (.ub/jobs/_driver.lock). A heartbeat more than 120 s in the future decides nothing either."""
+    data = load_json_file(os.path.join(run_dir, ".ub", "lock.json"))
+    return data if proc.legacy_driver_live(data, run_dir, now=time.time()) else None
+
+
+def live_runs(ctx):
+    """[(run dir, live job ids, driver)] for the runs in UB_HOME/runs.json and <project>/brainstorm/ that have a live
+    worker (running marker or held execution lock) or a live driver: a kit 2.0.x driver's .ub/lock.json record
+    (legacy_driver_alive; driver is that record), or a held .ub/jobs/_driver.lock (driver True). Those processes import
+    kit modules lazily from the trees an update swaps, so a swap under them mixes versions."""
+    if "live_runs" in ctx.cache:
+        return ctx.cache["live_runs"]
+    dirs = []
+    data = load_json_file(os.path.join(ctx.ub_home, "runs.json"), {})
+    for r in (data.get("runs") if isinstance(data, dict) else None) or []:
+        if isinstance(r, dict) and isinstance(r.get("path"), str):
+            dirs.append(r["path"])
+    root = os.path.join(ctx.project, "brainstorm")
+    if os.path.isdir(root):
+        dirs.extend(os.path.join(root, n) for n in sorted(os.listdir(root)))
+    out, seen = [], set()
+    batch = None
+    for d in dirs:
+        d = os.path.abspath(d)
+        key = os.path.normcase(d)
+        if key in seen or not os.path.isdir(os.path.join(d, ".ub")):
+            continue
+        seen.add(key)
+        jobs, driver = [], legacy_driver_alive(d)
+        if os.path.isdir(os.path.join(d, ".ub", "jobs")):
+            if batch is None:
+                from ublib import batch  # lazy: plan and doctor of a fresh machine never need it
+            try:
+                jobs = [j for j in batch.running_jobs(d) if not j.startswith("_")]
+                driver = driver or bool(batch.lock_state(d, "_driver"))
+            except (OSError, ValueError):
+                pass
+        if jobs or driver:
+            out.append((d, jobs, driver))
+    ctx.cache["live_runs"] = out
+    return out
+
+
+def swaps_tree(row):
+    """True for a row that replaces or deletes a tree a running worker or driver may import from."""
+    kind, action = row.get("_kind"), row.get("action")
+    if action in NOOP_ACTIONS:
+        return False
+    if kind in ("stage", "native"):
+        return action == "update"
+    if kind == "copy":
+        return action in ("update", "backup+update", "migrate-v1")
+    return kind in ("remove", "uninstall-native", "uninstall-copy", "uninstall-tree", "purge")
+
+
+def describe_live(live):
+    """The live runs for a message. A kit 2.0.x driver is named with its pid and host: one whose beat is older than
+    proc.LEGACY_DRIVER_STALE_S is a `ub run` waiting for an answer in its terminal."""
+    out = []
+    for d, jobs, driver in live:
+        what = ["%d live worker(s)" % len(jobs)] if jobs else []
+        if isinstance(driver, dict):
+            idle = time.time() - float(driver["heartbeat_ts"]) > proc.LEGACY_DRIVER_STALE_S
+            what.append("a live driver: a kit 2.0.x session (pid %s, %s)%s" % (
+                driver.get("pid"), driver.get("host") or "?",
+                ", probably waiting for an answer in its terminal" if idle else ""))
+        elif driver:
+            what.append("a live driver")
+        out.append("%s (%s)" % (posix(d), ", ".join(what)))
+    return "; ".join(out)
+
+
+def live_remedy(live):
+    """How to end the live runs. `ub stop <run>` stops a 2.1 driver and the workers; a kit 2.0.x session ends only in
+    its own terminal (2.0.x's `ub stop` stops its workers and leaves the session holding .ub/lock.json)."""
+    ways = []
+    if any(jobs or driver is True for _d, jobs, driver in live):
+        ways.append("wait for them to finish, stop them (ub stop <run>)")
+    if any(isinstance(driver, dict) for _d, _jobs, driver in live):
+        ways.append("answer or close each kit 2.0.x session (Ctrl+C in its terminal; ub stop does not end it), then "
+                    "run the command again")
+    return ", ".join(ways) + ", or pass --force"
+
+
+def guard_live_runs(ctx, rows, warnings):
+    """Block the rows that swap kit trees while a run has live workers or a live driver (--force goes ahead)."""
+    live = live_runs(ctx)
+    todo = [r for r in rows if swaps_tree(r)]
+    if not live or not todo:
+        return
+    what = describe_live(live)
+    if getattr(ctx.args, "force", False):
+        warnings.append("runs are active: %s; --force swaps the kit under them anyway (their jobs may fail and be "
+                        "retried)" % what)
+        return
+    reason = ("runs are active: %s. Swapping the kit now would mix versions inside running processes: %s"
+              % (what, live_remedy(live)))
+    warnings.append(reason)
+    for r in todo:
+        r["action"], r["_kind"], r["_reason"] = "blocked", "noop", reason
 
 
 # launchers --------------------------------------------------------------------------------------------------------
 
 
-def _sh_quote(s):
-    return "'" + s.replace("'", "'\\''") + "'"
-
-
-def _ps_quote(s):
-    return "'" + s.replace("'", "''") + "'"
-
-
-def _cmd_quote(s):
-    return '"' + s + '"'
-
-
-def builtin_launcher(kind, py, script, fixed_args):
-    head = "ultimate-brainstorm launcher (generated by install.py; re-run the installer instead of editing)"
-    # the same refusal as launch.py: these characters break out of the quoted paths in .cmd / .ps1 / sh files
-    bad_chars = '"%\r\n' + ("!^" if kind == "cmd" else "")
-    for label, value in (("Python", py), ("UB_HOME", script)):
-        bad = sorted(set(c for c in value if c in bad_chars))
-        if bad:
-            raise InstallError("the %s path %s contains %s, which a launcher cannot quote safely; use a folder "
-                               "without these characters" % (label, value, ", ".join(repr(c) for c in bad)))
-    if kind == "sh":
-        args = "".join(" " + _sh_quote(a) for a in fixed_args)
-        return "#!/bin/sh\n# %s\nexec %s %s%s \"$@\"\n" % (head, _sh_quote(py), _sh_quote(script), args)
-    if kind == "cmd":
-        args = "".join(" " + a for a in fixed_args)
-        return ("@echo off\r\nrem %s\r\n%s %s%s %%*\r\nexit /b %%ERRORLEVEL%%\r\n"
-                % (head, _cmd_quote(py), _cmd_quote(script), args))
-    args = "".join(" " + _ps_quote(a) for a in fixed_args)
-    return "# %s\r\n& %s %s%s @args\r\nexit $LASTEXITCODE\r\n" % (head, _ps_quote(py), _ps_quote(script), args)
-
-
 def launch_module(ctx):
-    """profiles/launch.py of the source kit (B1-packaging), loaded as a module for its rendering API; None if absent."""
-    if "launchmod" in ctx.cache:
-        return ctx.cache["launchmod"]
-    mod = None
+    """profiles/launch.py of the source kit, loaded as a module for its rendering API (4.16). The launchers run the
+    staged copy of this same file, so there is no other text to fall back to: when it is missing or fails to load, this
+    raises InstallError and the launcher and Codex-home rows become `blocked` (the kit is incomplete or broken)."""
+    cached = ctx.cache.get("launchmod")
+    if isinstance(cached, InstallError):
+        raise cached
+    if cached is not None:
+        return cached
     path = os.path.join(ctx.source, "profiles", "launch.py")
-    if os.path.isfile(path):
+    try:
+        if not os.path.isfile(path):
+            raise InstallError("%s is missing: not a complete kit" % posix(path))
         try:
             spec = importlib.util.spec_from_file_location("ub_profiles_launch_%s" % rand_suffix(), path)
             mod = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(mod)
-        except Exception:  # noqa: BLE001 - fall back to the built-in launcher text
-            mod = None
+        except Exception as exc:  # noqa: BLE001 - any import-time defect of launch.py
+            raise InstallError("%s failed to load (%s: %s)" % (posix(path), type(exc).__name__, exc))
+    except InstallError as exc:
+        ctx.cache["launchmod"] = exc
+        raise
     ctx.cache["launchmod"] = mod
     return mod
 
 
 def launch_args_for(ctx, tool, provider=None, region=None, zai_mcp=False):
-    mod = launch_module(ctx)
-    if mod is not None and hasattr(mod, "launcher_args"):
-        try:
-            return list(mod.launcher_args(tool, provider, region=region, zai_mcp=zai_mcp))
-        except Exception:  # noqa: BLE001
-            pass
-    out = [tool]
-    if provider:
-        out += ["--provider", provider]
-    if region and region != "global":
-        out += ["--region", region]
-    if zai_mcp:
-        out.append("--zai-mcp")
-    return out
+    return list(launch_module(ctx).launcher_args(tool, provider, region=region, zai_mcp=zai_mcp))
 
 
 def launcher_set(ctx, name, launch_args):
     """{abs path: bytes} for <bin>/<name>, <name>.cmd and <name>.ps1. Each calls
     PY UB_HOME/kit/profiles/launch.py <launch_args> -- <user args> (4.16)."""
     mod = launch_module(ctx)
-    if mod is not None and hasattr(mod, "render_launchers"):
-        try:
-            rendered = mod.render_launchers(name, list(launch_args), ub_home_dir=ctx.ub_home,
-                                            python_exe=sys.executable)
-        except Exception as exc:  # noqa: BLE001 - launch.py refused (e.g. an unquotable path): never work around it
-            raise InstallError("launcher %s: %s" % (name, exc))
-        files = {os.path.join(ctx.bin_dir, fname): text.encode("utf-8") for fname, text in rendered.items()}
-        if len(files) == 3:
-            return files
-    script = posix(os.path.join(ctx.kit_dir, "profiles", "launch.py"))
-    py = posix(sys.executable)
-    fixed = list(launch_args) + ["--"]
-    return {os.path.join(ctx.bin_dir, name + suffix): builtin_launcher(kind, py, script, fixed).encode("utf-8")
-            for kind, suffix in (("sh", ""), ("cmd", ".cmd"), ("ps1", ".ps1"))}
+    try:
+        rendered = mod.render_launchers(name, list(launch_args), ub_home_dir=ctx.ub_home, python_exe=sys.executable)
+    except Exception as exc:  # noqa: BLE001 - launch.py refused (e.g. an unquotable path): never work around it
+        raise InstallError("launcher %s: %s" % (name, exc))
+    if sorted(rendered) != sorted([name, name + ".cmd", name + ".ps1"]):
+        raise InstallError("launcher %s: profiles/launch.py rendered %s, not the three launcher forms"
+                           % (name, ", ".join(sorted(rendered))))
+    # UTF-8, plus a BOM for a .ps1 holding a non-ASCII path (launch.py launcher_bytes; a kit before 2.1 has none)
+    encode = getattr(mod, "launcher_bytes", None) or (lambda _fname, text: text.encode("utf-8"))
+    return {os.path.join(ctx.bin_dir, fname): encode(fname, text) for fname, text in rendered.items()}
 
 
 def launcher_row(ctx, label, files):
@@ -1279,9 +1854,10 @@ def ub_launchers(ctx):
 
 
 def launcher_row_for(ctx, label, name, launch_args, warnings):
-    """launcher_row, or a 'blocked' row when the launcher text cannot be rendered safely."""
+    """launcher_row, or a 'blocked' row when the launcher text cannot be rendered safely (or profiles/launch.py is
+    broken). launch_args is a list, or a function returning it (evaluated here, so its failure also blocks)."""
     try:
-        files = launcher_set(ctx, name, launch_args)
+        files = launcher_set(ctx, name, launch_args() if callable(launch_args) else launch_args)
     except InstallError as exc:
         warnings.append(str(exc))
         return new_row("all", "launchers %s" % label, "blocked", "copy", ctx.bin_dir, [], _kind="noop",
@@ -1415,6 +1991,7 @@ def build_plan(ctx, mode, skip_clis=False):
 
     stage = stage_row(ctx, warnings)
     rows.append(stage)
+    rows.extend(leftover_rows(ctx))
     # an update whose staged kit did not change re-runs no plugin commands (idempotent)
     native_mode = "install" if (mode == "update" and stage["action"] == "unchanged") else mode
 
@@ -1429,7 +2006,7 @@ def build_plan(ctx, mode, skip_clis=False):
             continue
         dest = copy_dest(ctx, a)
         if d["route"] == "native":
-            nrow = native_row(ctx, a, native_mode)
+            nrow = native_row(ctx, a, native_mode, warnings=warnings)
             rows.append(nrow)
             r = removal_row(ctx, a, dest, "now installed as a native plugin", warnings)
             if r:
@@ -1441,8 +2018,10 @@ def build_plan(ctx, mode, skip_clis=False):
             plugin_there = bool(d["bin"]) and native_installed(ctx, a)
             if plugin_there and ctx.scope == "user" and native_entry(ctx, a) is not None:
                 others = [e for e in (ctx.manifest or {}).get("entries", []) if e.get("route") == "native" and
-                          e.get("agent") == a and not e.get("profile") and e is not native_entry(ctx, a)]
-                pre = uninstall_native_row(ctx, a, native_entry(ctx, a), last_for_marketplace=not others)
+                          e.get("agent") == a and not e.get("profile") and e is not native_entry(ctx, a) and
+                          entry_home(ctx, a, e) is None]  # the marketplace goes with this home's last entry
+                pre = uninstall_native_row(ctx, a, native_entry(ctx, a), last_for_marketplace=not others,
+                                           warnings=warnings)
                 rows.append(pre)
                 warnings.append("%s: removing the kit's native plugin first (the copy route is used: %s)"
                                 % (DISPLAY[a], d["reason"]))
@@ -1542,10 +2121,13 @@ def build_plan(ctx, mode, skip_clis=False):
                % (posix(os.path.join(ctx.bin_dir, "ub")), posix(ctx.bin_dir)))
     nxt.append("Check the setup any time: python \"%s\" doctor" % posix(os.path.join(ctx.kit_dir, "install",
                                                                                      "install.py")))
+    guard_live_runs(ctx, rows, warnings)
+    block_downgrade(stage, rows)
     return assemble_plan(ctx, system, agents, rows, warnings, manual, nxt)
 
 
 def assemble_plan(ctx, system, agents, rows, warnings, manual, nxt):
+    warnings[:0] = [n for n in ctx.notes if n not in warnings]
     for i, r in enumerate(rows, 1):
         r["n"] = i
     ag = {}
@@ -1577,9 +2159,12 @@ NOOP_ACTIONS = ("unchanged", "skip-not-owned", "manual", "blocked")
 
 
 def actionable(rows):
+    """Rows that apply changes. An `unchanged` row that re-records a lost manifest entry (_record) counts too."""
     out = []
     for r in rows:
         if r["action"] in NOOP_ACTIONS:
+            if r["action"] == "unchanged" and r.get("_record"):
+                out.append(r)
             continue
         if r["action"] == "migrate-v1" and not r.get("_migrate"):
             continue
@@ -1700,24 +2285,36 @@ def backup_file(ctx, agent, path):
 
 
 def backup_paths(ctx, agent, root, rels):
-    """Copy files (rels) or the whole tree (rels == 'all') under root to
-    UB_HOME/backups/<stamp>/<agent>/<hash8>-<name>/<name>/."""
-    base = os.path.join(backup_container(ctx, agent, root), os.path.basename(root))
+    """Copy files and empty folders (rels; a folder ends in `/`) or the whole tree (rels == 'all': every file and
+    folder, .git, .build, caches and the marker included)
+    under root to UB_HOME/backups/<stamp>/<agent>/<hash8>-<name>/<name>/. The caller deletes root afterwards, so
+    nothing is left out silently. A symlink is never followed or re-created (copy-only): LINKS.txt next to ORIGIN.txt
+    lists each one as `<relpath> -> <target>`; its target stays where it is."""
+    container = backup_container(ctx, agent, root)
+    base = os.path.join(container, os.path.basename(root))
     if rels == "all":
-        for rel, src in walk_files(root, top_exclude=False).items():
+        rels = []
+        for dirpath, dirnames, filenames in os.walk(root):
+            rel_dir = os.path.relpath(dirpath, root)
+            pre = "" if rel_dir == "." else rel_dir.replace("\\", "/") + "/"
+            os.makedirs(os.path.join(base, *pre.split("/")), exist_ok=True)  # empty folders too
+            links = [d for d in dirnames if os.path.islink(os.path.join(dirpath, d))]
+            dirnames[:] = sorted(d for d in dirnames if d not in links)
+            rels.extend(pre + n for n in sorted(links + filenames))
+    links = []
+    for rel in rels:
+        src = os.path.join(root, *rel.split("/"))
+        if rel.endswith("/"):  # an empty folder (unrecorded)
+            os.makedirs(os.path.join(base, *rel.split("/")), exist_ok=True)
+        elif os.path.islink(src):
+            links.append("%s -> %s\n" % (rel, os.readlink(src)))
+        elif os.path.isfile(src):
             t = os.path.join(base, *rel.split("/"))
             os.makedirs(os.path.dirname(t), exist_ok=True)
             shutil.copy2(src, t)
-        m = os.path.join(root, MARKER)
-        if os.path.isfile(m):
-            shutil.copy2(m, os.path.join(base, MARKER))
-    else:
-        for rel in rels:
-            src = os.path.join(root, *rel.split("/"))
-            if os.path.isfile(src):
-                t = os.path.join(base, *rel.split("/"))
-                os.makedirs(os.path.dirname(t), exist_ok=True)
-                shutil.copy2(src, t)
+    if links:
+        with open(os.path.join(container, "LINKS.txt"), "a", encoding="utf-8", newline="\n") as f:
+            f.writelines(links)
     return posix(base)
 
 
@@ -1728,7 +2325,7 @@ def marker_bytes(ctx):
 
 def do_stage(ctx, row):
     files = runtime_files(ctx, ctx.source)
-    if os.path.normcase(os.path.abspath(ctx.source)) == os.path.normcase(os.path.abspath(ctx.kit_dir)):
+    if _same_real(ctx.source, ctx.kit_dir):
         return "source is the staged kit"
     os.makedirs(ctx.ub_home, exist_ok=True)
     new = os.path.join(ctx.ub_home, "kit.new-" + rand_suffix())
@@ -1833,20 +2430,33 @@ def run_logged(ctx, argv, env_extra=None, agent=None, cwd=None, timeout=300):
 
 def do_native(ctx, row, updates, result):
     agent = row.get("_native_agent", row["agent"])
+    codex_home = row.get("_codex_home")
     ok = True
     for argv in row["commands"]:
         rc, o, e = run_logged(ctx, argv, row.get("_env_extra"), agent, row.get("_cwd"))
         result["commands"].append({"argv": argv, "exit": rc})
-        if rc != 0 and not RE_ALREADY.search(o + "\n" + e):
+        if rc != 0 and (rc is None or not RE_ALREADY.search(o + "\n" + e)):  # rc None: the CLI never ran
             ok = False
             result["detail"] = (e or o).strip()[-300:]
             break
+        if rc != 0 and argv == row.get("_mk_add"):
+            # [U-18] "already added" counts as success only when that marketplace is the staged kit [U-50]
+            ctx.cache.pop(("marketplaces", agent, codex_home), None)
+            state, text = marketplace_source(ctx, agent, codex_home)
+            if state == "foreign":
+                ok = False
+                result["detail"] = ("the marketplace %s is registered from %s, not from the staged kit %s: remove it "
+                                    "(%s) or re-run with --force" % (MARKETPLACE, text, posix(ctx.kit_dir), " ".join(
+                                        ctx.expand(a) for a in ctx.targets["agents"][agent]["native"]
+                                        ["marketplace_remove"])))
+                break
     if not ok and row.get("_fallback"):
         ok = True
         for argv in row["_fallback"]:
             rc, o, e = run_logged(ctx, argv, row.get("_env_extra"), agent, row.get("_cwd"))
             result["commands"].append({"argv": argv, "exit": rc})
-            if rc != 0 and not RE_ALREADY.search(o + "\n" + e) and not RE_ABSENT.search(o + "\n" + e):
+            text = o + "\n" + e
+            if rc != 0 and (rc is None or not (RE_ALREADY.search(text) or RE_ABSENT.search(text))):
                 ok = False
                 result["detail"] = (e or o).strip()[-300:]
                 break
@@ -1855,18 +2465,11 @@ def do_native(ctx, row, updates, result):
     if not ok and row.get("_allow_fail"):
         result["detail"] = "refresh failed (ignored: the local marketplace loads in place) [U-16]"
         ok = True
-    if ok:
-        e = {"agent": agent, "route": "native", "marketplace": MARKETPLACE, "plugin": PLUGIN_ID,
-             "scope": "local" if (agent == "claude-code" and ctx.scope == "project") else "user"}
-        if agent == "claude-code":
-            e["config_dir"] = posix(ctx.homes["claude-code"])
-            if e["scope"] == "local":
-                e["project"] = posix(ctx.project)  # uninstall runs `--scope local` from this folder
-        else:
-            e["codex_home"] = posix(row.get("_codex_home") or ctx.homes["codex"])
-            if row.get("_codex_home"):
-                e["profile"] = True
-        updates["entries"].append(e)
+    if ok and row.get("_no_record"):
+        result["detail"] = ("%s the plugin's marketplace source is unknown, so it is not recorded as the kit's [U-50]"
+                            % result["detail"]).strip()
+    elif ok:
+        updates["entries"].append(native_manifest_entry(ctx, agent, codex_home))
     return ok
 
 
@@ -1880,7 +2483,138 @@ def find_marketplace_name(obj, source_match):
     return node["name"] if node else None
 
 
+def pinned_commit_ok(ctx, row, agent, result, already=False):
+    """After `<cli> plugin marketplace add <repo>@<tag>` of a component pinned to a commit in components.json: when
+    `marketplace list --json` names a local clone of it that git can read, its HEAD must be that commit, so a moved
+    tag installs nothing [U-51]. When no clone can be read the row goes on and its detail says "not verified".
+    already: the add was answered "already ..." (RE_ALREADY), so the clone is an earlier registration of that
+    marketplace (for example one added without the tag): a different HEAD is its ref, not a moved tag."""
+    want, match = row.get("_commit"), row.get("_source_match")
+    if not want or not match or agent not in ("claude-code", "codex"):
+        return True
+    ctx.cache.pop(("marketplaces", agent, None), None)
+    listed = marketplace_list(ctx, agent)
+    node = json_find(listed, lambda n: isinstance(n, dict) and isinstance(n.get("name"), str) and
+                     match.lower() in json.dumps(n, ensure_ascii=True).lower()) if listed is not None else None
+    head = None
+    for _k, s in (_strings(node) if node is not None else []):
+        if os.path.isabs(s) and os.path.isdir(s):
+            rc, o, _e = run_cmd(ctx, ["git", "-C", s, "rev-parse", "HEAD"], timeout=30)
+            m = RE_SHA.search(o or "") if rc == 0 else None
+            if m:
+                head = m.group(0)
+                break
+    if head is None:
+        result["detail"] = "pinned commit %s not verified: no readable clone of %s [U-51]" % (want[:12], match)
+        return True
+    if head != want and already:
+        cli = "claude" if agent == "claude-code" else "codex"
+        result["detail"] = ("the marketplace %s (%s) was already registered and tracks commit %s, not the pinned %s "
+                            "(%s): not installing from it. Remove it (%s plugin marketplace remove %s), then run "
+                            "install.py install again" % (node.get("name"), match, head[:12], want[:12],
+                                                          row.get("_ref"), cli, node.get("name")))
+        return False
+    if head != want:
+        result["detail"] = ("%s at %s is commit %s, not the pinned %s (the tag moved): not installing it"
+                            % (match, row.get("_ref"), head[:12], want[:12]))
+        return False
+    result["detail"] = "commit %s verified" % want[:12]
+    return True
+
+
+def tree_sha256(hashes):
+    """One SHA-256 for a folder's content: of its `sha256sum` listing ("<sha256>  <relpath>" lines sorted by path).
+    It pins what a component installs independently of how the archive holding it was compressed."""
+    listing = "".join("%s  %s\n" % (h, rel) for rel, h in sorted(hashes.items()))
+    return hashlib.sha256(listing.encode("utf-8")).hexdigest()
+
+
+def fetch_component_archive(ctx, cid, spec):
+    """The extracted top folder of a component's commit archive: downloaded once per run (or copied from
+    UB_COMPONENTS_DIR, as UB_RELEASE_DIR does for the kit) and extracted with _safe_extract."""
+    key = ("component-archive", cid)
+    if key in ctx.cache:
+        return ctx.cache[key]
+    tmp = tempfile.mkdtemp(prefix="ub-comp-")
+    ctx.cleanup.append(tmp)
+    archive = os.path.join(tmp, spec["file"])
+    local = ctx.env.get("UB_COMPONENTS_DIR")
+    if local:
+        src = os.path.join(local, spec["file"])
+        if not os.path.isfile(src):
+            raise InstallError("UB_COMPONENTS_DIR has no %s" % spec["file"])
+        shutil.copyfile(src, archive)
+    else:
+        try:
+            with urllib.request.urlopen(spec["url"], timeout=120) as r, open(archive, "wb") as f:
+                shutil.copyfileobj(r, f)
+        except OSError as exc:
+            raise InstallError("download failed: %s (%s)" % (spec["url"], exc))
+    out = os.path.join(tmp, "src")
+    try:
+        _safe_extract(archive, out)
+    except (tarfile.TarError, EOFError, OSError) as exc:
+        raise InstallError("%s is not a readable archive: %s" % (spec["file"], exc))
+    tops = os.listdir(out)
+    root = os.path.join(out, tops[0]) if len(tops) == 1 and os.path.isdir(os.path.join(out, tops[0])) else out
+    ctx.cache[key] = root
+    return root
+
+
+def do_component_archive(ctx, row, updates, result):
+    """Copy the skill folders of a component from its pinned commit archive into the agent's skills folder. Each folder
+    must match its pinned content SHA-256 (components.json), or nothing is installed. A skill folder already there is
+    kept as it is. The manifest records the installed files' hashes for doctor's drift check [U-27], and per skill
+    folder the commit it came from (`commits`): a folder a re-install keeps still holds its earlier pin's content."""
+    spec, dest_dir = row["_archive"], row["_dest"]
+    root = fetch_component_archive(ctx, row["_cid"], spec)
+    sources = {}
+    for skill, pin in sorted(spec["skills"].items()):
+        src = os.path.join(root, *pin["path"].split("/"))
+        files = walk_files(src, top_exclude=False) if os.path.isdir(src) else {}
+        got = tree_sha256(hash_files(files)) if files else None
+        if got != pin["sha256"]:
+            result["detail"] = ("%s in %s does not match its pinned SHA-256 (%s, not %s): not installing %s"
+                                % (pin["path"], spec["url"], (got or "missing")[:12], pin["sha256"][:12], row["_cid"]))
+            return False
+        sources[skill] = files
+    rec = {"id": row["_cid"], "agent": row["agent"], "route": "archive", "ref": row.get("_ref"),
+           "commit": row.get("_commit"), "files": {}, "paths": {}, "commits": {}}
+    # this record replaces the previous one of (id, agent): a folder the kit installed there keeps its record
+    prev = next((c for c in (ctx.manifest or {}).get("components", []) if isinstance(c, dict) and
+                 c.get("id") == row["_cid"] and c.get("agent") == row["agent"]), None) or {}
+    kept = []
+    for skill, files in sorted(sources.items()):
+        dest = os.path.join(dest_dir, skill)
+        if os.path.lexists(dest):
+            kept.append(posix(dest))  # not the kit's to replace
+            if _same((prev.get("paths") or {}).get(skill), dest) and (prev.get("files") or {}).get(skill):
+                rec["files"][skill] = prev["files"][skill]  # installed by the kit: its edits stay drift
+                rec["paths"][skill] = prev["paths"][skill]
+                rec["commits"][skill] = ((prev.get("commits") or {}).get(skill) or prev.get("commit")
+                                         or prev.get("ref"))
+            continue
+        make_parents(ctx, dest_dir, updates)
+        new = "%s.ub-new-%s" % (dest, rand_suffix())
+        try:
+            copy_files(files, new)
+            os.replace(new, dest)
+        finally:
+            if os.path.lexists(new):
+                rmtree(new)
+        rec["files"][skill] = hash_files(walk_files(dest, top_exclude=False))
+        rec["paths"][skill] = posix(dest)
+        rec["commits"][skill] = row.get("_commit")
+    result["detail"] = "commit %s verified" % (row.get("_commit") or "")[:12] + (
+        "; kept the existing %s" % ", ".join(kept) if kept else "")
+    updates["components"].append(rec)
+    ctx.log("component %s -> %s" % (row["_cid"], posix(dest_dir)))
+    return True
+
+
 def do_component(ctx, row, updates, result):
+    if row.get("_archive"):
+        return do_component_archive(ctx, row, updates, result)
     agent = row["agent"] if row["agent"] in AGENTS else None
     cmds = row["commands"]
     resolve = row.get("_resolve")
@@ -1888,8 +2622,12 @@ def do_component(ctx, row, updates, result):
     for argv in steps:
         rc, o, e = run_logged(ctx, argv, row.get("_env_extra"), agent, row.get("_cwd"), timeout=900)
         result["commands"].append({"argv": argv, "exit": rc})
-        if rc != 0 and not RE_ALREADY.search(o + "\n" + e):
+        already = bool(RE_ALREADY.search(o + "\n" + e))  # [U-18] with exit 1 or exit 0
+        if rc != 0 and not already:
             result["detail"] = (e or o).strip()[-300:]
+            return False
+        if argv[1:4] == ["plugin", "marketplace", "add"] and \
+                not pinned_commit_ok(ctx, row, agent, result, already=already):
             return False
     if resolve:  # [U-18]
         rc, o, e = run_logged(ctx, ["claude", "plugin", "marketplace", "list", "--json"], None, agent, None, 60)
@@ -1910,9 +2648,11 @@ def do_component(ctx, row, updates, result):
         if rc != 0 and not RE_ALREADY.search(o + "\n" + e):
             result["detail"] = (e or o).strip()[-300:]
             return False
-    updates["components"].append({"id": row["_cid"], "agent": row["agent"],
-                                  "route": row["how"] if row["how"] != "native" else "native",
-                                  "ref": row.get("_ref")})
+    rec = {"id": row["_cid"], "agent": row["agent"], "route": row["how"] if row["how"] != "native" else "native",
+           "ref": row.get("_ref")}
+    if row.get("_commit"):
+        rec["commit"] = row["_commit"]
+    updates["components"].append(rec)
     return True
 
 
@@ -2002,8 +2742,13 @@ def do_login(ctx, row, result):
         result["detail"] = "%s not found" % argv[0]
         return False
     proc.check_cmd_args(exe, argv[1:])
+    agent = row["agent"]
+    flag = {"codex": "codex_home", "kimi": "kimi_home"}.get(agent)
+    if flag and getattr(ctx.args, flag, None):
+        os.makedirs(ctx.homes[agent], exist_ok=True)  # the named home may not exist yet; the CLI signs in there
     sys.stderr.write("Running %s in the foreground; complete the sign-in, then come back.\n" % " ".join(argv))
-    rc = subprocess.call([exe] + argv[1:])
+    # the sign-in lands in the home the plugin rows and the "signed in" check use (--codex-home / --kimi-home)
+    rc = subprocess.call([exe] + argv[1:], env=ctx.child_env(None, agent))
     result["commands"].append({"argv": argv, "exit": rc})
     ctx.log("exit=%s %s" % (rc, " ".join(argv)))
     return rc == 0
@@ -2015,16 +2760,33 @@ def do_codexhome(ctx, row):
     return ""
 
 
+def base_url_node(path, cur, provider, allow_url=False):
+    """providers.<provider>.base_url of a loaded UB_HOME/families.json, made on the way down. A missing or empty value
+    counts as absent, as launch.py reads it; any other value that is not a JSON object is refused, except a single-URL
+    base_url (a string, returned as is) when allow_url says the caller only reads it."""
+    if cur is None:
+        raise InstallError("%s is not valid JSON; fix or delete it first" % posix(path), 2)
+    node, where = cur, []
+    for key in ("providers", provider, "base_url"):
+        if not isinstance(node, dict):
+            break
+        node[key] = node.get(key) or {}
+        node = node[key]
+        where.append(key)
+    if not isinstance(node, dict) and not (allow_url and isinstance(node, str)):
+        raise InstallError("%s: %s is not a JSON object; fix or delete it first"
+                           % (posix(path), ".".join(where) or "the top level"), 2)
+    return node
+
+
 def do_families(ctx, row):
     path = os.path.join(ctx.ub_home, "families.json")
     cur = load_json_file(path, None)
     if cur is None and not os.path.exists(path):
         cur = {}
-    if not isinstance(cur, dict):
-        raise InstallError("%s is not valid JSON; fix or delete it first" % posix(path))
-    backup_file(ctx, "all", path)
     prov = row["_provider"]
-    node = cur.setdefault("providers", {}).setdefault(prov, {}).setdefault("base_url", {})
+    node = base_url_node(path, cur, prov)
+    backup_file(ctx, "all", path)
     if row["_value"] is None:
         node.pop("global", None)
         if not node:
@@ -2040,7 +2802,9 @@ def do_families(ctx, row):
     return ""
 
 
-def apply_rows(ctx, rows, updates, status_of=None):
+def apply_rows(ctx, rows, updates, status_of=None, persist=None):
+    """Apply rows in order. persist() runs after every row that did something (the manifest and install.log are
+    written incrementally), so an apply cut short at any point leaves a manifest that owns what was done."""
     results = []
     failed = False
     status_of = {} if status_of is None else status_of  # id(row) -> result status, for _requires
@@ -2050,14 +2814,18 @@ def apply_rows(ctx, rows, updates, status_of=None):
         status_of[id(row)] = res
         if row["action"] in NOOP_ACTIONS:
             res["status"] = row["action"] if row["action"] != "unchanged" else "unchanged"
+            if row["action"] == "unchanged" and row.get("_record"):
+                updates["entries"].append(row["_record"])  # re-record what an interrupted apply did not
+                res["detail"] = "recorded in install-manifest.json"
+                if persist:
+                    persist()
             continue
-        req = row.get("_requires")
-        if req is not None:
-            got = (status_of.get(id(req)) or {}).get("status")
-            if got not in ("ok", "unchanged"):
-                res["status"] = "skipped"
-                res["detail"] = "kept: row %s (%s) did not succeed" % (req.get("n"), req.get("item"))
-                continue
+        reqs = ([row["_requires"]] if row.get("_requires") is not None else []) + list(row.get("_requires_all") or [])
+        bad = [r for r in reqs if (status_of.get(id(r)) or {}).get("status") not in ("ok", "unchanged")]
+        if bad:
+            res["status"] = "skipped"
+            res["detail"] = "kept: row %s (%s) did not succeed" % (bad[0].get("n"), bad[0].get("item"))
+            continue
         if row.get("_verify_native"):
             va = row["_verify_native"]
             ctx.cache.pop(("plugins", va, None), None)
@@ -2123,8 +2891,11 @@ def apply_rows(ctx, rows, updates, status_of=None):
                 updates["remove_launchers"].extend(posix(p) for p in row["_files"])
             elif kind == "uninstall-tree":
                 rmtree(row["_dest"])
+            elif kind == "sweep":
+                res["detail"] = rmtree_checked(row["_dest"])
+                ctx.log("removed installer leftover %s %s" % (posix(row["_dest"]), res["detail"]))
             elif kind == "purge":
-                do_purge(ctx, row.get("_names") or [])
+                res["detail"] = do_purge(ctx, row.get("_names") or [], row.get("_moves") or [])
             elif kind == "noop":
                 res["status"] = row["action"]
         except InstallError as exc:
@@ -2133,9 +2904,15 @@ def apply_rows(ctx, rows, updates, status_of=None):
         except OSError as exc:
             res["status"] = "failed"
             res["detail"] = "%s: %s" % (type(exc).__name__, exc)
+        except Exception as exc:  # noqa: BLE001 - e.g. proc.UnsafeArgument (a ValueError): this row fails, not the run
+            res["status"] = "failed"
+            res["detail"] = "%s: %s" % (type(exc).__name__, exc)
         if res["status"] == "failed":
             failed = True
             ctx.log("FAILED row %s %s: %s" % (row["n"], row["item"], res["detail"]))
+        if persist:
+            persist()
+        if res["status"] == "failed":
             if kind == "stage":
                 for r in rows[rows.index(row) + 1:]:
                     results.append({"n": r["n"], "item": r["item"], "status": "skipped",
@@ -2151,6 +2928,11 @@ def new_updates():
 
 def _same(a, b):
     return bool(a) and bool(b) and os.path.normcase(os.path.abspath(a)) == os.path.normcase(os.path.abspath(b))
+
+
+def _same_real(a, b):
+    """_same, or the same real folder under another spelling (a junction, a symlink, subst, an 8.3 name)."""
+    return bool(a) and bool(b) and (_same(a, b) or _same(os.path.realpath(a), os.path.realpath(b)))
 
 
 def entry_key(e):
@@ -2175,7 +2957,7 @@ def write_manifest(ctx, updates, drop_all=False):
          "created_dirs": list(m.get("created_dirs", []))}
     m["commit"] = source_commit(ctx)
     m["installed_at"] = now_iso()
-    if _same(ctx.source, ctx.kit_dir):
+    if _same_real(ctx.source, ctx.kit_dir):
         pass  # the staged kit re-applied itself: the staged content (and its origin) did not change
     elif ctx.source_is_temp or under_temp(ctx.source):
         m["source"] = None  # a bootstrap or release download: `update` must not re-stage an older clone
@@ -2221,6 +3003,47 @@ def ensure_home_dirs(ctx):
             os.chmod(tmp, 0o700)
 
 
+def recheck_under_lock(ctx, rows):
+    """The plan may have waited (the confirmation question, another installer's apply), so once install.lock is held
+    what it assumed is checked again, and nothing is applied (InstallError, exit 4) when another installer changed the
+    install meanwhile (applying would write this plan's stale copy of install-manifest.json over its records), or when
+    a run became live under a tree a planned row swaps (10.4 item 8; --force goes ahead)."""
+    if manifest_digest(ctx.manifest_path) != ctx.manifest_digest:
+        raise InstallError("another install.py changed this install (%s) after this plan was made; nothing was "
+                           "applied: run the command again" % posix(ctx.manifest_path), 4)
+    if getattr(ctx.args, "force", False) or not [r for r in actionable(rows) if swaps_tree(r)]:
+        return
+    ctx.cache.pop("live_runs", None)
+    live = live_runs(ctx)
+    if live:
+        raise InstallError("runs became active after this plan was made: %s. Nothing was applied: %s"
+                           % (describe_live(live), live_remedy(live)), 4)
+
+
+def confirm_replan(ctx, confirmed, newplan, title):
+    """The plan made again after --with-clis installed a CLI (its agent is now detected, so it can have new rows) is
+    applied under the confirmation the first plan got: None applies it, (code, result) stops before its rows. With
+    --yes a blocked row stops it (4, as a blocked first plan would); interactively, a plan with rows the user was not
+    shown, or blocked rows, is shown and asked about again (5 on no)."""
+    def key(r):
+        return r["agent"], r["item"], r["path"], r["action"]
+
+    rows = newplan["rows"]
+    blocked = [r for r in rows if r["action"] == "blocked"]
+    if getattr(ctx.args, "yes", False):
+        if blocked:
+            return 4, ("blocked rows present after the CLI install; only the CLI rows were applied: fix the warnings "
+                       "and run the command again")
+        return None
+    seen = set(key(r) for r in confirmed)
+    if not blocked and all(key(r) in seen for r in actionable(rows)):
+        return None
+    sys.stderr.write("The plan changed after the CLI install:\n\n" + plan_text(public_plan(newplan), title) + "\n\n")
+    if ask("Apply %d change(s)?" % len(actionable(rows))):
+        return None
+    return 5, "cancelled after the CLI install; only the CLI rows were applied"
+
+
 def confirm_and_apply(ctx, plan, title, rebuild=None, finish=None):
     """Shared flow for install/update/uninstall/setup-*: confirmation rules of 10.4 item 9, then apply."""
     args = ctx.args
@@ -2246,6 +3069,7 @@ def confirm_and_apply(ctx, plan, title, rebuild=None, finish=None):
         if blocked:
             plan["applied"] = False
             plan["result"] = "blocked rows present; nothing was applied"
+            plan["exit"] = 4
             if as_json:
                 emit_json(public_plan(plan))
             else:
@@ -2280,23 +3104,65 @@ def confirm_and_apply(ctx, plan, title, rebuild=None, finish=None):
         raise InstallError("refusing to run as root or administrator; set UB_ALLOW_ROOT=1 to allow it (never use "
                            "sudo or an elevated shell)")
     updates = new_updates()
-    ensure_home_dirs(ctx)
-    first = [r for r in rows if r.get("_kind") in ("cli", "login")]
-    rest = [r for r in rows if r.get("_kind") not in ("cli", "login")]
-    status_of = {}
-    results, failed = apply_rows(ctx, first, updates, status_of)
-    if rebuild and any(res["status"] == "ok" and r.get("_kind") == "cli" for res, r in zip(results, first)):
-        ctx.cache = {}
-        newplan = rebuild()
-        start = len(rows)
-        rest = [r for r in newplan["rows"]]
-        for i, r in enumerate(rest, start + 1):
-            r["n"] = i
-        plan["replan"] = rest
-        plan["warnings"].extend(w for w in newplan["warnings"] if w not in plan["warnings"])
-    r2, f2 = apply_rows(ctx, rest, updates, status_of)
-    results.extend(r2)
-    failed = failed or f2
+    lock = InstallLock(os.path.join(ctx.ub_home, LOCK_NAME))
+    if not lock.acquire():
+        raise InstallError("another install.py is applying changes (%s is locked): wait for it to finish, then run "
+                           "this command again" % posix(lock.path))
+    try:
+        recheck_under_lock(ctx, rows)
+    except BaseException:
+        lock.release()
+        raise
+
+    def persist():
+        """Write what is done so far: the manifest (atomically; every update is idempotent) and install.log."""
+        if finish is None:
+            write_manifest(ctx, updates)
+        elif ctx.manifest and not ctx.purged and not getattr(args, "purge", False):
+            write_manifest(ctx, updates)  # uninstall: finish() tidies up at the end
+        ctx.flush_log()
+
+    try:
+        ensure_home_dirs(ctx)
+        first = [r for r in rows if r.get("_kind") in ("cli", "login")]
+        rest = [r for r in rows if r.get("_kind") not in ("cli", "login")]
+        status_of = {}
+        results, failed = apply_rows(ctx, first, updates, status_of, persist)
+        halt = None
+        if rebuild and any(res["status"] == "ok" and r.get("_kind") == "cli" for res, r in zip(results, first)):
+            ctx.cache = {}
+            newplan = rebuild()
+            start = len(rows)
+            rest = [r for r in newplan["rows"]]
+            for i, r in enumerate(rest, start + 1):
+                r["n"] = i
+            plan["replan"] = rest
+            plan["warnings"].extend(w for w in newplan["warnings"] if w not in plan["warnings"])
+            halt = confirm_replan(ctx, rows, newplan, title)
+            if halt:
+                rest = []
+        r2, f2 = apply_rows(ctx, rest, updates, status_of, persist)
+        results.extend(r2)
+        failed = failed or f2
+        if finish:
+            finish(updates)
+        else:
+            write_manifest(ctx, updates)
+    except BaseException:
+        # Ctrl+C or an unexpected error between rows: keep the records of what was done, then re-raise
+        try:
+            persist()
+        except Exception:  # noqa: BLE001 - never mask the original error
+            pass
+        raise
+    finally:
+        ctx.flush_log()
+        lock.release()
+        if ctx.purged:
+            try:
+                os.unlink(lock.path)
+            except OSError:
+                pass
     # the Next lines must not tell the user to start an agent whose install failed
     all_rows = first + rest
     for row, res in zip(all_rows, results):
@@ -2306,14 +3172,11 @@ def confirm_and_apply(ctx, plan, title, rebuild=None, finish=None):
             note = "%s: not installed (row %s failed)" % (DISPLAY[a], row.get("n"))
             if note not in plan["next"]:
                 plan["next"].insert(0, note)
-    if finish:
-        finish(updates)
-    else:
-        write_manifest(ctx, updates)
-    ctx.flush_log()
     plan["applied"] = True
     plan["results"] = results
-    code = 1 if failed else 0
+    code = 1 if failed else (halt[0] if halt else 0)
+    if halt:
+        plan["result"] = halt[1]
     plan["exit"] = code
     if as_json:
         emit_json(public_plan(plan))
@@ -2326,7 +3189,10 @@ def confirm_and_apply(ctx, plan, title, rebuild=None, finish=None):
             if res.get("detail"):
                 line += "  " + res["detail"].replace("\n", " ")[:200]
             out(ctx, line)
-        out(ctx, "\nDone." if not failed else "\nSome rows failed (see above and %s)." % posix(ctx.log_path))
+        if failed:
+            out(ctx, "\nSome rows failed (see above and %s)." % posix(ctx.log_path))
+        else:
+            out(ctx, "\n%s%s." % (halt[1][0].upper(), halt[1][1:]) if halt else "\nDone.")
     return code
 
 
@@ -2393,12 +3259,36 @@ def do_uninstall_native(ctx, row, updates, result):
     for argv in row["commands"]:
         rc, o, e = run_logged(ctx, argv, row.get("_env_extra"), agent, row.get("_cwd"))
         result["commands"].append({"argv": argv, "exit": rc})
-        if rc != 0 and not RE_ABSENT.search(o + "\n" + e):
+        # "not installed" is read only from a CLI that ran: rc None (it could not start, e.g. in a missing cwd, or it
+        # timed out) says nothing about the plugin, even when the error text reads "No such file or directory"
+        if rc != 0 and (rc is None or not RE_ABSENT.search(o + "\n" + e)):
             ok = False
             result["detail"] = (e or o).strip()[-300:]
+            break  # never remove the marketplace while the plugin that loads from it is still installed
     if ok and row.get("_entry") is not None:
         updates["remove_entries"].append(entry_key(row["_entry"]))
     return ok
+
+
+def drop_done_removals(ctx, row, e):
+    """A re-run after a partial uninstall: leave out the `plugin uninstall` of a plugin `plugin list` no longer shows,
+    and the `marketplace remove` of a marketplace no longer registered, so the retry never depends on how the CLI words
+    "not installed" [U-18]. Only for a user-scope entry, judged by the lists of the home the entry was installed in
+    (entry_home), and only when the lists can be read."""
+    agent = row["_native_agent"]
+    if (e or {}).get("scope") == "local":
+        return
+    home = entry_home(ctx, agent, e)
+    native = ctx.targets["agents"][agent]["native"]
+    cmds = list(row["commands"])
+    listed = plugin_list(ctx, agent, home)
+    uninstalling = bool(cmds) and cmds[0][:len(native["uninstall"])] == native["uninstall"]
+    if uninstalling and listed is not None and not plugin_listed(listed, SKILL, MARKETPLACE):
+        cmds = cmds[1:]
+    remove = [ctx.expand(a) for a in native["marketplace_remove"]]
+    if cmds and cmds[-1] == remove and marketplace_source(ctx, agent, home)[0] == "absent":
+        cmds = cmds[:-1]
+    row["commands"] = cmds
 
 
 def build_uninstall_plan(ctx):
@@ -2417,35 +3307,52 @@ def build_uninstall_plan(ctx):
     natives = [e for e in entries if e.get("route") == "native" and e.get("agent") in ("claude-code", "codex")]
 
     def home_key(e):
-        return (e.get("agent"), os.path.normcase(e.get("codex_home") or e.get("config_dir") or "")
-                if e.get("profile") or e.get("agent") == "claude-code" else "")
+        agent = e.get("agent")
+        return agent, os.path.normcase(os.path.abspath(entry_home(ctx, agent, e) or ctx.homes.get(agent) or ""))
 
+    keep_kit = []  # (agent, why) UB_HOME/kit must stay: a kept plugin may still load from it
     for i, e in enumerate(natives):
         agent = e.get("agent")
-        codex_home = e.get("codex_home") if (agent == "codex" and e.get("profile")) else None
-        seen_native.add((agent, codex_home))
+        if entry_home(ctx, agent, e) is None:
+            seen_native.add(agent)  # this invocation's home has a record: no sweep for an unrecorded plugin
         # the marketplace goes with the last plugin entry of this agent and home
         last = not any(home_key(x) == home_key(e) for x in natives[i + 1:])
-        row = uninstall_native_row(ctx, agent, e, last_for_marketplace=last)
+        row = uninstall_native_row(ctx, agent, e, last_for_marketplace=last, warnings=warnings)
         if not agents[agent]["bin"]:
             rows.append(new_row(agent, row["item"], "manual", "print", None, [], _kind="noop"))
             manual.append("%s: %s not found; remove the plugin by hand: %s"
                           % (DISPLAY[agent], agent, " ; ".join(" ".join(c) for c in row["commands"])))
+            # the plugin stays registered against UB_HOME/kit until then; --force cannot remove it either, and without
+            # the CLI no later run can see that it was removed by hand: --purge is the way out
+            cli = ctx.targets["agents"][agent]["detect"]["bin"]
+            keep_kit.append((agent, "%s is not on PATH; put it on PATH, then run uninstall again (without %s the "
+                                    "installer cannot see a plugin removed by hand; if you no longer use %s, "
+                                    "`uninstall --purge` also removes UB_HOME/kit)" % (cli, cli, DISPLAY[agent])))
             continue
+        drop_done_removals(ctx, row, e)
         rows.append(row)
     for agent in ("claude-code", "codex"):
-        if (agent, None) in seen_native or not agents[agent]["bin"]:
+        if agent in seen_native or not agents[agent]["bin"]:
             continue
         listed = plugin_list(ctx, agent)
         if listed is not None and plugin_listed(listed, SKILL, MARKETPLACE):
-            if force:
+            source, source_text = marketplace_source(ctx, agent)
+            if force or source == "kit":
+                if source == "kit" and not force:
+                    # only this installer adds UB_HOME/kit as a marketplace: the manifest lost the record (#64)
+                    warnings.append("%s: the plugin %s comes from the staged kit %s but install-manifest.json has no "
+                                    "record of it: removing it" % (DISPLAY[agent], PLUGIN_ID, posix(ctx.kit_dir)))
                 rows.append(uninstall_native_row(ctx, agent, {"agent": agent, "scope": "user"}))
                 rows[-1]["_entry"] = None
             else:
-                warnings.append("%s: the plugin %s was installed outside this installer: kept; use --force to "
-                                "remove it" % (DISPLAY[agent], PLUGIN_ID))
+                warnings.append("%s: the plugin %s was installed outside this installer%s: kept; use --force to "
+                                "remove it" % (DISPLAY[agent], PLUGIN_ID,
+                                               (" (from %s)" % source_text) if source_text else ""))
                 rows.append(new_row(agent, "plugin %s (not installed by the kit)" % SKILL, "skip-not-owned", "native",
                                     None, [], _kind="noop"))
+                if source is None:  # its source is unknown: it may load from UB_HOME/kit [U-50]
+                    keep_kit.append((agent, "the plugin's source is unknown; remove the plugin first (or pass "
+                                            "--force), then run uninstall again"))
     # copies
     seen_paths = []
     candidates = [(e.get("agent"), e.get("path"), e) for e in entries if e.get("route") == "copy" and e.get("path")]
@@ -2465,29 +3372,36 @@ def build_uninstall_plan(ctx):
             continue
         entry = entry or manifest_entry(ctx, "copy", path)
         cur = hash_files(walk_files(path, top_exclude=False))
+        extra = unrecorded(path)  # .git, .build or links the user added: never deleted without a backup
         recorded = (entry or {}).get("files")
         if (entry or {}).get("replaced_backup"):
             manual.append("%s replaced a folder you had there; restore it by hand if you want it back: copy %s to %s"
                           % (posix(path), entry["replaced_backup"], posix(path)))
-        if isinstance(recorded, dict) and recorded == cur:
+        if isinstance(recorded, dict) and recorded == cur and not extra:
             rows.append(new_row(agent, "skill %s" % SKILL, "remove", "copy", path, [], _kind="uninstall-copy",
                                 dest=path, backup=None))
         elif force:
             edited = sorted(r for r, h in cur.items() if not isinstance(recorded, dict) or recorded.get(r) != h)
             rows.append(new_row(agent, "skill %s" % SKILL, "remove", "copy", path, [], _kind="uninstall-copy",
-                                dest=path, backup=edited or "all"))
+                                dest=path, backup=(edited + extra) or "all"))
         else:
-            warnings.append("%s was edited after install (or is not in the manifest): kept; use --force to back it "
-                            "up and remove it" % posix(path))
+            warnings.append("%s was edited after install, holds files the kit did not put there (.git, .build, "
+                            "links) or is not in the manifest: kept; use --force to back it up and remove it"
+                            % posix(path))
             rows.append(new_row(agent, "skill %s (edited)" % SKILL, "skip-not-owned", "copy", path, [], _kind="noop"))
     # routing blocks
-    records = {os.path.normcase(os.path.abspath(b["path"])): b for b in m.get("routing_blocks", [])
-               if isinstance(b, dict) and b.get("path")}
-    files = set(records.keys())
+    # normcase is only the key: a write through a lower-cased path renames CLAUDE.md to claude.md on Windows
+    records, files = {}, {}
+    for b in m.get("routing_blocks", []):
+        if isinstance(b, dict) and b.get("path"):
+            f = os.path.abspath(b["path"])
+            records[os.path.normcase(f)] = b
+            files.setdefault(os.path.normcase(f), f)
     names = {"claude-code": "CLAUDE.md", "codex": "AGENTS.md", "kimi": "AGENTS.md", "zcode": "AGENTS.md"}
     for a in AGENTS:
-        files.add(os.path.normcase(os.path.join(ctx.homes[a], names[a])))
-    for f in sorted(files):
+        f = os.path.abspath(os.path.join(ctx.homes[a], names[a]))
+        files.setdefault(os.path.normcase(f), f)
+    for key, f in sorted(files.items()):
         raw = read_bytes(os.path.realpath(f) if os.path.islink(f) else f)
         if raw is None or routing_span(raw.decode("utf-8", "replace")) is None:
             continue
@@ -2497,7 +3411,7 @@ def build_uninstall_plan(ctx):
             rows.append(new_row("all", "routing block", "manual", "print", f, [], _kind="noop"))
             continue
         rows.append(new_row("all", "routing block", "remove", "copy", f, [], _kind="uninstall-routing", file=f,
-                            record=records.get(f)))
+                            record=records.get(key)))
     # launchers
     lfiles = [p for p in m.get("launchers", []) if os.path.lexists(p)]
     for name in ("ub", "claude-glm", "claude-kimi", "codex-glm", "codex-kimi"):
@@ -2508,10 +3422,20 @@ def build_uninstall_plan(ctx):
     if lfiles:
         rows.append(new_row("all", "launchers", "remove", "copy", ctx.bin_dir, [], _kind="uninstall-files",
                             files=lfiles))
-    if os.path.isdir(ctx.kit_dir):
+    rows.extend(leftover_rows(ctx))
+    purge = getattr(ctx.args, "purge", False)
+    if os.path.isdir(ctx.kit_dir) and keep_kit and not purge:
+        why = "UB_HOME/kit is the marketplace a kept plugin may load from: kept. " + " ".join(
+            "%s: %s." % (DISPLAY[a], how) for a, how in keep_kit)
+        warnings.append(why)
+        rows.append(new_row("all", "staged kit (kept)", "skip-not-owned", "copy", ctx.kit_dir, [], _kind="noop",
+                            reason=why))
+    elif os.path.isdir(ctx.kit_dir):
+        # UB_HOME/kit is the local marketplace the plugins load from: it goes only after every plugin removal worked
         rows.append(new_row("all", "staged kit", "remove", "copy", ctx.kit_dir, [], _kind="uninstall-tree",
-                            dest=ctx.kit_dir))
-    if getattr(ctx.args, "purge", False) and os.path.isdir(ctx.ub_home):
+                            dest=ctx.kit_dir,
+                            requires_all=[r for r in rows if r.get("_kind") == "uninstall-native"]))
+    if purge and os.path.isdir(ctx.ub_home):
         refuse = None
         ub = os.path.normcase(os.path.abspath(ctx.ub_home))
         if ub == os.path.normcase(os.path.abspath(ctx.home)) or os.path.dirname(ub) == ub:
@@ -2531,22 +3455,88 @@ def build_uninstall_plan(ctx):
                 (names if (n in PURGE_NAMES or PURGE_RE.match(n)) else kept).append(n)
             for n in kept:
                 warnings.append("UB_HOME/%s was not created by the kit: kept by --purge" % n)
+            if keep_kit:
+                warnings.append("--purge also removes UB_HOME/kit, which a kept plugin may load from (%s): remove that "
+                                "plugin by hand" % ", ".join(DISPLAY[a] for a, _how in keep_kit))
+            moves = codex_home_moves(ctx) if "codex-homes" in names else []
+            for src, dst in moves:
+                warnings.append("%s is Codex's own data (sessions, history, logs), not the kit's: --purge moves it to %s"
+                                % (posix(src), posix(dst)))
             rows.append(new_row("all", "purge UB_HOME (keeps backups/)", "remove", "copy", ctx.ub_home, [],
-                                _kind="purge", names=names))
+                                _kind="purge", names=names, moves=moves,
+                                requires_all=[r for r in rows if r.get("_kind") == "uninstall-native"]))
     manual.append("Kimi Code: if you installed the kit as a Kimi plugin, run /plugins remove ultimate-brainstorm")
     manual.append("ZCode: if you added the kit under Settings > Plugins, remove it there")
+    # Components stay installed. The skill folders the kit copied from a pinned archive are named here: the manifest
+    # that records them is deleted with the last entry, and no other tool knows them.
+    copied = []
+    for c in m.get("components", []):
+        if not isinstance(c, dict) or c.get("route") != "archive":
+            continue
+        for _skill, p in sorted((c.get("paths") or {}).items()):
+            if isinstance(p, str) and os.path.isdir(p) and not any(_same(p, x) for x in copied):
+                copied.append(p)
+    if copied:
+        manual.append("Component skills the kit copied (uninstall keeps them): delete %s by hand if you no longer want "
+                      "them" % ", ".join(posix(p) for p in copied))
     nxt.append("Run folders (brainstorm/) and %s are kept." % posix(ctx.backup_root))
-    nxt.append("Components (Compound Engineering, mattpocock skills) stay installed; remove them with their own tools.")
+    nxt.append("Components (Compound Engineering, mattpocock skills) stay installed: remove Compound Engineering with "
+               "your agent's plugin commands and the mattpocock skill folders by hand%s."
+               % (" (listed under Manual)" if copied else ""))
+    guard_live_runs(ctx, rows, warnings)
     plan = assemble_plan(ctx, system, agents, rows, warnings, manual, nxt)
     return plan
 
 
-def do_purge(ctx, names):
-    """Delete only the listed UB_HOME entries (names the kit creates, chosen at plan time); backups/ stays."""
+def codex_home_moves(ctx):
+    """[(src, dst)] for --purge: every entry of UB_HOME/codex-homes/<p>/ except the installer's own config.toml (the
+    bytes setup-glm/-kimi --codex write) is Codex's data (sessions/, history.jsonl, log/, auth.json, plugin caches).
+    It goes to <backups>/<stamp>/codex-homes/<p>/ instead of being deleted."""
+    root = os.path.join(ctx.ub_home, "codex-homes")
+    if not os.path.isdir(root) or os.path.islink(root):
+        return []
+    moves = []
+    for p in sorted(os.listdir(root)):
+        home = os.path.join(root, p)
+        if not os.path.isdir(home) or os.path.islink(home):
+            continue
+        ours = []
+        for region in ("global", "cn"):
+            try:
+                ours.append(codex_home_content(ctx, p, region))
+            except InstallError:
+                pass
+        for child in sorted(os.listdir(home)):
+            src = os.path.join(home, child)
+            if child == "config.toml" and read_bytes(src) in ours:
+                continue
+            moves.append((src, os.path.join(ctx.backup_root, ctx.stamp, "codex-homes", p, child)))
+    return moves
+
+
+def do_purge(ctx, names, moves=()):
+    """Move Codex's own data out of the provider homes into backups/ (nothing is deleted when a move fails), then
+    delete only the listed UB_HOME entries (names the kit creates, chosen at plan time); backups/ stays."""
+    for src, dst in moves:
+        if not os.path.lexists(src):
+            continue
+        os.makedirs(os.path.dirname(dst), exist_ok=True)
+        try:
+            os.replace(src, dst)
+        except OSError:
+            try:  # another volume (a --backup-dir elsewhere) or a locked file: copy, then delete the original
+                if os.path.isdir(src) and not os.path.islink(src):
+                    shutil.copytree(src, dst)
+                else:
+                    shutil.copy2(src, dst)
+            except OSError as exc:
+                raise InstallError("could not move %s to %s (%s); nothing was purged" % (posix(src), posix(dst), exc))
+            rmtree(src)
+        ctx.log("purge: moved %s -> %s" % (posix(src), posix(dst)))
     ctx.purged = True  # nothing (not even install.log) is written into UB_HOME afterwards
     for name in names:
-        if name == "backups" or not (name in PURGE_NAMES or PURGE_RE.match(name)):
-            continue
+        if name in ("backups", LOCK_NAME) or not (name in PURGE_NAMES or PURGE_RE.match(name)):
+            continue  # the lock file goes after the lock is released
         p = os.path.join(ctx.ub_home, name)
         if not os.path.lexists(p):
             continue
@@ -2557,6 +3547,9 @@ def do_purge(ctx, names):
                 os.unlink(p)
             except OSError:
                 pass
+    if not moves:
+        return ""
+    return "Codex data moved to %s" % posix(os.path.join(ctx.backup_root, ctx.stamp, "codex-homes"))
 
 
 def cmd_uninstall(ctx):
@@ -2597,31 +3590,25 @@ def cmd_uninstall(ctx):
 
 
 def providers_config(ctx):
+    """The providers block of the source kit's families.default.json; InstallError when it cannot be read (launch.py
+    reads the same file at every launch, so no launcher could work)."""
     path = os.path.join(ctx.source, "skills", SKILL, "scripts", "families.default.json")
     data = load_json_file(path)
     if isinstance(data, dict) and isinstance(data.get("providers"), dict):
         return data["providers"]
-    return FALLBACK_PROVIDERS
+    raise InstallError("%s is missing or invalid: not a complete kit" % posix(path))
 
 
 def codex_home_content(ctx, provider, region):
-    """config.toml text for UB_HOME/codex-homes/<provider> (4.16): launch.py's renderer, else the built-in text."""
-    spec = CODEX_HOMES[provider]
-    base = spec["base_url"].get(region) or spec["base_url"]["global"]
-    mod = launch_module(ctx)
-    if mod is not None and hasattr(mod, "render_codex_home"):
-        try:
-            return mod.render_codex_home(provider, region).replace("\r\n", "\n").encode("utf-8")
-        except Exception:  # noqa: BLE001
-            pass
-    lines = ["# ultimate-brainstorm Codex home for %s (written by install.py setup; holds no secrets:" % provider,
-             "# Codex reads the key from %s)." % spec["env_key"],
-             'model = "%s"' % spec["model"],
-             'model_provider = "%s"' % spec["provider_id"]]
-    lines += spec["extra"]
-    lines += ["", "[model_providers.%s]" % spec["provider_id"], 'name = "%s"' % spec["name"],
-              'base_url = "%s"' % base, 'env_key = "%s"' % spec["env_key"], 'wire_api = "responses"', ""]
-    return "\n".join(lines).encode("utf-8")
+    """config.toml text for UB_HOME/codex-homes/<provider> (4.16), rendered by profiles/launch.py (which honors a
+    families.json codex_base_url override [U-33]). InstallError when it cannot be rendered."""
+    try:
+        text = launch_module(ctx).render_codex_home(provider, region)
+    except InstallError:
+        raise
+    except Exception as exc:  # noqa: BLE001 - LaunchError or a template defect: never write other text
+        raise InstallError("codex home %s: %s" % (provider, exc))
+    return text.replace("\r\n", "\n").encode("utf-8")
 
 
 def key_howto(var):
@@ -2642,8 +3629,9 @@ def cmd_setup(ctx, which):
             # [U-22] the Moonshot China Anthropic endpoint is not vendor-documented: not offered.
             raise InstallError("--region cn is available only with --provider kimi-code (the Moonshot Platform China "
                                "endpoint is not documented for Claude Code)", 2)
-    providers = providers_config(ctx)
-    pspec = providers.get(provider) or FALLBACK_PROVIDERS[provider]
+    pspec = providers_config(ctx).get(provider)
+    if not isinstance(pspec, dict) or not pspec.get("token_env"):
+        raise InstallError("families.default.json has no provider %s with a token_env: not a complete kit" % provider)
     token_env = pspec.get("token_env")
     system = detect_system(ctx)
     agents = detect_agents(ctx)
@@ -2658,11 +3646,10 @@ def cmd_setup(ctx, which):
     # region override in UB_HOME/families.json (read by launch.py and the adapter)
     fam_path = os.path.join(ctx.ub_home, "families.json")
     cur = load_json_file(fam_path, None)
-    if cur is None and os.path.exists(fam_path):
-        raise InstallError("%s is not valid JSON; fix or delete it first" % posix(fam_path))
-    cur = cur or {}
-    cur_global = (((cur.get("providers") or {}).get(provider) or {}).get("base_url") or {}).get("global") \
-        if isinstance(cur, dict) else None
+    # only --region cn writes base_url.global; a single-URL base_url is the user's own endpoint and stays untouched
+    node = base_url_node(fam_path, {} if cur is None and not os.path.exists(fam_path) else cur, provider,
+                         allow_url=region != "cn")
+    cur_global = node.get("global") if isinstance(node, dict) else None
     cn_url = (pspec.get("base_url") or {}).get("cn")
     if region == "cn":
         if not cn_url:
@@ -2682,8 +3669,9 @@ def cmd_setup(ctx, which):
         if zai and provider != "glm":
             raise InstallError("--zai-mcp is only for setup-glm", 2)
         # [U-19] with --zai-mcp, launch.py renders zai-mcp.json.tpl into a 0600 temp file at launch time
-        largs = launch_args_for(ctx, "claude", provider, region=region, zai_mcp=zai)
-        rows.append(launcher_row_for(ctx, "claude-" + lname, "claude-" + lname, largs, warnings))
+        rows.append(launcher_row_for(ctx, "claude-" + lname, "claude-" + lname,
+                                     lambda: launch_args_for(ctx, "claude", provider, region=region, zai_mcp=zai),
+                                     warnings))
     if getattr(args, "codex", False):
         if provider == "kimi-code":
             warnings.append("--codex needs the Moonshot Platform key: re-run setup-kimi --provider kimi --codex "
@@ -2691,13 +3679,18 @@ def cmd_setup(ctx, which):
         else:
             home = os.path.join(ctx.ub_home, "codex-homes", lname)
             cfg = os.path.join(home, "config.toml")
-            data = codex_home_content(ctx, lname, region)
-            cur_b = read_bytes(cfg)
-            action = "unchanged" if cur_b == data else ("create" if cur_b is None else "update")
-            rows.append(new_row("codex", "codex home %s" % lname, action, "copy", cfg, [], _kind="codexhome",
-                                file=cfg, data=data))
+            try:
+                data = codex_home_content(ctx, lname, region)
+                cur_b = read_bytes(cfg)
+                action = "unchanged" if cur_b == data else ("create" if cur_b is None else "update")
+                rows.append(new_row("codex", "codex home %s" % lname, action, "copy", cfg, [], _kind="codexhome",
+                                    file=cfg, data=data))
+            except InstallError as exc:
+                warnings.append(str(exc))
+                rows.append(new_row("codex", "codex home %s" % lname, "blocked", "copy", cfg, [], _kind="noop",
+                                    reason=str(exc)))
             rows.append(launcher_row_for(ctx, "codex-" + lname, "codex-" + lname,
-                                         launch_args_for(ctx, "codex", provider), warnings))
+                                         lambda: launch_args_for(ctx, "codex", provider), warnings))
             cx = agents["codex"]
             nmin = ctx.targets["agents"]["codex"]["native"]["min"]
             shared = os.path.join(ctx.agents_skills, SKILL)
@@ -2708,7 +3701,7 @@ def cmd_setup(ctx, which):
                 warnings.append("Codex on %s sees %s already; no plugin is added to %s (it would be a second copy)"
                                 % (provider, posix(shared), posix(home)))
             elif cx["bin"] and version_ge(cx["version"], nmin) and not cmd_refusal(ctx, cx["bin"]):
-                rows.append(native_row(ctx, "codex", "install", codex_home=home))
+                rows.append(native_row(ctx, "codex", "install", codex_home=home, warnings=warnings))
             else:
                 native = ctx.targets["agents"]["codex"]["native"]
                 rows.append(new_row("codex", "plugin %s (CODEX_HOME=%s)" % (SKILL, posix(home)), "manual", "print",
@@ -2730,6 +3723,8 @@ def cmd_setup(ctx, which):
                       posix(os.path.join(ctx.bin_dir, "codex-" + lname))))
         nxt.append("Confirm that Codex on %s answers: python \"%s\" doctor --live   [U-33]"
                    % (provider, posix(os.path.join(ctx.kit_dir, "install", "install.py"))))
+    guard_live_runs(ctx, rows, warnings)
+    block_downgrade(rows[0], rows)
     plan = assemble_plan(ctx, system, agents, rows, warnings, manual, nxt)
     return confirm_and_apply(ctx, plan, "setup-" + which)
 
@@ -2738,7 +3733,7 @@ def cmd_setup(ctx, which):
 
 
 def classify_url(url):
-    u = (url or "").lower()
+    u = url.lower() if isinstance(url, str) else ""  # a hand-edited settings.json may hold any JSON value
     if not u or "anthropic.com" in u:
         return "claude"
     if "z.ai" in u or "bigmodel.cn" in u:
@@ -2771,7 +3766,8 @@ def codex_provider(ctx):
             if m:
                 b = re.search(r'^\s*base_url\s*=\s*"([^"]+)"', m.group(1), re.M)
                 base = b.group(1) if b else None
-    return provider, base
+    # a hand-edited config.toml may hold any TOML value there (model_provider = 7): only a string names a provider
+    return (provider if isinstance(provider, str) else None), (base if isinstance(base, str) else None)
 
 
 def cmd_doctor(ctx):
@@ -2788,7 +3784,7 @@ def cmd_doctor(ctx):
         "install git (Kimi Code and software runs use it)")
     node_v = parse_version(system["node"])
     if node_v is None:
-        add("env.node", "WARN", "node not found", "install Node.js 22.20+ (needed for npx skills and the agent CLIs)")
+        add("env.node", "WARN", "node not found", "install Node.js 22.20+ (needed to install the agent CLIs with npm)")
     elif not version_ge(node_v, "22.20.0"):
         add("env.node", "WARN", "node %s is older than 22.20" % system["node"], "upgrade Node.js to 22.20+")
     else:
@@ -2823,13 +3819,10 @@ def cmd_doctor(ctx):
                 "kimi %s" % (vtext(d["version"]) or "?"),
                 "upgrade: npm install -g @moonshot-ai/kimi-code, then kimi migrate")
     # duplicates and skill presence
+    folders = skill_folders(ctx)
     for skill in STACK_SKILLS:
         for a in AGENTS:
-            where = []
-            for dpath in skill_dirs_for(ctx, a):
-                p = os.path.join(dpath, skill)
-                if os.path.isdir(p):
-                    where.append(posix(p))
+            where = [posix(p) for a2, s, p in folders if a2 == a and s == skill]
             if a in ("claude-code", "codex") and names.get(a) is not None:
                 if skill == SKILL and plugin_listed(names[a], SKILL):
                     where.append("native plugin")
@@ -2866,46 +3859,74 @@ def cmd_doctor(ctx):
                 add("dup.%s.codex-%s" % (SKILL, p), "FAIL", "Codex on %s sees %d copies: %s" % (p, len(where),
                                                                                               "; ".join(where)),
                     "keep one: remove the plugin from that CODEX_HOME or delete %s" % posix(shared))
+    # the kit's plugin must load from the staged kit, not from another marketplace of the same name [U-50]
+    for a in ("claude-code", "codex"):
+        if names.get(a) is None or not plugin_listed(names[a], SKILL, MARKETPLACE):
+            continue
+        source, text = marketplace_source(ctx, a)
+        if source == "foreign":
+            add("agent.%s.plugin_source" % a, "WARN", "%s: the plugin %s comes from %s, not from the staged kit %s"
+                % (DISPLAY[a], PLUGIN_ID, text, posix(ctx.kit_dir)),
+                "run: install.py install --force (replaces it with the staged kit), or remove that plugin")
+        elif source == "kit":
+            add("agent.%s.plugin_source" % a, "PASS", "%s: the plugin loads from %s" % (DISPLAY[a], text))
+        node = json_find(names[a], lambda n: isinstance(n, dict) and n.get("version") and
+                         (n.get("id") == PLUGIN_ID or n.get("name") == SKILL))
+        if node is not None and os.path.isfile(kv) and str(node.get("version")) != kit_version(ctx.kit_dir):
+            add("agent.%s.plugin_version" % a, "WARN", "%s: the plugin reports version %s, the staged kit is %s [U-18]"
+                % (DISPLAY[a], node.get("version"), kit_version(ctx.kit_dir)), "run: install.py update")
     # frontmatter, ownership and legacy copies
     seen = set()
-    for a in AGENTS:
-        for dpath in skill_dirs_for(ctx, a) + [os.path.dirname(copy_dest(ctx, a))]:
-            p = os.path.join(dpath, SKILL)
-            key = os.path.normcase(os.path.abspath(p))
-            if key in seen or not os.path.isdir(p):
-                continue
-            seen.add(key)
-            fm = read_frontmatter(os.path.join(p, "SKILL.md"))
-            sha = textio.sha256_file(os.path.join(p, "SKILL.md"))[:12] if os.path.isfile(os.path.join(p, "SKILL.md")) \
-                else "-"
-            if fm is None:
-                add("skill.frontmatter:%s" % posix(p), "FAIL", "%s has no SKILL.md frontmatter" % posix(p),
-                    "reinstall: install.py install --force")
-                continue
-            problems = []
-            if fm.get("name") != os.path.basename(p):
-                problems.append("name %r differs from the folder name" % fm.get("name"))
-            if len(fm.get("description", "")) > 1024:
-                problems.append("description is longer than 1024 characters")
-            add("skill.frontmatter:%s" % posix(p), "FAIL" if problems else "PASS",
-                "%s (SKILL.md sha256 %s)%s" % (posix(p), sha, (": " + "; ".join(problems)) if problems else ""),
+    for _a, _s, p in [f for f in folders if f[1] == SKILL]:
+        key = os.path.normcase(os.path.abspath(p))
+        if key in seen:
+            continue
+        seen.add(key)
+        fm = read_frontmatter(os.path.join(p, "SKILL.md"))
+        sha = textio.sha256_file(os.path.join(p, "SKILL.md"))[:12] if os.path.isfile(os.path.join(p, "SKILL.md")) \
+            else "-"
+        if fm is None:
+            add("skill.frontmatter:%s" % posix(p), "FAIL", "%s has no SKILL.md frontmatter" % posix(p),
                 "reinstall: install.py install --force")
-            owned = os.path.isfile(os.path.join(p, MARKER))
-            if not owned and is_v1_skill(p):
-                add("legacy.v1:%s" % posix(p), "WARN", "%s is the v1 skill (not owned)" % posix(p),
-                    "run: install.py install --migrate-v1")
-            elif owned:
-                entry = manifest_entry(ctx, "copy", p)
-                rec = (entry or {}).get("files")
-                if isinstance(rec, dict) and rec != hash_files(walk_files(p, top_exclude=False)):
+            continue
+        problems = []
+        if fm.get("name") != os.path.basename(p):
+            problems.append("name %r differs from the folder name" % fm.get("name"))
+        if len(fm.get("description", "")) > 1024:
+            problems.append("description is longer than 1024 characters")
+        add("skill.frontmatter:%s" % posix(p), "FAIL" if problems else "PASS",
+            "%s (SKILL.md sha256 %s)%s" % (posix(p), sha, (": " + "; ".join(problems)) if problems else ""),
+            "reinstall: install.py install --force")
+        owned = os.path.isfile(os.path.join(p, MARKER))
+        if not owned and is_v1_skill(p):
+            add("legacy.v1:%s" % posix(p), "WARN", "%s is the v1 skill (not owned)" % posix(p),
+                "run: install.py install --migrate-v1")
+        elif owned:
+            entry = manifest_entry(ctx, "copy", p)
+            rec = (entry or {}).get("files")
+            if isinstance(rec, dict):
+                hashes, err = doctor_hashes(p)
+                if err:
+                    add("owned.edited:%s" % posix(p), "WARN", "%s could not be checked: %s" % (posix(p), err),
+                        "make the file readable (close the program holding it), then run install.py doctor again")
+                elif rec != hashes:
                     add("owned.edited:%s" % posix(p), "WARN", "%s was edited after install" % posix(p),
                         "run: install.py update (edited files are backed up first)")
+    # trees a killed installer left behind; one holding a SKILL.md is a second, broken ultimate-brainstorm
+    for p in leftovers(ctx):
+        fm = read_frontmatter(os.path.join(p, "SKILL.md")) or {}
+        broken = fm.get("name") == SKILL
+        add("leftover:%s" % posix(p), "FAIL" if broken else "WARN",
+            "%s is an installer leftover%s" % (posix(p), " holding a SKILL.md named %s: an agent may load it" % SKILL
+                                               if broken else ""),
+            "run: install.py install (it removes installer leftovers), or delete the folder")
     if os.path.isdir(os.path.join(ctx.home, ".kimi")):
         add("legacy.kimi_home", "WARN", "%s exists (legacy kimi-cli)" % posix(os.path.join(ctx.home, ".kimi")),
             "after moving to Kimi Code v2 run: kimi migrate")
     # endpoints (5.5): which family the CLIs really serve
     settings = load_json_file(os.path.join(ctx.homes["claude-code"], "settings.json"), {}) or {}
-    url = ((settings.get("env") or {}) if isinstance(settings, dict) else {}).get("ANTHROPIC_BASE_URL")
+    env = settings.get("env") if isinstance(settings, dict) else None
+    url = env.get("ANTHROPIC_BASE_URL") if isinstance(env, dict) else None
     fam = classify_url(url)
     if fam == "claude":
         add("endpoint.claude", "PASS", "claude CLI serves the claude family")
@@ -2926,10 +3947,49 @@ def cmd_doctor(ctx):
             "use codex-glm / codex-kimi (separate CODEX_HOME) instead of changing ~/.codex/config.toml")
     # stack components
     for skill in ("grilling", "domain-modeling"):
-        found = [a for a in AGENTS if any(os.path.isdir(os.path.join(dd, skill)) for dd in skill_dirs_for(ctx, a))]
+        found = [a for a in AGENTS if any(a2 == a and s == skill for a2, s, _p in folders)]
         add("stack.%s" % skill, "PASS" if found else "WARN",
             ("present for %s" % ", ".join(found)) if found else "%s not found in any agent's skills folder" % skill,
             "install.py install (component mattpocock-grilling)")
+    # [U-27] component skills installed from a pinned commit: their hashes were recorded at install time
+    for c in (ctx.manifest or {}).get("components", []):
+        for skill, rec in sorted(((c or {}).get("files") or {}).items()):
+            p = ((c.get("paths") or {}).get(skill)) or ""
+            if not os.path.isdir(p):
+                continue
+            hashes, err = doctor_hashes(p)
+            if err:
+                add("stack.%s.drift:%s" % (skill, posix(p)), "WARN", "%s could not be checked: %s" % (posix(p), err),
+                    "make the file readable (close the program holding it), then run install.py doctor again")
+            elif rec != hashes:
+                # the commit this folder came from: a kept folder keeps its own (commits), older records have one
+                commit = (c.get("commits") or {}).get(skill) or c.get("commit") or c.get("ref")
+                add("stack.%s.drift:%s" % (skill, posix(p)), "WARN",
+                    "%s changed since it was installed from %s at %s" % (posix(p), c.get("id"), commit),
+                    "if you did not update it yourself, reinstall it: delete the folder, then run install.py install")
+    # a component skill folder with no record (kit 2.0.x installed it unpinned with npx, or it was copied by hand) is
+    # compared with the content pin instead
+    recorded = set(os.path.normcase(os.path.abspath(p)) for c in (ctx.manifest or {}).get("components", [])
+                   if isinstance(c, dict) for p in (c.get("paths") or {}).values() if isinstance(p, str))
+    pins = {skill: (cid, pin, c.get("commit")) for cid, c in sorted(ctx.components["components"].items())
+            for skill, pin in sorted(((c.get("archive") or {}).get("skills") or {}).items())}
+    for _a, skill, p in folders:
+        key = os.path.normcase(os.path.abspath(p))
+        if skill not in pins or key in recorded:
+            continue
+        recorded.add(key)  # once per folder (Codex and Kimi share ~/.agents/skills)
+        cid, pin, commit = pins[skill]
+        hashes, err = doctor_hashes(p)
+        if err:
+            add("stack.%s.unpinned:%s" % (skill, posix(p)), "WARN",
+                "%s could not be compared with the pinned content of %s: %s" % (posix(p), cid, err),
+                "make the file readable (close the program holding it), then run install.py doctor again")
+        elif tree_sha256(hashes) != pin["sha256"]:
+            add("stack.%s.unpinned:%s" % (skill, posix(p)), "WARN",
+                "%s is not the pinned content of %s (commit %s): the kit did not install it from the pinned archive "
+                "(kit 2.0.x installed it unpinned with npx, or it was copied or edited by hand)"
+                % (posix(p), cid, (commit or "")[:12]),
+                "unless it is your own skill, delete the folder, then run install.py install")
     ce = [a for a in ("claude-code", "codex") if names.get(a) is not None and
           plugin_listed(names[a], "compound-engineering")]
     add("stack.compound-engineering", "PASS" if ce else "WARN",
@@ -3004,19 +4064,13 @@ def cmd_doctor(ctx):
 def cmd_list(ctx):
     agents = detect_agents(ctx)
     items = []
-    seen = set()
+    folders = skill_folders(ctx)
     for a in AGENTS:
-        for d in skill_dirs_for(ctx, a) + [os.path.dirname(copy_dest(ctx, a))]:
-            for skill in STACK_SKILLS:
-                p = os.path.join(d, skill)
-                key = (a, os.path.normcase(os.path.abspath(p)))
-                if key in seen or not os.path.isdir(p):
-                    continue
-                seen.add(key)
-                fm = read_frontmatter(os.path.join(p, "SKILL.md")) or {}
-                items.append({"agent": a, "name": skill, "route": "copy", "path": posix(p),
-                              "owned": os.path.isfile(os.path.join(p, MARKER)),
-                              "version": fm.get("metadata.version") or fm.get("version") or None})
+        for _a, skill, p in [f for f in folders if f[0] == a]:
+            fm = read_frontmatter(os.path.join(p, "SKILL.md")) or {}
+            items.append({"agent": a, "name": skill, "route": "copy", "path": posix(p),
+                          "owned": os.path.isfile(os.path.join(p, MARKER)),
+                          "version": fm.get("metadata.version") or fm.get("version") or None})
         if a in ("claude-code", "codex") and agents[a]["bin"]:
             listed = plugin_list(ctx, a)
             if listed is not None and plugin_listed(listed, SKILL, MARKETPLACE):
@@ -3086,6 +4140,7 @@ def build_parser():
     p.add_argument("--codex", action="store_true")
     p.add_argument("--zai-mcp", dest="zai_mcp", action="store_true")
     p.add_argument("--provider", choices=("kimi", "kimi-code"))
+    p.add_argument("--require-attestation", dest="require_attestation", action="store_true")
     return p
 
 

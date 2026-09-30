@@ -26,30 +26,44 @@
    "properties": {
     "decision_readiness": {
      "type": "integer",
+     "minimum": 1,
+     "maximum": 5,
      "description": "1-5"
     },
     "substance_over_theater": {
      "type": "integer",
+     "minimum": 1,
+     "maximum": 5,
      "description": "1-5"
     },
     "strategic_coherence": {
      "type": "integer",
+     "minimum": 1,
+     "maximum": 5,
      "description": "1-5"
     },
     "doneness_clarity": {
      "type": "integer",
+     "minimum": 1,
+     "maximum": 5,
      "description": "1-5"
     },
     "scope_honesty": {
      "type": "integer",
+     "minimum": 1,
+     "maximum": 5,
      "description": "1-5"
     },
     "downstream_usability": {
      "type": "integer",
+     "minimum": 1,
+     "maximum": 5,
      "description": "1-5"
     },
     "shape_fit": {
      "type": "integer",
+     "minimum": 1,
+     "maximum": 5,
      "description": "1-5"
     }
    }

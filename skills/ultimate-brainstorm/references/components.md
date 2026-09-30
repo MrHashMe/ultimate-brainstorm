@@ -78,12 +78,13 @@ as optional extras the host may offer the user between cards. This file replaces
   seeds file under Ideas. Never import `--by coach` ideas as human seeds.
 - bmad-forge-idea: interactive only. Missing: the built-in FORGE (two voices per turn, one question per message,
   outcome HARDENED, KILLED or CLEARER) runs instead.
-- Install: `npx bmad-method install` (Node 20.12+, uv, Python 3.10+).
+- Install: `npx bmad-method@6.12.0 install` (Node 20.12+, uv, Python 3.10+).
 
 ## Spec Kit (handoff, greenfield)
 
 - `specify init <project> --integration <agent>` in a shell, then `/speckit.specify` with the HANDOFF-SPECKIT seed
-  (proposal sections 3 and 6-8 plus the chosen/ architecture files). Install: `uv tool install specify-cli`.
+  (proposal sections 3 and 6-8 plus the chosen/ architecture files). Install (v1.0.12):
+  `uv tool install specify-cli --from git+https://github.com/github/spec-kit.git@e77daa9021d20db26b878f7dfa5640fe5a42d04e`.
 
 ## Superpowers and OpenSpec (handoff alternatives; one spec owner per repo)
 

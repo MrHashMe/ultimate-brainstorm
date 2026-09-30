@@ -106,6 +106,7 @@ class QuickPickTests(Base):
             self.assertEqual(cards.count(line), 5)
         # the cards feed prepare-tournament directly
         self.w("tournament/header.md", "H\n")
+        self.w("run.json", {"schema": 2, "mode": "quick", "seats": {"tournament_judges": ["claude"]}})
         quiet(bs.prepare_tournament, self.run)
         self.assertTrue(os.path.exists(self.p("tournament/claude_fwd.prompt.md")))
 
@@ -170,13 +171,11 @@ class SplitTests(Base):
         self.bad("=== FILE: docs/other.md ===\nx\n=== END FILE ===\n")               # not in allowlist
         self.bad("=== FILE: chosen/.hidden.md ===\nx\n=== END FILE ===\n")
 
-    def test_duplicates_last_wins(self):
-        text = self.GOOD.replace("=== STATUS ===", "=== FILE: chosen/containers.md ===\n# Second\n=== END FILE ===\n"
-                                                   "=== STATUS ===")
-        p = self.split(text)
-        self.assertEqual(p.returncode, 0, p.stderr)
-        self.assertIn("# Second", self.r("10_ARCHITECTURE/chosen/containers.md"))
-        self.assertIn(b"WARNING", p.stderr)
+    def test_a_duplicate_path_is_invalid(self):
+        # 4.6 rule 3 (round 3, #40): a path printed twice is ambiguous framing (a quoted FILE marker can frame the
+        # second copy), so nothing is written; it was 'the last copy wins' with a warning
+        p = self.bad("=== FILE: chosen/containers.md ===\n# Second\n=== END FILE ===\n")
+        self.assertIn(b"duplicate FILE block chosen/containers.md", p.stdout + p.stderr)
 
     def test_usage_and_missing(self):
         p = self.split(self.GOOD, root="../outside")
@@ -300,7 +299,44 @@ class CoverageTests(Base):
         self.assertEqual(cov["largest_cluster"], {"name": "big", "share": 0.75})
         self.assertEqual(cov["clusters"], 2)
         self.assertEqual(cov["ideas"], 4)
-        self.assertEqual(set(cov), {"axes", "empty", "single", "homogenized", "largest_cluster", "clusters", "ideas"})
+        self.assertEqual(cov["covered_share"], 0.5)
+        self.assertTrue(cov["gap_needed"])
+        self.assertEqual(set(cov), {"axes", "empty", "single", "covered_share", "homogenized", "gap_needed",
+                                    "largest_cluster", "clusters", "ideas"})
+        lineage = self.r("ideas.json")
+        self.assertEqual(sorted(lineage), ["I-001", "I-002", "I-003", "I-004"])
+        self.assertEqual(set(lineage["I-001"]), {"key", "strategies", "families", "origin", "cluster"})
+        self.assertEqual(lineage["I-001"]["strategies"], ["S3"])
+        self.assertEqual(lineage["I-001"]["families"], ["gpt"])
+
+    def pool(self, n, k, cells=None, axes=None):
+        """merges.json with n ideas spread evenly over k clusters (and optional cells) -> coverage.json."""
+        ideas = [{"key": "k%03d" % i, "title": "t%d" % i, "pitch": "p", "mechanism": "m", "aliases": ["S3-%02d" % i],
+                  "cluster": "c%d" % (i % k), "cell": (cells[i % len(cells)] if cells else [])} for i in range(n)]
+        self.w("merges.json", {"strategy_family": {"S3": "gpt"}, "axes": axes or {}, "ideas": ideas})
+        quiet(bs.map_pool, self.run)
+        return self.r("coverage.json"), self.r("03_POOL.md")
+
+    def test_cluster_count_is_not_homogenization(self):
+        # finding 54: 6 or 7 even clusters are inside the curator's instructed 6-15, so 40 ideas in 7 clusters of
+        # 15% each are not homogenized (the old rule said yes whenever n >= 40 had fewer than 8 clusters)
+        cov, pool = self.pool(40, 7)
+        self.assertFalse(cov["homogenized"])
+        self.assertFalse(cov["gap_needed"])
+        self.assertIn("no: largest cluster", pool)
+        cov, _pool = self.pool(40, 3)  # 34% in one cluster: still homogenized by the share rule
+        self.assertTrue(cov["homogenized"])
+        self.assertTrue(cov["gap_needed"])
+
+    def test_gap_round_needs_under_80_percent_coverage(self):
+        axes = {"A": ["a", "b", "c"], "B": ["x", "y", "z"]}
+        grid = [[a, b] for a in axes["A"] for b in axes["B"]]
+        cov, pool = self.pool(40, 10, cells=grid[:8], axes=axes)  # 8 of 9 cells: one empty cell is normal
+        self.assertEqual(len(cov["empty"]), 1)
+        self.assertFalse(cov["gap_needed"])
+        self.assertIn("covered: 8 (89%; a gap round runs below 80%)", pool)
+        cov, _pool = self.pool(40, 10, cells=grid[:7], axes=axes)  # 7 of 9 = 78%
+        self.assertTrue(cov["gap_needed"])
 
 
 if __name__ == "__main__":

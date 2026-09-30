@@ -18,7 +18,7 @@ from ublib.engine import EngineError, builders, pipeline, registry  # noqa: E402
 GUARD = "Do not load or invoke any skill; this prompt is the whole task."
 JOB_KEYS = ("schema", "run", "id", "step", "kind", "template", "family", "tier", "prompt_file", "out", "tools", "cwd",
             "repo_root", "timeout_s", "retries", "contract", "schema_file", "split", "fallback", "provisional",
-            "privacy", "host_prompt_file", "stub")
+            "privacy", "host_prompt_file", "stub", "input_digest")  # + "chain" when detection resolved one (C13)
 KINDS = ("ping", "generator", "researcher", "curator", "judge", "checker", "normalizer", "reviewer", "synthesis",
          "writer", "arch-author", "arch-judge", "rubric", "redteam", "fixer", "frame")
 SAMPLE_VARS = {"STRATEGY_ID": "L2", "ARCHETYPE_ID": "C", "REVIEW_LENS": "L2", "CELL": "app | night",
@@ -143,7 +143,7 @@ class JobTests(tl.EngineTestCase):
         self.assertEqual(job["tools"], "web")
         self.assertTrue(re.match(r"^[A-Za-z0-9._-]{1,80}$", job["id"]))
         self.assertTrue(os.path.exists(os.path.join(ctx.run_dir, job["prompt_file"])))
-        self.assertEqual(job["privacy"], {"vendor_ok": True, "web_ok": True, "code_ok": True})
+        self.assertEqual(job["privacy"], {"vendor_ok": True, "web_ok": True, "code_ok": True, "code_filtered": False})
         self.assertIsNone(job["host_prompt_file"])
         self.assertEqual(job["run"], textio.to_posix(ctx.run_dir))
 

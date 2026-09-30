@@ -49,7 +49,7 @@ class ArgvTests(ClaudeBase):
         mcp = os.path.join(self.home, "tmp", "empty-mcp.json")
         self.assertEqual(argv[1:], ["-p", CLAUDE_P, "--output-format", "json", "--no-session-persistence",
                                     "--strict-mcp-config", "--mcp-config", mcp, "--disallowedTools", "mcp__*",
-                                    "--tools", "", "--max-turns", "3"])
+                                    "--setting-sources", "project", "--tools", "", "--max-turns", "3"])
         self.assertTrue(os.path.isabs(argv[0]))
         self.assertEqual(json.loads(textio.read_text(mcp)), {"mcpServers": {}})
         prompt = textio.read_text(os.path.join(self.run_dir, job["prompt_file"]))
@@ -71,15 +71,16 @@ class ArgvTests(ClaudeBase):
     def test_tools_web_and_read_profiles(self):
         job = self.make_job(family="claude", tools="web", job_id="3.2-R1")
         _m, fake = self.run_job(job, [tl.PR(0, SUCCESS)])
-        self.assertEqual(fake.calls[0]["argv"][11:], ["--tools", "WebSearch,WebFetch", "--allowedTools",
+        self.assertEqual(fake.calls[0]["argv"][13:], ["--tools", "WebSearch,WebFetch", "--allowedTools",
                                                       "WebSearch,WebFetch", "--max-turns", "40"])
         repo = os.path.join(self.tmp, "repo")
         os.makedirs(repo)
         job = self.make_job(family="claude", tools="read", cwd="repo", repo_root=repo, job_id="3.2-R2")
         self.write_run_json()
         _m, fake = self.run_job(job, [tl.PR(0, SUCCESS)])
-        self.assertEqual(fake.calls[0]["argv"][11:], ["--tools", "Read,Grep,Glob", "--allowedTools",
-                                                      "Read,Grep,Glob", "--max-turns", "30"])
+        argv = fake.calls[0]["argv"]
+        self.assertEqual(argv[argv.index("--tools"):], ["--tools", "Read,Grep,Glob", "--allowedTools",
+                                                        "Read,Grep,Glob", "--max-turns", "30"])
         self.assertEqual(os.path.abspath(fake.calls[0]["cwd"]), os.path.abspath(repo))
 
     def test_tier_fast_and_alt_model(self):

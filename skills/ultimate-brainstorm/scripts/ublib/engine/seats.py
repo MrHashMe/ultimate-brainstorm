@@ -1,16 +1,33 @@
 """Deterministic family seat assignment (KIT_SPEC 6.6). Stored in run.json `seats`.
 
 F = available and privacy-allowed families, host first, then the configured order. With one family every "other"
-seat becomes `<host>-alt` (PROVISIONAL). All choices are deterministic; archetypes use rng(run, "arch").
+seat becomes `<host>-alt` (PROVISIONAL). All choices are deterministic; archetypes use rng(run, "arch") and the
+non-host generator round-robin starts at rng(run, "generators") (`rotation`).
 """
 
 import hashlib
 import random
 
-from . import FAMILY_ORDER, VENDORS, base_family
+from . import FAMILY_ORDER, base_family, vendor_of
 
 ARCH_K = {"quick": 2, "standard": 3, "proposal": 3, "deep": 4}
 RUBRIC_N = {"quick": 1, "standard": 2, "proposal": 2}
+NOBODY = ("human", "human-mixed", "ai-mixed", "?", "")  # origin labels that belong to no vendor
+
+
+def lineage_origin(labels):
+    """The origin of an idea from the family labels behind it (bs.py map, the E ideas of 8.1): human, human-mixed
+    (human plus generated), the one AI vendor's label, or ai-mixed (several AI vendors, no human). Labels are compared
+    by vendor, so 'claude' and 'claude-alt' are one vendor (the plain label is kept); a label that belongs to no vendor
+    ('?', ai-mixed) counts as its own."""
+    labels = set(str(x) for x in labels)
+    ai = labels - {"human"}
+    if "human" in labels:
+        return "human-mixed" if ai else "human"
+    groups = set((vendor_of(x) if x not in NOBODY else None) or x for x in ai)
+    if len(groups) != 1:
+        return "ai-mixed"
+    return sorted(ai, key=lambda x: (x.endswith("-alt"), x))[0]
 
 
 def rng(run_name, tag):
@@ -19,12 +36,13 @@ def rng(run_name, tag):
 
 
 def family_list(host, available, allowed_vendors=None, order=FAMILY_ORDER):
-    """F: available and allowed, host first, then `order`."""
+    """F: available and allowed, host first, then `order`. allowed_vendors None: every vendor; a list is exact, so an
+    empty list allows none (the one allowed-vendors rule, privacy.vendor_allowed)."""
     avail = [f for f in available]
-    allowed = set(allowed_vendors or [])
+    allowed = None if allowed_vendors is None else set(allowed_vendors)
 
     def ok(f):
-        return (not allowed) or VENDORS.get(f, f) in allowed
+        return allowed is None or vendor_of(f) in allowed
 
     out = []
     if host in avail and ok(host):
@@ -35,11 +53,13 @@ def family_list(host, available, allowed_vendors=None, order=FAMILY_ORDER):
     return out
 
 
-def assign(run_name, host, F, web, mode="standard", variant="general", s1_engine="s1f"):
+def assign(run_name, host, F, web, mode="standard", variant="general", s1_engine="s1f", alt_distinct=True):
     """Return the seats dict for run.json.
 
     host: the host family (always seated, even if its CLI is unavailable, since the host itself answers HOST work).
     F: the ordered family list (host first when available). web: {family: bool} after privacy.
+    alt_distinct: False when `<host>-alt` would run the same model as the host (families.<host>.alt_model null);
+    a single-family run then seats one screen and tournament judge instead of the host twice.
     """
     fams = list(F) or [host]
     if fams[0] != host:
@@ -47,7 +67,11 @@ def assign(run_name, host, F, web, mode="standard", variant="general", s1_engine
     others = [f for f in fams if f != host]
     alt = "%s-alt" % host
     single = not others
-    counter = {"n": 0}
+    # Seeded rotation of the non-host round-robin (S3, S5, LENS, GAP, REOPEN): across runs every such strategy meets
+    # every non-host family, so tools/eval.py can tell a strategy's yield from its family's. S1, S2 and S4 keep
+    # their spec seats (host; S4 a web family, preferring the host).
+    rotation = rng(run_name, "generators").randrange(len(others)) if len(others) > 1 else 0
+    counter = {"n": rotation}
 
     def other_rr():
         if not others:
@@ -81,13 +105,18 @@ def assign(run_name, host, F, web, mode="standard", variant="general", s1_engine
     def judges(kind_mode):
         if kind_mode == "quick":
             return [others[0] if others else alt]
-        if kind_mode == "deep":
-            js = fams[:4]
-            return js if len(js) > 1 else [host, alt]
-        js = [host] + others[:2]
-        return js if len(js) > 1 else [host, alt]
+        js = fams[:4] if kind_mode == "deep" else [host] + others[:2]
+        if len(js) > 1:
+            return js
+        return [host, alt] if alt_distinct else [host]  # the same model twice is not a second judge
 
     screen_judges = judges(mode)
+    if mode == "quick" and others:
+        # the blind quick screen (Q.3s): both quick generator families score the curated Q-lines, so the self-preference
+        # of one cancels the other's in the mean (#51); a third family, which generated nothing, joins as a neutral
+        # judge whose scores let the own-origin gap of each generator family be measured and taken off; one family:
+        # no quick screen, the curator's scores pick
+        screen_judges = [host] + others[:2]
     tournament_judges = judges(mode)
 
     redteam_rotation = fams[:] if len(fams) > 1 else [host, alt]
@@ -97,10 +126,12 @@ def assign(run_name, host, F, web, mode="standard", variant="general", s1_engine
     arch_authors = [author_order[i % len(author_order)] for i in range(k)]
     authored = set(arch_authors)
     non_authors = [f for f in fams if f not in authored]
-    if non_authors:
+    if len(non_authors) >= 2:
         arch_judges = non_authors + ([host] if host not in non_authors else [])
     else:
-        arch_judges = fams[:]
+        # fewer than two families authored nothing (3 families; 4 in standard): every family judges the candidates it
+        # did not author (the matrix leaves out a judge's own candidate), never a single judge for all of them
+        arch_judges = non_authors + [f for f in fams if f not in non_authors]
     if mode == "quick":
         arch_judges = arch_judges[:1]
     if len(arch_judges) == 0:
@@ -126,6 +157,7 @@ def assign(run_name, host, F, web, mode="standard", variant="general", s1_engine
         "others": others,
         "single_family": single,
         "generators": gens,
+        "rotation": rotation,
         "rr_next": rr_next,
         "researcher": researcher,
         "checker_pool": checker_pool,
@@ -159,14 +191,15 @@ def reopen_families(seats, mode):
     others = seats.get("others") or []
     if not others:
         return ["%s-alt" % seats.get("host", "claude")] * n
-    return [others[i % len(others)] for i in range(n)]
+    start = int(seats.get("rotation", 0))
+    return [others[(start + i) % len(others)] for i in range(n)]
 
 
 def checker_for(seats, origin_vendor):
     """A web-capable family whose vendor differs from the idea's origin vendor, preferring the host."""
     pool = seats.get("checker_pool") or [seats.get("host", "claude")]
     for f in pool:
-        if VENDORS.get(base_family(f), f) != origin_vendor:
+        if vendor_of(f) != origin_vendor:
             return f, False
     return pool[0], True
 
@@ -203,6 +236,12 @@ def review_lens_families(seats, writer, lenses):
     return out
 
 
+def quick_screen_ok(seats):
+    """True when the run seats screen judges of two or more vendors: quick mode then scores its curated ideas blind
+    (Q.3p/Q.3s). A single-family run, or a quick run seated by an older kit (one screen judge), has no quick screen."""
+    return len(set(vendor_of(f) for f in seats.get("screen_judges") or [])) >= 2
+
+
 def stack_verify_family(seats, writer=None):
     web = seats.get("web_families") or []
     return web[0] if web else seats.get("host", "claude")
@@ -214,7 +253,10 @@ LIST_SEATS = ("researcher", "checker_pool", "screen_judges", "tournament_judges"
 
 def reseat_minimal(old, fresh, available, host):
     """Cross-host continue (6.10): keep every seat whose family is still available; re-seat only the seats whose
-    family disappeared, taking replacements from `fresh` (a full assign() on what is left).
+    family disappeared, taking replacements from `fresh` (a full assign() on what is left). A lost judge seat with no
+    new family to take it gets `<host>-alt` only when `fresh` seats that judge itself (its alt_model is another model)
+    and no earlier lost seat took it; otherwise it is dropped, as `fresh` drops it, whenever the stage keeps another
+    judge (a kept seat or a replacement): the host's model twice is not a second judge (#89).
     Returns (seats, changes) with changes = [(seat key, old family, new family)]."""
     avail = set(available)
     alt = "%s-alt" % host
@@ -238,7 +280,14 @@ def reseat_minimal(old, fresh, available, host):
             if key in ("redteam_rotation", "checker_pool") and len(keepers) >= (2 if key == "redteam_rotation" else 1):
                 changes.append((key, f, "(dropped)"))
                 continue
-            rep = next((c for c in pool if c not in now and c not in before), None) or alt
+            rep = next((c for c in pool if c not in now and c not in before), None)
+            # a judge seat with no family left to take it is dropped when the stage keeps a judge (a kept seat or a
+            # replacement), unless `fresh` seats `<host>-alt` as a judge and it is not seated yet
+            if rep is None and key in ("screen_judges", "tournament_judges") and (keepers or now) \
+                    and (alt not in (fresh.get(key) or []) or alt in now):
+                changes.append((key, f, "(dropped)"))
+                continue
+            rep = rep or alt
             now.append(rep)
             changes.append((key, f, rep))
         out[key] = now

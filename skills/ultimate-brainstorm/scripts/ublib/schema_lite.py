@@ -3,15 +3,17 @@
 validate(instance, schema) -> list of error strings (empty list = valid).
 
 Supported keywords: type (a name or a list of names), required, properties, additionalProperties (bool or schema),
-items (schema, or a list of schemas for tuple form), enum, minItems, maxItems, minimum, maximum, minLength,
-maxLength. Annotation keywords ($id, $schema, title, description, default, examples) are ignored, and so is every
-other unknown keyword (the kit's schemas use only the subset above, see 7.4 and [U-32]).
+items (schema, or a list of schemas for tuple form), enum, minItems, maxItems, minProperties, maxProperties, minimum,
+maximum, minLength, maxLength. Annotation keywords ($id, $schema, title, description, default, examples) are ignored,
+and so is every other unknown keyword (the kit's schemas use only the subset above, see 7.4 and [U-32]).
 
 Types: object, array, string, number, integer, boolean, null. Booleans are never numbers; a float with an integral
-value (3.0) counts as an integer, as in JSON Schema.
+value (3.0) counts as an integer, as in JSON Schema. NaN and the infinities are not JSON numbers: they fail "number"
+and "integer" (Python's json module would otherwise let them through every minimum/maximum comparison).
 """
 
 import json
+import math
 
 __all__ = ["validate", "is_valid", "MAX_ERRORS"]
 
@@ -38,7 +40,9 @@ def _type_ok(value, name):
             return True
         return isinstance(value, float) and value.is_integer()
     if name == "number":
-        return isinstance(value, (int, float)) and not isinstance(value, bool)
+        if isinstance(value, float):
+            return math.isfinite(value)
+        return isinstance(value, int) and not isinstance(value, bool)
     return True  # unknown type names are not enforced
 
 
@@ -50,7 +54,7 @@ def _type_of(value):
     if isinstance(value, int):
         return "integer"
     if isinstance(value, float):
-        return "number"
+        return "number" if math.isfinite(value) else "non-finite number"
     if isinstance(value, str):
         return "string"
     if isinstance(value, list):
@@ -102,6 +106,8 @@ def _check(inst, schema, path, errors):
             errors.append("%s: string longer than %d" % (path, schema["maxLength"]))
 
     if _is_number(inst):
+        if isinstance(inst, float) and not math.isfinite(inst) and ("minimum" in schema or "maximum" in schema):
+            errors.append("%s: %s is not a finite number" % (path, _short(inst)))
         if _is_number(schema.get("minimum")) and inst < schema["minimum"]:
             errors.append("%s: %s is less than minimum %s" % (path, _short(inst), _short(schema["minimum"])))
         if _is_number(schema.get("maximum")) and inst > schema["maximum"]:
@@ -123,6 +129,10 @@ def _check(inst, schema, path, errors):
                     return
 
     if isinstance(inst, dict):
+        if isinstance(schema.get("minProperties"), int) and len(inst) < schema["minProperties"]:
+            errors.append("%s: %d properties, fewer than minProperties %d" % (path, len(inst), schema["minProperties"]))
+        if isinstance(schema.get("maxProperties"), int) and len(inst) > schema["maxProperties"]:
+            errors.append("%s: %d properties, more than maxProperties %d" % (path, len(inst), schema["maxProperties"]))
         req = schema.get("required")
         if isinstance(req, list):
             for key in req:

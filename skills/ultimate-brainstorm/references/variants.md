@@ -8,13 +8,15 @@ listed here change; everything else follows references/pipeline.md.
 | software, product, growth, general | system | `## 6. Architecture Summary` |
 | research, marketing, creative, naming | approach | `## 6. Approach` |
 
-The user can override the build type at G11 or with `ub config`.
+The build type follows the variant: to change it, change the variant at G0 (the kickoff card marks an inferred variant
+"(inferred; ...)"; a keyword line such as `product` in the reply changes it).
 
 ## software - a feature or project inside an existing codebase
 
 - Run inside the repo. Generators never read `brainstorm/`; every focus text says "do not read anything under
-  brainstorm/; it is not part of the codebase". Ask the user to add `brainstorm/` to `.git/info/exclude` (local,
-  never committed).
+  brainstorm/; it is not part of the codebase". The kit writes the `.gitignore` files (`*`) into the run folder and
+  `brainstorm/` itself when it first builds a job that reads the repository; adding `brainstorm/` to
+  `.git/info/exclude` (local, never committed) is optional and hides run files earlier.
 - For growing an existing product (activation, retention, conversion) use `growth` instead.
 - Frame: grilling + domain-modeling (host/FRAME-GRILL-DOCS): terms are challenged against CONTEXT.md, claims are
   checked against the code (file:line), and resolved terms go to `brainstorm/<run>/CONTEXT.proposed.md`; the repo's
@@ -28,8 +30,9 @@ The user can override the build type at G11 or with `ub config`.
 - S1 = ce-ideate in repo mode when used (codebase scan, learnings, web prior art). S5-OPS adds operator (f)
   Contradiction (TRIZ).
 - Checks add item 5, codebase fit (does the product already do this, file:line; conflicts with the architecture,
-  CONCEPTS.md, flags or analytics; which files would change). For ideas that extend an existing product, K4 does not
-  apply.
+  CONCEPTS.md, flags or analytics; which files would change), in a git repository, for checkers of the host vendor,
+  or of any vendor when privacy `code` = yes; otherwise (another vendor with `code` = no, or a folder without git) a
+  checker answers items 1-4 only. For ideas that extend an existing product, K4 does not apply.
 - Probe: a throwaway spike in a separate git worktree, or behind a feature flag in a scratch branch, with 2-5
   Given/When/Then checks and thresholds written first; verdict VALIDATED / INVALIDATED / PARTIAL. A new worktree has no
   installed dependencies and no local `.env*` files, and the pipeline never installs software: the user runs the
@@ -54,7 +57,8 @@ The user can override the build type at G11 or with `ub config`.
   Time to test 15, Distinctiveness 15.
 - Ground: funnel steps with counts for the last 4-8 weeks (pasted by the user or from an analytics MCP), each labeled
   FACT (source, date); tracking calls on the onboarding path; uninstrumented steps; first-session empty states.
-- Checks: item 5 (codebase fit). K4 does not apply: prior art is evidence (record the reported lift and source).
+- Checks: item 5 (codebase fit), as for software. K4 does not apply: prior art is evidence (record the reported lift
+  and source).
 - Probe: a feature-flagged experiment on the units entering the target window with metric, baseline, minimum
   detectable effect, sample size per arm, duration and guardrails written first; longer than 4 weeks -> a leading
   indicator, or for activation a moderated first-session test with 5 new users or a fake door.

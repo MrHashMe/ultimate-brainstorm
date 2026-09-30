@@ -1,6 +1,16 @@
-# Release: on a version tag (vX.Y.Z), run every test suite, build the assets with tools/release.py and publish them
-# with gh release (KIT_SPEC 10.7). The release notes are the CHANGELOG.md section for that version. The repository
-# names MrHashMe as its owner; a fork's owner name is filled in the archive copy only.
+# Release (KIT_SPEC 10.7): on a version tag vX.Y.Z,
+#   ci       runs the full CI matrix (ci.yml, 3 OSes) on the tagged commit, with a read-only token;
+#   build    checks that the tag names VERSION, builds the assets with tools/release.py and hands them on as an
+#            artifact, with a read-only token. release.py refuses to build while docs/ACCEPTANCE.md lacks a live
+#            result (KIT_SPEC 11.9), unless the version's CHANGELOG.md section has a line starting
+#            "Acceptance override:"; then it builds with --no-acceptance and lists what is unverified in the notes;
+#   publish  (the only job with write access) attests the build provenance of every asset
+#            (actions/attest-build-provenance; users check it with `gh attestation verify <file> --repo
+#            <owner>/ultimate-brainstorm --signer-workflow <owner>/ultimate-brainstorm/.github/workflows/release.yml
+#            --source-ref refs/tags/<tag>`) and creates the GitHub release. It never replaces anything: when a release
+#            for the tag exists, it fails. Turn on GitHub's immutable releases as well (AGENTS.md, Releasing).
+# The release notes are the CHANGELOG.md section for that version. The repository names MrHashMe as its owner; a
+# fork's owner name is filled in the archive copy only. Every action is pinned to a full commit SHA.
 name: release
 
 on:
@@ -8,36 +18,44 @@ on:
     tags:
       - "v*"
 
-permissions:
-  contents: write
+permissions: {}
 
 jobs:
-  release:
+  ci:
+    name: full CI on the tagged commit
+    uses: ./.github/workflows/ci.yml
+    permissions:
+      contents: read
+
+  build:
+    name: build the release assets
+    needs: ci
     runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
     steps:
       - name: Check out
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: "3.12"
 
-      - name: Run all test suites
-        run: python tools/ci.py all
-
-      - name: Build release assets
-        env:
-          UB_OWNER: ${{ github.repository_owner }}
+      - name: Check that the tag names VERSION
         run: |
           version="${GITHUB_REF_NAME#v}"
-          python tools/release.py --version "$version" --owner "$UB_OWNER" --out dist/
-          ls -l dist/
-
-      - name: Check the rendered shims
-        run: |
-          sh -n dist/install.sh
-          cd dist && sha256sum -c SHA256SUMS
+          if ! printf '%s\n' "$GITHUB_REF_NAME" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "::error::the tag $GITHUB_REF_NAME is not vX.Y.Z"
+            exit 1
+          fi
+          if [ "$version" != "$(cat VERSION)" ]; then
+            echo "::error::the tag $GITHUB_REF_NAME does not match VERSION ($(cat VERSION))"
+            exit 1
+          fi
 
       - name: Write the release notes for this version
         run: |
@@ -52,16 +70,78 @@ jobs:
           fi
           cat release-notes.md
 
-      - name: Publish the GitHub release
+      - name: Build release assets
+        env:
+          UB_OWNER: ${{ github.repository_owner }}
+        run: |
+          # The live acceptance gate (KIT_SPEC 11.9): only this version's CHANGELOG section can override it, and
+          # release.py then appends the list of unverified checks to the release notes.
+          set -- --version "${GITHUB_REF_NAME#v}" --owner "$UB_OWNER" --out dist/ --notes release-notes.md
+          if grep -q '^Acceptance override:' release-notes.md; then
+            set -- "$@" --no-acceptance
+          fi
+          python tools/release.py "$@"
+          ls -l dist/
+          cat release-notes.md
+
+      - name: Check the rendered shims
+        run: |
+          sh -n dist/install.sh
+          cd dist && sha256sum -c SHA256SUMS
+
+      - name: Hand the assets to the publish job
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-assets
+          path: |
+            dist/
+            release-notes.md
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    name: attest and publish
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - name: Download the assets
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-assets
+          path: assets
+
+      - name: Check the assets
+        run: cd assets/dist && sha256sum -c SHA256SUMS
+
+      - name: Attest the build provenance of every asset
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: |
+            assets/dist/*.tar.gz
+            assets/dist/*.zip
+            assets/dist/install.sh
+            assets/dist/install.ps1
+            assets/dist/SHA256SUMS
+
+      - name: Publish the GitHub release (never replaces an existing one)
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
         run: |
-          # One publishing path: this workflow. If a release for the tag already exists (for example it was made by
-          # hand with gh release create), replace its assets instead of failing on "release already exists".
+          # Published assets are immutable: a re-run or a moved tag must never swap the bytes users already fetched.
           if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
-            gh release upload "$GITHUB_REF_NAME" dist/* --clobber
-          elif [ -s release-notes.md ]; then
-            gh release create "$GITHUB_REF_NAME" dist/*               --verify-tag               --title "ultimate-brainstorm $GITHUB_REF_NAME"               --notes-file release-notes.md
+            echo "::error::a release for $GITHUB_REF_NAME already exists; its assets are never replaced. Publish a new version instead."
+            exit 1
+          fi
+          if [ -s assets/release-notes.md ]; then
+            gh release create "$GITHUB_REF_NAME" assets/dist/* --verify-tag \
+              --title "ultimate-brainstorm $GITHUB_REF_NAME" --notes-file assets/release-notes.md
           else
-            gh release create "$GITHUB_REF_NAME" dist/*               --verify-tag               --title "ultimate-brainstorm $GITHUB_REF_NAME"               --generate-notes
+            gh release create "$GITHUB_REF_NAME" assets/dist/* --verify-tag \
+              --title "ultimate-brainstorm $GITHUB_REF_NAME" --generate-notes
           fi

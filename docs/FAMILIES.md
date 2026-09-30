@@ -38,7 +38,10 @@ codex login
 
 Codex 0.156 or newer is recommended (the installer's native plugin route needs it). Usage counts against your ChatGPT
 plan, or your OpenAI API account if you use a key. The kit calls Codex in a read-only sandbox, in an empty folder, with
-no saved session.
+no saved session. Codex's own shell, the MCP servers in your `~/.codex/config.toml` (except names with a character other
+than letters, digits, `_` and `-`, such as a dot, and every server when the kit cannot read part of that file without
+Python 3.11+; `family.py detect` lists both), your notify program and web search are switched off for a call that does
+not need them, and an answer that used a tool the job did not allow is refused (never retried).
 
 ## Claude (Claude Code CLI)
 
@@ -48,9 +51,10 @@ claude          (run it once and sign in)
 ```
 
 Claude Code 2.1.268 or newer is recommended. The kit calls `claude -p` with no tools (or only web search for research
-jobs), no MCP servers, and no saved session. If your normal Claude Code is set up to talk to another provider (for
-example a `~/.claude/settings.json` that points at Z.ai), the kit notices and counts that install as that provider's
-family instead of `claude`; `doctor` shows this as "reclassified".
+jobs), no MCP servers, and no saved session, and without your own Claude settings, hooks and plugins where that cannot
+break your login (backend key `user_context`; `family.py detect` names what still reaches the calls). If your normal
+Claude Code is set up to talk to another provider (for example a `~/.claude/settings.json` that points at Z.ai), the kit
+notices and counts that install as that provider's family instead of `claude`; `doctor` shows this as "reclassified".
 
 ## Kimi (Kimi Code CLI)
 
@@ -64,6 +68,14 @@ kimi login
   `npm install -g @moonshot-ai/kimi-code`, then `kimi migrate`.
 - **The Kimi Code CLI ignores `KIMI_API_KEY`.** Setting that variable does not log the CLI in; use `kimi login`.
   (`KIMI_API_KEY` is only for the optional Claude Code / Codex route below.)
+- The kit uses Kimi Code only while the model it calls is served by Kimi (Moonshot or kimi.com). If your Kimi Code
+  `config.toml` points that model at another provider (Z.ai, OpenAI, Anthropic or any other host), `family.py detect`
+  says `Kimi Code is configured for ...` and the kit leaves Kimi Code out; it checks again before every call, so a
+  change during a run is caught too. A provider without `base_url` counts as the `*_BASE_URL` of its
+  `[providers.<p>.env]` table (`KIMI_BASE_URL`, `ANTHROPIC_BASE_URL`, `OPENAI_BASE_URL`), else as its `type`'s own
+  endpoint (`anthropic`, `openai`, `google-genai`, ...); a type the kit does not know is not checked. With `env_model`
+  on, `KIMI_MODEL_NAME` without `KIMI_MODEL_BASE_URL` counts as the endpoint of `KIMI_MODEL_PROVIDER_TYPE` (default
+  `kimi`).
 - Web search inside `kimi -p` is off by default, because it is not confirmed to work in that mode; research jobs go
   to a family with web search.
 - The original Kimi K2 models are discontinued. Do not pin old `kimi-k2-*` model IDs in your overrides; the kit's
@@ -161,15 +173,29 @@ The same works for `KIMI_API_KEY`, `KIMI_CODE_API_KEY`, `ZAI_PAYG_API_KEY`, `OPE
 
 ## Costs
 
-A standard run makes about 75-110 model calls and uses about 1-2.5 million tokens in total, spread over the families
-you have set up (quick: 25-40 calls; deep: 180-350). Most of it counts against your existing plans (Claude, ChatGPT,
-Kimi, GLM Coding Plan). The first question of every run shows the estimate for your setup, and the run asks before it
-goes over its call budget (quick 60, standard 180, deep 600, proposal 90). The kit shows dollar amounts only if you
-add your own prices in `~/.ultimate-brainstorm/families.json`; the skill's `references/families.md` explains the format.
+With three families (claude, gpt, kimi) a standard run makes about 55-73 model calls and uses about 0.6-1.8 million
+tokens in total, spread over the families you have set up (quick: about 16 calls and 0.2-0.5 million tokens; deep:
+73-193 calls and 0.8-4.2 million; proposal: 46-48 calls and 0.5-1.3 million). These are the kit's own estimates
+(`ub plan --mode <mode> --families claude,gpt,kimi --json`, kit 2.1.0); four families change them only a little
+(standard 56-74 calls, deep 78-226). Most of it counts against your existing plans (Claude, ChatGPT, Kimi, GLM Coding
+Plan). The first question of every run shows the estimate for your setup. Each run has a budget of backend requests
+(quick 60, standard 180, deep 600, proposal 90; a retry or a repair call is a request too): the run asks before a call
+could go over it, and `ub budget "<run>" --max-calls N` raises it. The kit shows dollar amounts only if you add your
+own prices in `~/.ultimate-brainstorm/families.json`; the skill's `references/families.md` explains the format.
+
+A family (other than your host's) whose login or key is rejected during a run is not used until it is detected again:
+its jobs go to their fallback family (PROVISIONAL). Log in again (or fix the key), then `continue` (same agent or
+another), `run --continue` or the retry of the BLOCKED step detects it again, and its later jobs run on it as seated.
 
 ## Your own overrides
 
 `~/.ultimate-brainstorm/families.json` is merged over the kit's defaults (`scripts/families.default.json`). Use it to
-switch a backend on or off, pin a model, set a region, or add a family such as a local model reached over an
-OpenAI-compatible HTTP endpoint. The skill's `references/families.md` has the full format and examples. `doctor`
-shows the result.
+switch a backend on or off, pin a model, set a region (a provider with no endpoint for it, such as `kimi` for `cn`,
+keeps its global one, in `claude-kimi` as in the pipeline's calls), or add a family such as a local model reached over
+an OpenAI-compatible HTTP endpoint (a `localhost` / `127.0.0.1` endpoint is always called directly, never through a
+proxy). The skill's `references/families.md` has the full format and examples. `doctor` shows the result. The
+launchers refuse a file that is not a JSON object (or whose `providers` / `backends` entries are not objects) with exit
+2 and the key to fix. A provider whose `base_url` you set to null, empty, blank or anything but an `http(s)://` URL
+leaves its `claude-cli@<provider>` backend unavailable (`provider <p> has no base_url in families config`): the kit
+never sends that provider's key to Anthropic. A provider entry of the wrong shape (for example `base_url` a list, or
+`models` or `env` not an object) leaves only that provider's backends unavailable, with a note naming the key.
