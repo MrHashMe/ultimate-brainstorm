@@ -1,7 +1,7 @@
 """Stage 13 Proposal rendering (KIT_SPEC 8): evidence packs, PROPOSAL.md assembly with appendices A-F, the
 single-file HTML pack (Markdown subset -> index.html), the zip and the pandoc export.
 
-Scripts: proposal_packs (13.1), proposal_assemble (13.4 and 13.4b), proposal_render (13.7).
+Scripts: proposal_packs (13.1), proposal_assemble (13.4, 13.4b and 13.4c), proposal_render (13.7).
 """
 
 import html

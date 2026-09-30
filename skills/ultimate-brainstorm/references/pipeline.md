@@ -11,13 +11,13 @@ Conventions: `RUN` = `<project>/brainstorm/<YYYY-MM-DD>-<slug>/` (the run folder
 | Mode | Replies (guided) | Model time | Model calls, 3 families (4) | Contents |
 |---|---|---|---|---|
 | quick | 4-5 | 33-77 min | 16 (16) | G0 brief (5 ideas, 3 criteria, 1 hard constraint) -> one generation pass on 2 families -> QUICK-CURATE -> blind quick screen by both generating families and a third family -> quick-pick -> both-order judging by one other family -> gut pick (hands-on only) -> decide -> QUICK-PROBE -> architecture lite -> proposal lite -> sign-off. Stamped "Novelty NOT checked" |
-| standard | 6-7 | 87-201 min, mostly unattended | 55-73 (56-74) | Stages 0-14 in full |
-| deep | 6-9 | 125-288 min | 73-193 (78-226) | Standard plus BMAD seeds, ce-ideate go deep, S3 x100, LENS L1-L6, 2 gap rounds, per-pair judging (6 or fewer finalists), rebuttal, forge, 10-day probe, 4 architecture candidates, 4 review lenses, PR/FAQ, G10 and G12 |
-| proposal | 5-6 | 72-166 min | 46-48 (47-49) | The user's idea: frame -> ground -> the idea as I-001 (primary) + 2 contrast variants -> checks -> cards -> tournament -> red-team all 3 -> decide (default = the user's idea) -> probe -> Stages 12-14 |
+| standard | 6-7 | 92-212 min, mostly unattended | 55-74 (56-75) | Stages 0-14 in full |
+| deep | 6-9 | 130-299 min | 73-194 (78-227) | Standard plus BMAD seeds, ce-ideate go deep, S3 x100, LENS L1-L6, 2 gap rounds, per-pair judging (6 or fewer finalists), rebuttal, forge, 10-day probe, 4 architecture candidates, 4 review lenses, PR/FAQ, G10 and G12 |
+| proposal | 5-6 | 77-176 min | 46-49 (47-50) | The user's idea: frame -> ground -> the idea as I-001 (primary) + 2 contrast variants -> checks -> cards -> tournament -> red-team all 3 -> decide (default = the user's idea) -> probe -> Stages 12-14 |
 
 The numbers are the engine's own plan: `ub plan --mode M --variant general --families claude,gpt,kimi --json` (and
 `claude,gpt,kimi,glm` in brackets), kit 2.1.0, no user configuration; tokens (3 families): quick 0.22-0.49M, standard
-0.65-1.84M, deep 0.82-4.23M, proposal 0.55-1.28M. Model time counts the model calls only (4 at once); replies, host
+0.65-1.91M, deep 0.82-4.30M, proposal 0.55-1.35M. Model time counts the model calls only (4 at once); replies, host
 skills and the probe come on top. `ub plan "<run>"` recomputes them for the families actually available, and the G0
 card adds one preflight PING per family (plus one web probe for Codex).
 
@@ -124,7 +124,7 @@ review lenses and one fix pass. Build type `approach` (research, marketing, crea
 instead and has no G11.
 
 Stage 13 writes the proposal (`11_PROPOSAL/`, see references/proposal.md): evidence packs, sections in three parallel
-parts, the executive summary and one-pager, assembly with appendices, rubric and red-team review, one fix pass, the
+parts, the executive summary and one-pager, assembly with appendices, rubric and red-team review, fix passes, the
 HTML pack, and G13 sign-off.
 
 Stage 14 hands off:

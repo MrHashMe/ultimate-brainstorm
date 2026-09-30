@@ -3537,6 +3537,7 @@ appendices A, B, F.
 | P8 | FAIL | Every `[ASSUMPTION` occurrence is listed in assumptions.md |
 | P9 | WARN | The word "novel" appears anywhere |
 | P10 | WARN | A `$` figure in §10 is not found in `../10_ARCHITECTURE/chosen/cost-model.md` |
+| P11 | WARN | ONE-PAGER.md agrees with the proposal: every money figure in §1 (a `$`, `€`, `£`, USD, EUR, GBP or CHF amount or range, compared as exact numbers: currency and thousands separators (comma, space, apostrophe) ignored, `k`/`M`/`MM`/`B` and thousand/million/billion/mn/bn applied, so `$9k-$27k` equals `9,000-27,000 USD`; the first end of a range takes the second end's magnitude only when the range stays in order, and a second end below the first is not part of a range and counts on its own when it has its own currency; a range stays on one line, its second end may repeat the currency and is never the year of an ISO date; the basis of an `[ESTIMATE: range; basis]` tag (after its first `;`) is ignored) appears in ONE-PAGER.md; and (not with `--lite`) every money figure and ISO date (`YYYY-MM-DD` or `YYYY-MM`) in ONE-PAGER.md appears in §1-§13. Code fences and the one-pager's status stamp are ignored |
 
 **lint-frame.** Always exits 0.
 - `01_FRAME.md` has the v1 P-FRAME sections.
@@ -3587,9 +3588,9 @@ All numbers are estimates. `ub plan` recomputes them for the actual families.
 | Mode | Replies (guided) | Model time | Model calls, 3 families (4) | Tokens, 3 families (4) | Contents |
 |---|---|---|---|---|---|
 | quick | 4-5 | 33-77 min | 16 (16) | 0.22-0.49M (0.22-0.49M) | G0 brief + 5 ideas + 3 criteria -> one generation pass on 2 families -> QUICK-CURATE -> blind quick screen by both generating families and a third family -> quick-pick -> both-order judging by one other family -> gut pick (hands-on only) -> decide -> QUICK-PROBE -> arch-lite -> proposal-lite -> sign-off. Stamped "Novelty NOT checked" |
-| standard | 6-7 | 87-201 min, mostly unattended | 55-73 (56-74) | 0.65-1.84M (0.67-1.88M) | Stages 0-14 in full |
-| deep | 6-9 | 125-288 min (131-301) | 73-193 (78-226) | 0.82-4.23M (0.88-4.91M) | Standard plus v1 deep extras (BMAD seeds, ce-ideate go deep, S3 x100, LENS L1-L6, 2 gap rounds, per-pair judging when there are 6 or fewer finalists, rebuttal, forge, 10-day probe), 4 architecture candidates, 4 review lenses, PR/FAQ, G10 and G12 |
-| proposal | 5-6 | 72-166 min | 46-48 (47-49) | 0.55-1.28M (0.57-1.32M) | The user's idea: G0 -> frame -> ground -> the idea as I-001 (primary) + 2 contrast variants -> checks -> cards -> tournament (gut pick optional) -> red-team all 3 -> decide (default = the user's idea) -> probe -> Stage 12 -> 13 -> 14 |
+| standard | 6-7 | 92-212 min, mostly unattended | 55-74 (56-75) | 0.65-1.91M (0.67-1.94M) | Stages 0-14 in full |
+| deep | 6-9 | 130-299 min (136-312) | 73-194 (78-227) | 0.82-4.30M (0.88-4.98M) | Standard plus v1 deep extras (BMAD seeds, ce-ideate go deep, S3 x100, LENS L1-L6, 2 gap rounds, per-pair judging when there are 6 or fewer finalists, rebuttal, forge, 10-day probe), 4 architecture candidates, 4 review lenses, PR/FAQ, G10 and G12 |
+| proposal | 5-6 | 77-176 min | 46-49 (47-50) | 0.55-1.35M (0.57-1.39M) | The user's idea: G0 -> frame -> ground -> the idea as I-001 (primary) + 2 contrast variants -> checks -> cards -> tournament (gut pick optional) -> red-team all 3 -> decide (default = the user's idea) -> probe -> Stage 12 -> 13 -> 14 |
 
 The figures are `ub plan --mode <mode> --variant general --families claude,gpt,kimi --json` (in brackets:
 `--families claude,gpt,kimi,glm`) on kit 2.1.0 with no user configuration; the software variant gives the same numbers.
@@ -4010,7 +4011,10 @@ Let F = available ∩ privacy-allowed families, ordered with the host family fir
     these families `privacy.filter_glossary` runs the A2 filter above from that line to the end of the appendix
     (the next `## ` line by textio's fence rule); the FRAME's terms stay, and every `## Appendix E` line counts,
     inside a fence too. Without that line (a PROPOSAL.md an older kit assembled) the whole appendix is filtered
-    (fail closed). The user's PROPOSAL.md keeps the whole glossary. This holds in every run.
+    (fail closed). ONE-PAGER.md, which SECTIONS_ALL appends after the line `--- FILE: ONE-PAGER.md ---`, is filtered
+    apart from the proposal (`privacy.filter_sections_all`), so an appendix that runs to the end of the proposal
+    cannot take it along; the engine indents any other line equal to that marker, so model text cannot move the split.
+    The user's PROPOSAL.md keeps the whole glossary. This holds in every run.
   - `cwd: repo` is never used.
   - In a repo-labeled run every placeholder value of the prompt goes through `strip_code`, whatever its source (a
     DATA placeholder's value with the strict rule of a DATA block's body), `builders.make_job` passes the whole
@@ -4833,9 +4837,10 @@ Chosen option: "<option>", because <justification>.
 | 13.3 | D | EXEC-ONEPAGER after 13.2 (files sections/01.md + ONE-PAGER.md); deep: PRFAQ |
 | 13.4 | S | Assemble PROPOSAL.md: title block + status banner (DRAFT, APPROVED, AUTOPILOT DRAFT or PENDING MILESTONE 0; before any of them "KILLED (K6): the chosen idea's pre-registered probe missed; no runner-up is left" once the chosen idea's probe missed with no runner-up left, 6.10, the banner the one-pager, index.html, the architecture README and 12_HANDOFF.md carry too) + sections + appendices A-F (A ADR index, B assumptions index, C candidate comparison from matrix.json, rank `-` for an EXCLUDED candidate, ending `Leader: <label> (<status>).` or `Leader: none (every candidate EXCLUDED).` as the README names it, D idea selection record from 06_TOURNAMENT/07_REDTEAM/08_DECISION incl. audits and PROVISIONAL badges (its standings table is `\| rank \| idea \| score % \| pairs \|` from result.json `debiased`, headed with the ranking method, and `raw-fallback` with its reason; then the Condorcet winner and the majority cycles), E glossary: the FRAME's Domain language, then the A2 terms under `### Domain terms (today's system)` (6.8), F sources); `bs.py assumptions`; `bs.py lint-proposal`. Before the assembly the engine finishes any interrupted FILE-protocol commit in `11_PROPOSAL/` (`filesproto.recover`, 4.6 rule 4), so `bs.py assumptions` and the assembly read whole section sets |
 | 13.5 | D | PROPOSAL-RUBRIC (rubric families, json `rubric`) and PROPOSAL-REDTEAM (a non-drafter family, json `redteam`) |
-| 13.6 | D | PROPOSAL-FIX (drafter; files, exactly: the run's sections (sections/01.md ... 13.md; quick: the lite sections 01, 02, 03, 06, 07, 11, 12, 13), ONE-PAGER.md, PRFAQ.md (deep only) and review/resolution.md (no wildcard, 4.6); a printed file keeps the per-file rules of the step that wrote it (section headings, the ONE-PAGER.md headings and flowchart, the PRFAQ.md headings: PROPOSAL-A/B/C, -LITE, EXEC-ONEPAGER and PRFAQ in the manifest, `registry.writer_rules`)): answer every must_fix and the top 5 red-team items as ADDRESSED (where) / ACCEPTED-RISK (moved to §11) / REJECTED (reason); then 13.4 again |
+| 13.6 | D | PROPOSAL-FIX (drafter; SECTIONS_ALL carries ONE-PAGER.md after the sections; files, exactly: the run's sections (sections/01.md ... 13.md; quick: the lite sections 01, 02, 03, 06, 07, 11, 12, 13), ONE-PAGER.md, PRFAQ.md (deep only) and review/resolution.md (no wildcard, 4.6); a printed file keeps the per-file rules of the step that wrote it (section headings, the ONE-PAGER.md headings and flowchart, the PRFAQ.md headings: PROPOSAL-A/B/C, -LITE, EXEC-ONEPAGER and PRFAQ in the manifest, `registry.writer_rules`)): answer every must_fix and the top 5 red-team items as ADDRESSED (where) / ACCEPTED-RISK (moved to §11) / REJECTED (reason); fix lint FAILs and P11 items; reprint ONE-PAGER.md whenever a change alters a figure, date or the ask it states; then 13.4 again (13.4b) |
+| 13.6b | D | Conditional (plan min 0): when 11_PROPOSAL/lint.json after 13.4b still has a FAIL or a P11 item and G13 (13.8) is still pending (not shown, not answered: a run that reached sign-off under an older kit is never re-fixed; `supersede_from` and `gates.redo_plan` first walk the pipeline so such a run records 13.6b as skipped before `redo 13.7`/`13.8` resets G13), PROPOSAL-FIX runs once more with that lint report; then 13.4 again (13.4c). What remains is listed on the G13 card |
 | 13.7 | S | `ub render` -> index.html |
-| 13.8 | H | G13: approve -> PROPOSAL status Approved + ADRs `accepted` (date); changes -> 13.6 with USER_CHANGES (at most 2 loops); switch -> redo 12.10; runner-up -> redo 11.1, quick Q.6 (the card shows both costs first, `gates.redo_plan`) |
+| 13.8 | H | G13: the card lists the proposal lint FAIL and P11 items still open (the first 8, then a count pointing to lint.md), with the `changes:` reply that runs a fix round (13.6, and 13.6b if items remain: up to 2 calls); approve -> PROPOSAL status Approved + ADRs `accepted` (date); changes -> 13.6 (and 13.6b) with USER_CHANGES (at most 2 loops); switch -> redo 12.10; runner-up -> redo 11.1, quick Q.6 (the card shows both costs first, `gates.redo_plan`) |
 
 **Lite, used in quick mode:** PROPOSAL-LITE is one call writing sections 01, 02, 03, 06, 07, 11, 12, 13 and
 ONE-PAGER.md. Then 13.4 lite, 1 rubric family, no red-team, render, G13.
@@ -5976,7 +5981,9 @@ every status check.
 *Other bookkeeping and lints:*
 - `test_bs_misc.py`: quick-pick selection rules; split path guards (`..`, absolute, drive letter, disallowed extension,
   empty file, duplicates); sources ID stability across re-runs; assumptions extraction; `coverage.json`.
-- `test_lints.py`: one good and one bad fixture per rule A1-A9, P1-P10 and frame; lite mode.
+- `test_lints.py`: one good and one bad fixture per rule A1-A9, P1-P11 and frame; lite mode.
+- `test_proposal_fix.py`: PROPOSAL-FIX sees ONE-PAGER.md; 13.6b runs only on a lint FAIL or P11 item left after 13.6;
+  G13 lists the open items; a stub run whose fix moves the ask in §1 gets the one-pager back in line.
 
 *Validators and adapter:*
 - `test_validate.py`: every contract type, positive and negative; the repair prompt text.
@@ -6174,7 +6181,7 @@ Check:                 py -3 <kit>/install/install.py doctor --live
 
 ### 13.3 What the user sees (standard, guided)
 
-1. **G0 (one screen).** The plan: mode, variant, families, about 55-73 calls and about 0.7-1.8M tokens (estimates,
+1. **G0 (one screen).** The plan: mode, variant, families, about 55-74 calls and about 0.7-1.9M tokens (estimates,
    `ub plan` for three families), vendors, privacy. "Type your own ideas now, one per line (optional
    `Primary: <idea to test>`), or reply `go`."
 2. **Frame.** grilling asks one round of questions with recommended answers for constraints only. The user answers,

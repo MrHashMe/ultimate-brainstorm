@@ -702,6 +702,11 @@ def _p_step_skipped(ctx, arg):
     return st.step_state(ctx.state, arg) == "skipped"
 
 
+@predicate("step_pending")
+def _p_step_pending(ctx, arg):
+    return st.step_state(ctx.state, arg) == "pending"
+
+
 @predicate("s1_engine")
 def _p_s1_engine(ctx, arg):
     return ctx.seats.get("s1_engine", "s1f") == arg
@@ -783,6 +788,25 @@ def _p_context_proposed(ctx, arg):
 @predicate("fix_requested")
 def _p_fix_requested(ctx, arg):
     return bool(ctx.state.get("user_changes"))
+
+
+# lint rules whose WARN items still earn the second proposal fix pass (P11: the one-pager disagrees with the proposal)
+REFIX_WARN_RULES = ("P11",)
+
+
+def proposal_lint_open(ctx):
+    """The items of 11_PROPOSAL/lint.json a fix pass should still act on: every FAIL, and the WARNs of
+    REFIX_WARN_RULES."""
+    lint = ctx.read_json("11_PROPOSAL/lint.json", {}) or {}
+    return [i for i in lint.get("items") or [] if isinstance(i, dict) and
+            (i.get("severity") == "fail" or i.get("id") in REFIX_WARN_RULES)]
+
+
+@predicate("proposal_lint_open")
+def _p_proposal_lint_open(ctx, arg):
+    if ctx.sim is not None:
+        return bool(ctx.sim.get("proposal_lint_open", True))
+    return bool(proposal_lint_open(ctx))
 
 
 @predicate("quick_screen")
@@ -1600,6 +1624,7 @@ def proposal_fix_files(ctx):
 
 @fanout("proposal_fix")
 def _f_proposal_fix(ctx, step):
+    """13.6, and 13.6b when lint items are left after it (raw outputs 13.6-<loop>, 13.6b-<loop>)."""
     fam = (ctx.seats.get("proposal") or {}).get("drafter") or ctx.host_family
     it = _files_item(ctx, None, "PROPOSAL-FIX", "fixer", fam, "11_PROPOSAL", proposal_fix_files(ctx),
                      ["review/resolution.md"], rules=writer_rules(PROPOSAL_WRITERS, proposal_fix_files(ctx)),
@@ -1985,12 +2010,23 @@ def _ph_sources(ctx, jc):
 
 @placeholder("SECTIONS_ALL")
 def _ph_sections(ctx, jc):
-    """PROPOSAL.md (or the section drafts before it exists); for another vendor its Appendix E keeps only the A2 terms
-    FACTS would keep (privacy.filter_glossary), the one place PROPOSAL.md text reaches a prompt."""
-    text = ctx.read("11_PROPOSAL/PROPOSAL.md") or "\n\n".join(
-        textio.read_text(p) for p in sorted(textio.glob_in(ctx.run_dir, "11_PROPOSAL", "sections", "*.md")))
+    """PROPOSAL.md (or the section drafts before it exists), then ONE-PAGER.md when it exists: the fixer may reprint the
+    one-pager only if it can see it (EXEC-ONEPAGER writes the one-pager, so it gets the sections alone). For another
+    vendor, Appendix E keeps only the A2 terms FACTS would keep (privacy.filter_sections_all), the one place PROPOSAL.md
+    text reaches a prompt."""
+    text = textio.normalize_newlines(ctx.read("11_PROPOSAL/PROPOSAL.md") or "\n\n".join(
+        textio.read_text(p) for p in sorted(textio.glob_in(ctx.run_dir, "11_PROPOSAL", "sections", "*.md"))))
+    one = ctx.read("11_PROPOSAL/ONE-PAGER.md")
+    if one.strip() and (jc or {}).get("template") != "EXEC-ONEPAGER":
+        from .render import ONE_PAGER_STATUS_RX
+        one = "\n".join(ln for ln in textio.normalize_newlines(one).split("\n") if not ONE_PAGER_STATUS_RX.match(ln))
+        # marked after stripping, so a stripped line cannot become a marker line again
+        text = "%s\n\n%s\n%s\n" % (privacy_mod.mark_free(text.rstrip()), privacy_mod.ONE_PAGER_MARK,
+                                   privacy_mod.mark_free(one.strip()))
+    else:
+        text = privacy_mod.mark_free(text)
     if privacy_mod.needs_code_strip(ctx.state, _fam(jc) or ctx.host_family):
-        text = privacy_mod.filter_glossary(text)
+        text = privacy_mod.filter_sections_all(text)  # as refilter_prompt filters the block
     return text
 
 

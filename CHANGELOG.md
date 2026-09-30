@@ -2,12 +2,16 @@
 
 All notable changes to ultimate-brainstorm are listed here, newest first.
 
-## 2.1.0 - 2026-09-26
+## 2.1.0 - 2026-09-30
 
 Reliability, fairness and privacy release. A run stays consistent when several sessions touch it, the rankings rest
 on sounder statistics, repository code no longer reaches other vendors, and the install is pinned and verifiable.
 One breaking change: G14 now publishes each run into its own `docs/<run>/` folder (see Publishing). A gate reply that
 is not in the card's own words is now read back, and acts only after your `yes` (see Validation and parsing).
+
+Acceptance override: released at the owner's request before the live acceptance run of docs/ACCEPTANCE.md. Every
+change passes the offline suites on Linux, macOS and Windows (Python 3.9, 3.12 and 3.14); the checks not yet verified
+live are listed at the end of these notes.
 
 ### Concurrency and run state
 
@@ -862,6 +866,25 @@ is not in the card's own words is now read back, and acts only after your `yes` 
   breaks took 9 to 40 s), of spaces (`comma` and `period` said aloud; a G4 reason; a G0 `topic:` line) and of dashes
   (`Legal says no`).
 
+### Proposal fix passes
+
+- The proposal fix (13.6) sees ONE-PAGER.md after the sections, and reprints it in full when a change alters a figure,
+  a date, a milestone or the ask it states. Before, a fix that moved the ask in section 1 left the one-pager with the
+  old figures, because the one-pager's text was not in the fix prompt.
+- New lint rule P11 (warn): the one-pager states every money figure of section 1, and every money figure or ISO date
+  in the one-pager still appears in sections 1-13. Amounts are compared as exact numbers (currency, thousands
+  separators and `k`, `M`, `MM`, `B` magnitudes normalized, so `$9k-$27k` equals `9,000-27,000 USD` and
+  `9,000 USD to 27,000 USD`). The basis of an `[ESTIMATE: range; basis]` tag is not a headline figure, and a date
+  after an amount (`$800 - 2026-10-01`) is not a range.
+- For another vendor, the one-pager in the proposal prompts is filtered apart from the proposal, so the glossary
+  filter of an Appendix E that runs to the end of the proposal no longer drops the one-pager from the prompt.
+- A second fix pass (13.6b, then the assembly 13.4c) runs once when a lint FAIL or a P11 item is left after 13.6 and
+  G13 has not been shown yet. A run that reached sign-off under an older kit is never re-fixed, `redo 13.7` included.
+  `ub plan` counts the pass as an optional call (standard 55-74 calls).
+- The G13 card lists the lint FAILs and P11 items still open (the first 8, then a count pointing to lint.md) and the
+  `changes: fix the lint items` reply that runs another fix round while change rounds are left; `approve` signs off
+  with them open. A `changes:` round runs both fix passes.
+
 ### Publishing (breaking: copies go to `docs/<run>/`)
 
 - G14 copies each approved item into the run's own folder and keeps the run's layout: `docs/<run>/10_ARCHITECTURE/`
@@ -1008,6 +1031,10 @@ is not in the card's own words is now read back, and acts only after your `yes` 
 - Failure-injection suite (`tests/e2e/test_wp8_failure_injection.py`) covering every vector of the architecture
   audit's section 6, and guard tests (`tests/unit/test_wp8_guards.py`) that kill the mutants the other suites let
   survive.
+- `tests/unit/test_proposal_fix.py`: the fix prompt carries ONE-PAGER.md, 13.6b runs only on a lint FAIL or P11
+  item left after 13.6, and a stub run whose fix moves the ask in section 1 gets the one-pager back in line.
+- CI gives each test job 75 minutes and each suite 40 minutes: the Windows jobs took up to 45 minutes, the old
+  job limit, and the unit suite up to 1344 of its 1500 seconds.
 - `tests/static/test_wp9b_docs_sync.py` keeps the documented call, time and token figures equal to `ub plan` and
   requires a `docs/ACCEPTANCE.md` row with a live check for every `[U-n]` tag in the code.
 - Regression tests for the follow-up fixes of the audit's verification rounds (`tests/unit/test_e1_*.py` to

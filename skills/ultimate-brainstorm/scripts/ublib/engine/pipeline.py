@@ -220,7 +220,7 @@ def current_step(ctx, steps):
 # ================================================================ simulation (`ub plan`, ETA, golden sequences)
 
 DEFAULT_SIM = {"homogenized": True, "survivors": 7, "k4": False, "footprint": False, "synthesis_stop": False,
-               "round2": False, "context_proposed": False, "seeds_given": True}
+               "round2": False, "context_proposed": False, "seeds_given": True, "proposal_lint_open": True}
 
 
 def simulate(ctx, remaining_only=False, facts=None, with_gates=False):
@@ -757,6 +757,9 @@ def supersede_from(ctx, steps, sid, stamp=None, log=None):
     itself runs again (a redo from 5.3c keeps 5.3, every round's ideas and the count of the last round, which its
     5.3m then does not count again; a round an older kit counted has no counters.gap_counted, so a done 5.3m's round
     is marked counted here)."""
+    # settle first: a step a newer kit added before the run's position is skipped while its `when` still sees the old
+    # state (13.6b needs G13 pending; `redo 13.7` on a run signed off under an older kit must not unlock it)
+    current_step(ctx, steps)
     idx = index_of(steps, sid)
     ids = [s["id"] for s in steps[idx:]]
     gap = step_ref("gap_loop")

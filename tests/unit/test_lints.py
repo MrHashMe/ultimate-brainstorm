@@ -252,7 +252,7 @@ class ProposalLintTests(LintCase):
     def test_good_passes(self):
         res = self.prop()
         self.assertEqual(res["status"], "pass", res["items"])
-        self.assertEqual(len(res["rules"]), 10)
+        self.assertEqual(len(res["rules"]), 11)
         self.assertTrue(os.path.exists(self.p("11_PROPOSAL/lint.md")))
 
     def test_p1_missing_and_order(self):
@@ -359,6 +359,56 @@ class ProposalLintTests(LintCase):
         self.assertOnly(res, "P10", "warn")
         self.assertIn("$2,900", res["items"][0]["message"])
 
+    def test_p11_section_1_figure_missing_from_the_one_pager(self):
+        # a fix moved the ask in section 1; the one-pager kept the old cap
+        self.sub("11_PROPOSAL/PROPOSAL.md", "We are not building payroll",
+                 "Approve Milestone 0 at [ESTIMATE: 9,000-27,000 USD; basis: 12 builder days at $600-$1,200 a day]. "
+                 "We are not building payroll")
+        self.sub("11_PROPOSAL/ONE-PAGER.md", "Two developers for ten weeks.", "Two developers; a $100 cap.")
+        self.sub("11_PROPOSAL/PROPOSAL.md", "for two weeks;", "for two weeks with a $100 cap;")
+        res = self.prop()
+        self.assertOnly(res, "P11", "warn")
+        self.assertEqual(res["items"][0]["file"], "ONE-PAGER.md")
+        self.assertIn("section 1 states 9,000-27,000 USD; the one-pager does not", res["items"][0]["message"])
+        self.assertNotIn("$600", res["items"][0]["message"])  # the basis of an estimate is not a headline figure
+        # the same figure in another notation counts
+        self.sub("11_PROPOSAL/ONE-PAGER.md", "Two developers; a $100 cap.",
+                 "Two developers; a $100 cap; Milestone 0 costs $9k-$27k.")
+        self.assertEqual(self.prop()["status"], "pass", self.prop()["items"])
+
+    def test_p11_one_pager_figure_or_date_no_longer_in_the_proposal(self):
+        self.sub("11_PROPOSAL/ONE-PAGER.md", "About $420 a month", "About $380 a month")
+        res = self.prop()
+        self.assertOnly(res, "P11", "warn")
+        self.assertIn("the one-pager states $380; sections 1-13 do not", res["items"][0]["message"])
+        self.setUp()
+        self.sub("11_PROPOSAL/ONE-PAGER.md", "Milestone 0 probe, then", "Milestone 0 probe from 2026-09-28 (verdict "
+                 "2026-10-09), then a pilot in 2026-11,")
+        res = self.prop()
+        self.assertOnly(res, "P11", "warn")
+        self.assertIn("2026-09-28, 2026-10-09, 2026-11", res["items"][0]["message"])
+        self.sub("11_PROPOSAL/PROPOSAL.md", "for two weeks;", "from 2026-09-28 to 2026-10-09;")
+        self.sub("11_PROPOSAL/PROPOSAL.md", "pilot on three wards.", "pilot on three wards from 2026-11-16.")
+        self.assertEqual(self.prop()["status"], "pass", self.prop()["items"])  # a month matches a date in it
+
+    def test_p11_ignores_the_status_stamp_fences_and_appendices(self):
+        self.sub("11_PROPOSAL/ONE-PAGER.md", "# One-pager: shift swap board\n", "# One-pager: shift swap board\n"
+                 "Status: DRAFT | 2026-09-25 | Run: 2026-09-23-lint\n")
+        self.sub("11_PROPOSAL/ONE-PAGER.md", "  web[Web client]", "  web[Web client $999]")
+        self.assertEqual(self.prop()["status"], "pass", self.prop()["items"])
+        self.sub("11_PROPOSAL/ONE-PAGER.md", "About $420 a month", "About $420 a month, $55 for SMS")
+        self.sub("11_PROPOSAL/PROPOSAL.md", "- S-002 Shift swap tools", "- S-002 Shift swap tools ($55 a month)")
+        self.assertOnly(self.prop(), "P11", "warn")  # sections 1-13 count; the appendices do not
+
+    def test_p11_lite_checks_section_1_only(self):
+        self.sub("11_PROPOSAL/ONE-PAGER.md", "About $420 a month", "About $380 a month")
+        self.assertNotIn("P11", self.ids(self.prop(lite=True)))  # no budget section to compare with
+        self.sub("11_PROPOSAL/PROPOSAL.md", "We are not building payroll", "The ask is 5,000 EUR. We are not "
+                 "building payroll")
+        res = self.prop(lite=True)
+        self.assertEqual(self.ids(res), ["P11"])
+        self.assertIn("section 1 states 5,000 EUR", res["items"][0]["message"])
+
     def test_missing_proposal(self):
         self.rm("11_PROPOSAL/PROPOSAL.md")
         res = self.prop()
@@ -403,6 +453,56 @@ class HelperTests(unittest.TestCase):
         self.assertIn(("assumption", "Nurses read SMS within ten minutes."), got)
         self.assertIn(("assumption", "Most swaps are at night"), got)
         self.assertIn(("estimate", "ESTIMATE: 10-20; one ward"), got)
+
+    def test_money_figures_and_dates(self):
+        keys = [k for k, _s in lints._money_figures(
+            "A $100 cap, 100 USD, USD 100, 0-6,600 USD, $3,000 to $6,000, 1,200-4,800 USD per month, EUR 5k, "
+            "costs $420, rising; 12-14 builder days, 2026-09-28, ADR-0003 and S-146.\n```\n$999\n```\n")]
+        self.assertEqual(keys, ["100", "100", "100", "0-6600", "3000-6000", "1200-4800", "5000", "420"])
+        self.assertEqual(lints._money_figures("costs $420, rising")[0][1], "$420")
+        # magnitudes are applied, so short and long notations of one amount agree
+        for short, long_ in (("$9k-$27k", "9,000-27,000 USD"), ("$9-27k", "$9,000 to $27,000"), ("$1.2M", "$1.2 million"),
+                             ("$0-$6.6k", "0-6,600 USD"), ("$5bn", "USD 5,000,000,000"), ("$5B", "5 billion USD")):
+            self.assertEqual(lints._money_figures(short)[0][0], lints._money_figures(long_)[0][0], (short, long_))
+        self.assertNotEqual(lints._money_figures("$5bn")[0][0], lints._money_figures("$5")[0][0])
+        self.assertEqual(lints._money_figures("$1.2 million")[0][1], "$1.2 million")
+        # the M of a milestone id is not a magnitude
+        self.assertEqual(lints._money_figures("Cash: $6,600 M0, then M1"), [("6600", "$6,600")])
+        # a range borrows a magnitude only when it stays in order; a smaller bare number after an amount is no range
+        for a, b in (("$500-$2k", "$500-$2,000"), ("$900-1.2k", "$900-$1,200"), ("$2MM", "$2M"),
+                     ("6 600 EUR", "EUR 6,600"), ("CHF 6'600", "6,600 CHF")):
+            self.assertEqual(lints._money_figures(a)[0][0], lints._money_figures(b)[0][0], (a, b))
+        self.assertEqual(lints._money_figures("Milestone 0: $6,600 - 2 builders"), [("6600", "$6,600")])
+        # a second end may repeat the currency; the year of a date after an amount is no second end
+        for other in ("9,000 USD to 27,000 USD", "USD 9,000-USD 27,000", "EUR 9,000-EUR 27,000", "GBP 9k to GBP 27k",
+                      "9k € - 27k €"):
+            self.assertEqual(lints._money_figures(other), [("9000-27000", other)], other)
+        for dated in ("$800 - 2026-10-01", "$800 – 2026-10", "800 USD to 2026-10-15"):
+            self.assertEqual(lints._money_figures(dated)[0][0], "800", dated)
+        # a range stays on one line, and a lower second end with its own currency is a figure of its own
+        self.assertEqual(lints._money_figures("- 100 USD\n- 600 USD\n- USD 9,000\n- USD 27,000\n- 1,200 €\n- 800 €"),
+                         [("100", "100 USD"), ("600", "600 USD"), ("9000", "USD 9,000"), ("27000", "USD 27,000"),
+                          ("1200", "1,200 €"), ("800", "800 €")])
+        self.assertEqual(lints._money_figures("from 1,200 USD to 300 USD, $900 to $50"),
+                         [("1200", "1,200 USD"), ("300", "300 USD"), ("900", "$900"), ("50", "$50")])
+        # exact values: sub-cent prices stay apart
+        self.assertNotEqual(lints._money_figures("$0.004 a call")[0][0], lints._money_figures("$0.0003 a call")[0][0])
+        self.assertEqual(lints._money_figures("$1,000.50")[0][0], "1000.5")
+
+    def test_basis_stripping_is_linear(self):
+        import time
+        start = time.time()
+        for unit in ("; basis: x", "[a; basis: x"):
+            lints._without_basis(unit * 100000)  # the first version needed minutes for this
+        self.assertLess(time.time() - start, 5)
+        self.assertEqual(lints._dates("M0 from 2026-09-28 to 2026-10-09; M1 2027-03; run 2026-09-24-name; 2026-13"),
+                         ["2026-09-28", "2026-10-09", "2027-03"])
+        self.assertEqual(lints._without_basis("[ESTIMATE: 0-6,600 USD; basis: host 3,000-6,000 USD]"),
+                         "[ESTIMATE: 0-6,600 USD]")
+        # the prompts' form: [ESTIMATE: range; basis], the basis without a label
+        self.assertEqual(lints._without_basis("[ESTIMATE: 9,000-27,000 USD; 12 builder days at $600-$1,200 a day]"),
+                         "[ESTIMATE: 9,000-27,000 USD]")
+        self.assertEqual(lints._without_basis("[S-004; $600 a day]"), "[S-004; $600 a day]")
 
     def test_norm_assumption(self):
         self.assertEqual(lints.norm_assumption(" A  | b. "), "a / b")

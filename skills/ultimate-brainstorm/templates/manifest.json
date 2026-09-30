@@ -1071,7 +1071,8 @@
     ],
     "status_trailer": true
    },
-   "split_root": "11_PROPOSAL"
+   "split_root": "11_PROPOSAL",
+   "notes": "13.6, and 13.6b when lint FAILs or P11 one-pager drift remain; ONE-PAGER.md is checked only when printed"
   }
  },
  "host": [
@@ -3026,7 +3027,7 @@
   },
   "SECTIONS_ALL": {
    "standard": true,
-   "desc": "the assembled PROPOSAL.md sections (and ONE-PAGER.md when it exists)",
+   "desc": "the assembled PROPOSAL.md sections, then ONE-PAGER.md when it exists (not for EXEC-ONEPAGER, which writes it)",
    "used_in": [
     "EXEC-ONEPAGER",
     "PRFAQ",

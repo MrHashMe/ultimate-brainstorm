@@ -130,8 +130,8 @@ the words after `run` as the topic; for text with quotes or `$`, put it in a fil
 
 Useful words to put before your topic:
 
-- `quick <topic>` (about 16 model calls and 30-80 minutes of model work) or `deep <topic>` (about 73-193 calls and
-  2-5 hours of model work, plus longer rounds with you); the default is `standard` (about 55-73 calls and 1.5-3.5
+- `quick <topic>` (about 16 model calls and 30-80 minutes of model work) or `deep <topic>` (about 73-194 calls and
+  2-5 hours of model work, plus longer rounds with you); the default is `standard` (about 55-74 calls and 1.5-3.5
   hours of model work, mostly unattended). These are `ub plan` estimates for three families; the first card shows the
   estimate for your setup, and your own answers add their time on top
 - `proposal <my idea in one sentence>`: you already have the idea; it gets checked, red-teamed, designed and written up

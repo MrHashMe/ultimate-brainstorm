@@ -173,11 +173,11 @@ The same works for `KIMI_API_KEY`, `KIMI_CODE_API_KEY`, `ZAI_PAYG_API_KEY`, `OPE
 
 ## Costs
 
-With three families (claude, gpt, kimi) a standard run makes about 55-73 model calls and uses about 0.6-1.8 million
+With three families (claude, gpt, kimi) a standard run makes about 55-74 model calls and uses about 0.6-1.9 million
 tokens in total, spread over the families you have set up (quick: about 16 calls and 0.2-0.5 million tokens; deep:
-73-193 calls and 0.8-4.2 million; proposal: 46-48 calls and 0.5-1.3 million). These are the kit's own estimates
+73-194 calls and 0.8-4.3 million; proposal: 46-49 calls and 0.5-1.4 million). These are the kit's own estimates
 (`ub plan --mode <mode> --families claude,gpt,kimi --json`, kit 2.1.0); four families change them only a little
-(standard 56-74 calls, deep 78-226). Most of it counts against your existing plans (Claude, ChatGPT, Kimi, GLM Coding
+(standard 56-75 calls, deep 78-227). Most of it counts against your existing plans (Claude, ChatGPT, Kimi, GLM Coding
 Plan). The first question of every run shows the estimate for your setup. Each run has a budget of backend requests
 (quick 60, standard 180, deep 600, proposal 90; a retry or a repair call is a request too): the run asks before a call
 could go over it, and `ub budget "<run>" --max-calls N` raises it. The kit shows dollar amounts only if you add your

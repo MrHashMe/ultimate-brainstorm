@@ -5148,6 +5148,7 @@ def _v_g13(ctx):
     lint = ctx.read_json("11_PROPOSAL/lint.json", {}) or {}
     alint = ctx.read_json("10_ARCHITECTURE/lint.json", {}) or {}
     lines.append("Lint: proposal %s, architecture %s" % (lint.get("status", "?"), alint.get("status", "?")))
+    lines += g13_lint_lines(ctx)
     oq = ctx.read("11_PROPOSAL/open-questions.md")
     lines.append("Open questions: %d (11_PROPOSAL/open-questions.md)" % len(
         [ln for ln in oq.split("\n") if ln.startswith("| Q-")]))
@@ -5174,6 +5175,7 @@ def redo_plan(ctx, sid):
     from . import pipeline, progress
     shadow = st.Ctx(ctx.run_dir, copy.deepcopy(ctx.state), ctx.deps, sim=dict(pipeline.DEFAULT_SIM))
     steps = pipeline.load_steps()
+    pipeline.current_step(shadow, steps)  # the same settling as supersede_from, so the preview counts what will run
     for s in steps[pipeline.index_of(steps, sid):]:
         st.set_step(shadow.state, s["id"], "pending")
     return progress.plan(shadow, pipeline.simulate(shadow, remaining_only=True))
@@ -5192,6 +5194,29 @@ def _redo_cost(ctx):
             for what, sid in todo)
     except Exception:  # the card never fails over its cost line
         return ""
+
+
+G13_LINT_SHOWN = 8
+
+
+def g13_lint_lines(ctx):
+    """The proposal lint items the fix passes left (every FAIL, and one-pager drift), one line each, then how to run
+    another fix round. Approving stays the user's call."""
+    items = registry.proposal_lint_open(ctx)
+    if not items:
+        return []
+    lines = ["Lint %s %s, %s: %s" % (registry.clean(i.get("id")), str(i.get("severity") or "").upper(),
+                                     registry.clean(i.get("file")) or "-", registry.clean(i.get("message")))
+             for i in items[:G13_LINT_SHOWN]]
+    if len(items) > G13_LINT_SHOWN:
+        lines.append("... and %d more in 11_PROPOSAL/lint.md" % (len(items) - G13_LINT_SHOWN))
+    left = 2 - int((ctx.state.get("counters") or {}).get("g13_loops", 0))
+    if left > 0:
+        lines.append("To fix these first, reply `changes: fix the lint items` (a fix round of up to 2 calls; %d of 2 "
+                     "change rounds left). `approve` signs off with them open." % left)
+    else:
+        lines.append("No change rounds are left: `approve` signs off with these items open.")
+    return lines
 
 
 def _v_g14(ctx):

@@ -105,9 +105,9 @@ first card of every run shows the same estimate for the families you actually ha
 | Mode | Replies (guided) | Model calls, 3 families (4) | Model time | Tokens | Contents |
 |---|---|---|---|---|---|
 | quick | 4-5 | 16 (16) | 33-77 min | 0.22-0.49M | brief + 5 ideas + 3 criteria, one generation pass on 2 families, a blind score by both of them (and by a third family when you have one), both-order judging by one other family, gut pick (hands-on only), decision, quick probe, lite architecture and proposal; "Novelty NOT checked" |
-| standard | 6-7 | 55-73 (56-74) | 87-201 min, mostly unattended | 0.65-1.84M (0.67-1.88M) | Stages 0-14 in full |
-| deep | 6-9 | 73-193 (78-226) | 125-288 min (131-301) | 0.82-4.23M (0.88-4.91M) | standard plus the deep extras of sections 4 and 7, 4 architecture candidates, 4 review lenses, PR/FAQ |
-| proposal | 5-6 | 46-48 (47-49) | 72-166 min | 0.55-1.28M (0.57-1.32M) | your idea as the primary, 2 contrast variants, checks, tournament, red-team, decision (default: your idea), probe, Stages 12-14 |
+| standard | 6-7 | 55-74 (56-75) | 92-212 min, mostly unattended | 0.65-1.91M (0.67-1.94M) | Stages 0-14 in full |
+| deep | 6-9 | 73-194 (78-227) | 130-299 min (136-312) | 0.82-4.30M (0.88-4.98M) | standard plus the deep extras of sections 4 and 7, 4 architecture candidates, 4 review lenses, PR/FAQ |
+| proposal | 5-6 | 46-49 (47-50) | 77-176 min | 0.55-1.35M (0.57-1.39M) | your idea as the primary, 2 contrast variants, checks, tournament, red-team, decision (default: your idea), probe, Stages 12-14 |
 
 Model time is the plan's estimate for the model calls alone (at most 4 run at once); your replies, interactive skills
 such as grilling or ce-ideate, and the probe come on top. A call that succeeds the first time is one backend request.
@@ -185,9 +185,9 @@ human decides.
 | Mode | Model calls, time and tokens (`ub plan`, 3 families) | What changes |
 |---|---|---|
 | quick | 16 calls, about 30-80 minutes of model work, 0.2-0.5M tokens | 5 human ideas and 3 criteria, one generation pass on 2 families, a blind score by both (and a third family), other-family both-order check, human pick plus risk test, then a lite architecture and proposal |
-| standard | 55-73 calls, about 1.5-3.5 hours of model work (mostly unattended; about 6-7 replies), 0.6-1.8M tokens split across the families | the 14 stages above |
-| deep | 73-193 calls, about 2-5 hours of model work, 0.8-4.2M tokens | adds a facilitated human round, more strategies, per-pair judging, forging, a 10-day build simulation, 4 architecture candidates and a PR/FAQ |
-| proposal | 46-48 calls, about 1.2-2.8 hours of model work, 0.5-1.3M tokens | starts from your own idea: contrast variants, checks, red-team, decision, probe, then Stages 12-14 |
+| standard | 55-74 calls, about 1.5-3.5 hours of model work (mostly unattended; about 6-7 replies), 0.6-1.9M tokens split across the families | the 14 stages above |
+| deep | 73-194 calls, about 2-5 hours of model work, 0.8-4.3M tokens | adds a facilitated human round, more strategies, per-pair judging, forging, a 10-day build simulation, 4 architecture candidates and a PR/FAQ |
+| proposal | 46-49 calls, about 1.3-2.9 hours of model work, 0.5-1.4M tokens | starts from your own idea: contrast variants, checks, red-team, decision, probe, then Stages 12-14 |
 
 ### The rules the pipeline never breaks
 
@@ -1012,7 +1012,9 @@ The time you spend answering and the host's interactive skills (grilling, ce-ide
   appendices A-F (ADR index, assumptions index, candidate comparison, idea selection record with the audits, glossary,
   sources) and runs `bs.py assumptions` and `bs.py lint-proposal`. Rubric judges from other families score 7 criteria
   and list must-fix items; a red-team from a non-drafter family attacks the claims; one fix pass answers every item as
-  ADDRESSED, ACCEPTED-RISK (moved to the risks section) or REJECTED with a reason. `ub render` builds the single-file
+  ADDRESSED, ACCEPTED-RISK (moved to the risks section) or REJECTED with a reason, and keeps `ONE-PAGER.md` in line with
+  the sections. When a lint FAIL, or a figure or date that differs between the one-pager and the proposal (P11), is
+  still left, a second fix pass runs; whatever remains is listed on the G13 card. `ub render` builds the single-file
   `index.html` pack (table of contents, diagrams, ADR cards, print styles).
 - Rules in every proposal prompt: use only facts from the pack and cite them `[S-###]`; every unsourced number, market
   or competitor claim carries `[ASSUMPTION: ...]` or `[ESTIMATE: range; basis]`; never invent customers, quotes, metrics

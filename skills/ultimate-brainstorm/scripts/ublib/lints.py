@@ -14,6 +14,7 @@ parse_table, fence_mask, mermaid_blocks.
 
 import os
 import re
+from decimal import Decimal
 
 from . import textio
 
@@ -31,7 +32,7 @@ ARCH_REQUIRED = (
     ("chosen/cost-model.md", False), ("chosen/stack.md", True), ("chosen/deferred.md", False), ("risks.md", True),
 )
 ARCH_RULES = ("A1", "A2", "A3", "A4", "A5", "A6", "A7", "A8", "A9")
-PROPOSAL_RULES = ("P1", "P2", "P3", "P4", "P5", "P6", "P7", "P8", "P9", "P10")
+PROPOSAL_RULES = ("P1", "P2", "P3", "P4", "P5", "P6", "P7", "P8", "P9", "P10", "P11")
 FRAME_RULES = ("F1", "F2", "F3", "F4")
 
 # P1: (key, heading prefixes accepted, required in --lite)
@@ -680,6 +681,121 @@ def _norm_money(s):
     return re.sub(r"[\s,]", "", s).lower()
 
 
+# P11: money amounts (with a currency sign or code; a range counts as one figure) and ISO dates (YYYY-MM or YYYY-MM-DD)
+_MONEY_SEP = "[, '\u2019\u00a0\u2009\u202f]"  # thousands separators: comma, space, apostrophes, no-break and thin spaces
+_MONEY_NUM = r"(?:\d{1,3}(?:%s\d{3}(?!\d))+|\d+)(?:\.\d+)?" % _MONEY_SEP
+# a magnitude: a word (after an optional space) or letters touching the number; never the "M" of "M0"
+_MONEY_MAG = r"(?:\s?(?:[Tt]housand|[Mm]illion|[Bb]illion|[Mm]n|[Bb]n)|MM|mm|[kKmMbB])(?![A-Za-z0-9])"
+_MONEY_AMT = r"%s(?:%s)?" % (_MONEY_NUM, _MONEY_MAG)
+_MONEY_SYM = r"(?:US\$|\$|\u20ac|\u00a3)"
+_MONEY_CODE = r"(?:USD|EUR|GBP|CHF)"
+# a range stays on one line (two list items are two figures); its second end may repeat the currency ("USD 9,000-USD
+# 27,000", "9,000 USD to 27,000 USD") and is never the year of an ISO date ("$800 - 2026-10-01")
+_MONEY_RANGE = r"[^\S\n]*(?:-|\u2013|to)[^\S\n]*(?!\d{4}-(?:0[1-9]|1[0-2])\b)"
+_MONEY_SFX = r"[^\S\n]?(?:%s\b|\u20ac)" % _MONEY_CODE
+_MONEY_SFX_RX = re.compile(_MONEY_SFX)
+_MONEY_RX = re.compile(
+    r"(?:{sym}\s?|\b{code}\s)(?P<a>{amt}(?:{rng}(?:{sym}[^\S\n]?|{code}[^\S\n])?{amt})?)"
+    r"|(?<![\w.,])(?P<b>{amt}(?:{sfx})?(?:{rng}{amt})?){sfx}".format(
+        sym=_MONEY_SYM, code=_MONEY_CODE, amt=_MONEY_AMT, rng=_MONEY_RANGE, sfx=_MONEY_SFX))
+_MONEY_PART = re.compile(r"(%s)(%s)?" % (_MONEY_NUM, _MONEY_MAG))
+_MONEY_EXP = {"k": 3, "thousand": 3, "m": 6, "mm": 6, "mn": 6, "million": 6, "b": 9, "bn": 9, "billion": 9}
+_DATE_RX = re.compile(r"(?<![\w-])(\d{4}-(?:0[1-9]|1[0-2])(?:-(?:0[1-9]|[12]\d|3[01]))?)(?![\w-])")
+_ONE_PAGER_STAMP = re.compile(r"(?m)^Status: .* \| Run: .*$")  # the engine's status stamp is not content
+_BASIS_RX = re.compile(r";\s*basis\s*:", re.I)
+
+
+def _money_value(num, mag):
+    """The exact amount (Decimal: no float rounding, so sub-cent prices stay apart)."""
+    return Decimal(re.sub(_MONEY_SEP, "", num)).scaleb(_MONEY_EXP.get((mag or "").strip().lower(), 0))
+
+
+def _money_figures(text):
+    """[(key, shown)] for every money amount or range outside code fences. `key` holds the value (or both ends of a
+    range) as plain numbers, so "$100" and "100 USD", or "$9k-$27k" and "9,000-27,000 USD", match. The first end of a
+    range takes the second end's magnitude when that keeps the range in order ("$9-27k", but not "$500-$2k"); a second
+    end below the first is not part of a range, and is read again on its own: a bare number is no amount ("$6,600 - 2
+    builders"), one with its own currency is ("from 1,200 USD to 300 USD")."""
+    out, text, pos = [], _unfenced(text), 0
+    while True:
+        m = _MONEY_RX.search(text, pos)
+        if not m:
+            return out
+        pos = m.end()
+        grp = "a" if m.group("a") else "b"
+        parts = list(_MONEY_PART.finditer(m.group(grp)))[:2]
+        ends = [[p.group(1), p.group(2)] for p in parts]
+        shown = m.group(0)
+        if len(ends) == 2:
+            lo, hi = ends
+            if not lo[1] and hi[1] and _money_value(lo[0], hi[1]) <= _money_value(*hi):
+                lo[1] = hi[1]
+            if _money_value(*hi) < _money_value(*lo):
+                ends = [lo]
+                pos = m.start(grp) + parts[0].end()
+                sfx = _MONEY_SFX_RX.match(text, pos)
+                pos = sfx.end() if sfx else pos
+                shown = text[m.start():pos]
+        out.append(("-".join(format(_money_value(*e).normalize(), "f") for e in ends), _norm_space(shown)))
+
+
+def _dates(text):
+    return _DATE_RX.findall(_unfenced(text))
+
+
+def _without_basis(text):
+    """Drop the basis of [ESTIMATE: range; basis] tags (everything after the first ';') and the '; basis: ...' part of
+    other tags: the figures a range was built from are not headline figures."""
+    def drop(m):
+        t = m.group(0)
+        b = t.find(";") if re.match(r"\[ESTIMATE\b", t, re.I) else -1
+        if b < 0:
+            s = _BASIS_RX.search(t)
+            b = s.start() if s else -1
+        return t[:b] + "]" if b >= 0 else t
+    # one pass over bracketed tags (no nesting): linear even on a long line of '; basis:' with no closing bracket
+    return re.sub(r"\[[^\[\]\n]*\]", drop, text)
+
+
+def _proposal_body(text):
+    """Sections 1-13 of PROPOSAL.md: no title block, no appendices."""
+    m = re.search(r"(?m)^## 1\.", text)
+    body = text[m.start():] if m else text
+    e = re.search(r"(?m)^## Appendix\b", body)
+    return body[:e.start()] if e else body
+
+
+def _listed(shown, limit=6):
+    seen = []
+    for s in shown:
+        if s not in seen:
+            seen.append(s)
+    more = len(seen) - limit
+    return ", ".join(seen[:limit]) + (" and %d more" % more if more > 0 else "")
+
+
+def _one_pager_drift(s1, one, text, lite=False):
+    """P11 messages: money figures in section 1 that the one-pager lacks, and money figures or dates in the one-pager
+    that sections 1-13 no longer state (a fix that changed the proposal but not the one-pager). The second check needs
+    the full proposal: a lite one has no roadmap or budget section for the one-pager's dates and costs."""
+    msgs = []
+    one = _ONE_PAGER_STAMP.sub("", one)
+    have = set(k for k, _s in _money_figures(one))
+    miss = [s for k, s in _money_figures(_without_basis(s1 or "")) if k not in have]
+    if miss:
+        msgs.append("section 1 states %s; the one-pager does not" % _listed(miss))
+    if lite:
+        return msgs
+    body = _proposal_body(text)
+    money = set(k for k, _s in _money_figures(body))
+    dates = set(_dates(body))
+    stale = [s for k, s in _money_figures(one) if k not in money]
+    stale += [d for d in _dates(one) if d not in dates and not any(x.startswith(d + "-") for x in dates)]
+    if stale:
+        msgs.append("the one-pager states %s; sections 1-13 do not" % _listed(stale))
+    return msgs
+
+
 def _open_question_problems(body):
     """P7: every open question (list item or table row) names an owner and a decide-by point.
 
@@ -729,7 +845,7 @@ def _open_question_problems(body):
 
 
 def lint_proposal(run_dir, lite=False):
-    """Rules P1-P10 over RUN/11_PROPOSAL. Writes lint.md and lint.json there."""
+    """Rules P1-P11 over RUN/11_PROPOSAL. Writes lint.md and lint.json there."""
     run_dir = os.path.abspath(os.fspath(run_dir))
     prop = os.path.join(run_dir, PROPOSAL_DIR)
     arch = os.path.join(run_dir, ARCH_DIR)
@@ -793,9 +909,9 @@ def lint_proposal(run_dir, lite=False):
         items.append(_item("P4", "fail", "PROPOSAL.md", "section 1 has %d words (max 300)" % word_count(s1)))
     if one is None:
         items.append(_item("P4", "fail", "ONE-PAGER.md", "file missing"))
-    elif word_count(re.sub(r"(?m)^Status: .* \| Run: .*$", "", one)) > 550:  # the engine's status stamp is not prose
+    elif word_count(_ONE_PAGER_STAMP.sub("", one)) > 550:
         items.append(_item("P4", "fail", "ONE-PAGER.md", "%d words (max 550)" % word_count(
-            re.sub(r"(?m)^Status: .* \| Run: .*$", "", one))))
+            _ONE_PAGER_STAMP.sub("", one))))
 
     # P5 Milestone 0 + kill criterion
     s8 = sec("8")
@@ -878,6 +994,11 @@ def lint_proposal(run_dir, lite=False):
             if miss:
                 items.append(_item("P10", "warn", "PROPOSAL.md", "section 10 figures not in chosen/cost-model.md: "
                                    + ", ".join(sorted(set(miss))[:5])))
+
+    # P11 the one-pager and the proposal state the same money figures and dates
+    if one and text:
+        for msg in _one_pager_drift(s1, one, text, lite=lite):
+            items.append(_item("P11", "warn", "ONE-PAGER.md", msg))
 
     result = {"status": _status(items), "items": items, "rules": list(PROPOSAL_RULES), "lite": bool(lite),
               "scope": PROPOSAL_DIR}
