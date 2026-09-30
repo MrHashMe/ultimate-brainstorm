@@ -672,9 +672,12 @@ class DriverLock(object):
                 self._owned = True
                 break
             if time.monotonic() >= deadline:
-                # replace the record in place, as announce does, and drive only when lock.json then names this process
+                # replace the record in place, and drive only when lock.json then names this process
                 self._since = self._since or textio.now_iso()
-                self._write()
+                try:
+                    textio.write_json_atomic(self.info_path, self._record())
+                except OSError:
+                    pass
                 if _int(self.holder().get("pid")) != os.getpid():
                     return {"pid": seen.get("pid"), "host": "%s; another program holds .ub/lock.json open"
                             % seen.get("host", "?"), "held_open": True}
@@ -700,14 +703,57 @@ class DriverLock(object):
                 "heartbeat_ts": time.time()}
 
     def _write(self):
-        """True when lock.json now holds this process's record."""
+        """Rewrite this process's record (announce, the beat); True when lock.json now holds it. Never over another
+        driver's record: a kit 2.0.3 driver knows nothing of this process's locks, so a record it wrote between a check
+        here and a replace would be replaced unseen. The record is moved aside instead, and the new one is created
+        exclusively (O_EXCL, as claim and a 2.0.3 driver create theirs) only when the record moved was this process's.
+        Any other record (a 2.0.3 takeover, or one still being written) is put back, and a record of this process that
+        went away (a 2.0.3 driver moved it aside to take it over) is not recreated: the lock is then lost (still_ours).
+        A 2.0.3 driver that arrives in the moment lock.json is moved aside takes the run, and this driver stops."""
         with self._writing:
+            if self.lost:
+                return False
+            aside = "%s.beat-%s" % (self.info_path, os.urandom(4).hex())
             try:
-                textio.write_json_atomic(self.info_path, self._record())
+                textio._replace_with_retry(self.info_path, aside)
+            except FileNotFoundError:
+                aside = None  # no record yet (announce before a claim), or this process's went away
             except OSError:
                 return False  # a reader holds the file: the next beat writes it
-            self._owned = True
-            return True
+            fd = None
+            try:
+                if aside is None:
+                    ours = not self._owned
+                else:
+                    prev = textio.read_json_or(aside)
+                    ours = isinstance(prev, dict) and _int(prev.get("pid")) == os.getpid()
+                if not ours:
+                    self.lost = True
+                    return False
+                fd = os.open(self.info_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY | getattr(os, "O_BINARY", 0), 0o644)
+                with os.fdopen(fd, "w", encoding="utf-8") as f:
+                    f.write(json.dumps(self._record(), ensure_ascii=True) + "\n")
+                self._owned = True
+                return True
+            except FileExistsError:
+                self.lost = True  # another driver created its record meanwhile: it stands
+                return False
+            except OSError:
+                return False  # the next beat writes it
+            finally:
+                if aside is not None:
+                    if fd is None:  # put the moved record back
+                        # never over a record created meanwhile (a rename never replaces on Windows)
+                        # ponytail: on a POSIX file system without hard links the moved record is lost here;
+                        # copy its bytes back with an O_EXCL create if such run folders matter
+                        try:
+                            (os.rename if os.name == "nt" else os.link)(aside, self.info_path)
+                        except OSError:
+                            pass
+                    try:
+                        os.remove(aside)
+                    except OSError:
+                        pass
 
     def _start_beat(self):
         if self._beat is None:
@@ -717,9 +763,9 @@ class DriverLock(object):
             self._beat = (thread, stop)
 
     def _beat_loop(self, stop):
-        while not stop.wait(LEGACY_BEAT_S):
-            if not self.still_ours():
-                return  # a 2.0.3 driver took over the record this process let go stale (it stalled): never overwrite
+        # stops once a 2.0.3 driver took over the record this process let go stale (it stalled): _write never
+        # replaces that record, and marks the lock lost
+        while not self.lost and not stop.wait(LEGACY_BEAT_S):
             self._write()
 
     def still_ours(self):
