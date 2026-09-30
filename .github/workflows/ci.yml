@@ -17,7 +17,7 @@ jobs:
   test:
     name: tests (${{ matrix.os }}, py ${{ matrix.python }})
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 45
+    timeout-minutes: 75
     permissions:
       contents: read
     strategy:
@@ -45,8 +45,9 @@ jobs:
           allow-prereleases: true
 
       - name: Run every suite
-        # --timeout bounds each suite (a silent hang is killed with its process tree); timeout-minutes bounds the job
-        run: python tools/ci.py all --timeout 1500
+        # --timeout bounds each suite (a silent hang is killed with its process tree); timeout-minutes bounds the job.
+        # Windows runners need the most: unit up to 1344 s, the whole job up to 45 min (2.1.0).
+        run: python tools/ci.py all --timeout 2400
 
   claude-plugin-validate:
     name: claude plugin validate (optional) [U-17]
