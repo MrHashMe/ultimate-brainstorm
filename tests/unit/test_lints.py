@@ -473,6 +473,18 @@ class HelperTests(unittest.TestCase):
                      ("6 600 EUR", "EUR 6,600"), ("CHF 6'600", "6,600 CHF")):
             self.assertEqual(lints._money_figures(a)[0][0], lints._money_figures(b)[0][0], (a, b))
         self.assertEqual(lints._money_figures("Milestone 0: $6,600 - 2 builders"), [("6600", "$6,600")])
+        # a second end may repeat the currency; the year of a date after an amount is no second end
+        for other in ("9,000 USD to 27,000 USD", "USD 9,000-USD 27,000", "EUR 9,000-EUR 27,000", "GBP 9k to GBP 27k",
+                      "9k € - 27k €"):
+            self.assertEqual(lints._money_figures(other), [("9000-27000", other)], other)
+        for dated in ("$800 - 2026-10-01", "$800 – 2026-10", "800 USD to 2026-10-15"):
+            self.assertEqual(lints._money_figures(dated)[0][0], "800", dated)
+        # a range stays on one line, and a lower second end with its own currency is a figure of its own
+        self.assertEqual(lints._money_figures("- 100 USD\n- 600 USD\n- USD 9,000\n- USD 27,000\n- 1,200 €\n- 800 €"),
+                         [("100", "100 USD"), ("600", "600 USD"), ("9000", "USD 9,000"), ("27000", "USD 27,000"),
+                          ("1200", "1,200 €"), ("800", "800 €")])
+        self.assertEqual(lints._money_figures("from 1,200 USD to 300 USD, $900 to $50"),
+                         [("1200", "1,200 USD"), ("300", "300 USD"), ("900", "$900"), ("50", "$50")])
         # exact values: sub-cent prices stay apart
         self.assertNotEqual(lints._money_figures("$0.004 a call")[0][0], lints._money_figures("$0.0003 a call")[0][0])
         self.assertEqual(lints._money_figures("$1,000.50")[0][0], "1000.5")
@@ -487,6 +499,10 @@ class HelperTests(unittest.TestCase):
                          ["2026-09-28", "2026-10-09", "2027-03"])
         self.assertEqual(lints._without_basis("[ESTIMATE: 0-6,600 USD; basis: host 3,000-6,000 USD]"),
                          "[ESTIMATE: 0-6,600 USD]")
+        # the prompts' form: [ESTIMATE: range; basis], the basis without a label
+        self.assertEqual(lints._without_basis("[ESTIMATE: 9,000-27,000 USD; 12 builder days at $600-$1,200 a day]"),
+                         "[ESTIMATE: 9,000-27,000 USD]")
+        self.assertEqual(lints._without_basis("[S-004; $600 a day]"), "[S-004; $600 a day]")
 
     def test_norm_assumption(self):
         self.assertEqual(lints.norm_assumption(" A  | b. "), "a / b")

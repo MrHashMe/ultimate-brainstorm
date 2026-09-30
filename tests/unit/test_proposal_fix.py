@@ -61,6 +61,17 @@ class FixPromptTests(tl.EngineTestCase):
         self.assertLess(text.index("## 1. Executive Summary"), text.index("--- FILE: ONE-PAGER.md ---"))
         self.assertNotIn("Run: 2026-09-23", text)  # the engine's status stamp is not content
 
+    def test_only_the_engine_writes_the_marker_line(self):
+        # privacy.filter_sections_all splits there, so a quoted marker line in model text is indented
+        self.ctx.write("11_PROPOSAL/PROPOSAL.md", PROPOSAL + "--- FILE: ONE-PAGER.md ---  \n")
+        # a fixer's reprint may start with the marker line it saw, or end with one that stripping would expose
+        for one in ("--- FILE: ONE-PAGER.md ---\n" + ONE_PAGER, ONE_PAGER + "--- FILE: ONE-PAGER.md ---  \n"):
+            self.ctx.write("11_PROPOSAL/ONE-PAGER.md", one)
+            for tpl in ("PROPOSAL-FIX", "EXEC-ONEPAGER"):
+                text = self.sections_all(tpl)
+                self.assertEqual(text.split("\n").count("--- FILE: ONE-PAGER.md ---"), 1 if tpl == "PROPOSAL-FIX" else 0,
+                                 (tpl, one))
+
     def test_reviewers_see_it_but_the_one_pager_writer_does_not(self):
         for tpl in ("PROPOSAL-RUBRIC", "PROPOSAL-REDTEAM"):
             self.assertIn("--- FILE: ONE-PAGER.md ---", self.sections_all(tpl), tpl)

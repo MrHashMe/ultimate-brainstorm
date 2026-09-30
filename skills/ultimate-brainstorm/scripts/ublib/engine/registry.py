@@ -2012,17 +2012,21 @@ def _ph_sources(ctx, jc):
 def _ph_sections(ctx, jc):
     """PROPOSAL.md (or the section drafts before it exists), then ONE-PAGER.md when it exists: the fixer may reprint the
     one-pager only if it can see it (EXEC-ONEPAGER writes the one-pager, so it gets the sections alone). For another
-    vendor, Appendix E keeps only the A2 terms FACTS would keep (privacy.filter_glossary), the one place PROPOSAL.md
+    vendor, Appendix E keeps only the A2 terms FACTS would keep (privacy.filter_sections_all), the one place PROPOSAL.md
     text reaches a prompt."""
-    text = ctx.read("11_PROPOSAL/PROPOSAL.md") or "\n\n".join(
-        textio.read_text(p) for p in sorted(textio.glob_in(ctx.run_dir, "11_PROPOSAL", "sections", "*.md")))
+    text = textio.normalize_newlines(ctx.read("11_PROPOSAL/PROPOSAL.md") or "\n\n".join(
+        textio.read_text(p) for p in sorted(textio.glob_in(ctx.run_dir, "11_PROPOSAL", "sections", "*.md"))))
     one = ctx.read("11_PROPOSAL/ONE-PAGER.md")
     if one.strip() and (jc or {}).get("template") != "EXEC-ONEPAGER":
         from .render import ONE_PAGER_STATUS_RX
         one = "\n".join(ln for ln in textio.normalize_newlines(one).split("\n") if not ONE_PAGER_STATUS_RX.match(ln))
-        text = text.rstrip() + "\n\n--- FILE: ONE-PAGER.md ---\n" + one.strip() + "\n"
+        # marked after stripping, so a stripped line cannot become a marker line again
+        text = "%s\n\n%s\n%s\n" % (privacy_mod.mark_free(text.rstrip()), privacy_mod.ONE_PAGER_MARK,
+                                   privacy_mod.mark_free(one.strip()))
+    else:
+        text = privacy_mod.mark_free(text)
     if privacy_mod.needs_code_strip(ctx.state, _fam(jc) or ctx.host_family):
-        text = privacy_mod.filter_glossary(text)  # the whole block, as refilter_prompt filters it
+        text = privacy_mod.filter_sections_all(text)  # as refilter_prompt filters the block
     return text
 
 

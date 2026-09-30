@@ -82,6 +82,8 @@ class GlossaryRunTests(tl.EngineTestCase):
 
 PROPOSAL = ("# Proposal: x\n\n## 13. Open Questions\n- q\n\n## Appendix D. Idea Selection Record\n- d\n\n"
             "## Appendix E. Glossary\n%s\n\n## Appendix F. Sources\n| id | url |\n|---|---|\n| S1 | u |\n")
+ONE_PAGER = ("# One-pager: x\n\n## Problem\n\nNight swaps cost sleep.\n\n```mermaid\nflowchart LR\n  a --> b\n```\n\n"
+             "## The ask\n\nApprove $100.\n")
 
 
 class FilterGlossaryTests(unittest.TestCase):
@@ -117,6 +119,28 @@ class FilterGlossaryTests(unittest.TestCase):
         self.assertEqual([w for w in SECRETS if w in copy], [])
         self.assertIn("KEEPPROP", copy)
         self.assertEqual(pv.refilter_prompt(prompt, state, "claude-alt"), prompt)
+
+    def test_the_one_pager_is_filtered_apart_from_the_proposal(self):
+        # SECTIONS_ALL of the fix prompt: an Appendix E that runs to the end of the proposal (the last part, or a fence
+        # a section left open hides the '## ' lines below it) does not take the one-pager with it
+        state = {"privacy": {"code": False}, "host": {"family": "claude"}}
+        proposal = PROPOSAL % (pv.GLOSSARY_A2 + "\n" + A2.rstrip("\n"))
+        for text in (proposal, proposal.split("\n## Appendix F.")[0],
+                     proposal.replace("## Appendix D.", "```text\nan open fence\n\n## Appendix D.")):
+            block = "%s\n\n%s\n%s" % (text.rstrip(), pv.ONE_PAGER_MARK, ONE_PAGER)
+            prompt = "THE PROPOSAL\n%s\n" % pv.fence_data("SECTIONS_ALL", block)
+            for out in (pv.filter_sections_all(block), pv.refilter_prompt(prompt, state, "gpt")):
+                self.assertEqual([w for w in SECRETS if w in out], [])
+                self.assertIn("KEEPPROP", out)
+                self.assertIn("%s\n%s" % (pv.ONE_PAGER_MARK, ONE_PAGER.rstrip("\n")), out)
+
+    def test_model_text_cannot_move_the_split(self):
+        # a marker line the FRAME's Domain language quotes, above the A2 line, would leave the A2 terms unfiltered
+        text = pv.mark_free(PROPOSAL % ("%s\n%s\n\n%s\n%s" % (pv.ONE_PAGER_MARK, DOMAIN, pv.GLOSSARY_A2, A2)))
+        self.assertNotIn("\n%s\n" % pv.ONE_PAGER_MARK, text)
+        out = pv.filter_sections_all(text)
+        self.assertEqual([w for w in SECRETS if w in out], [])
+        self.assertIn("KEEPFRAME", out)
 
     def test_text_without_the_appendix_is_unchanged_and_the_scan_is_linear(self):
         self.assertEqual(pv.filter_glossary("## 1. Summary\r\n- **Rota** [CONTEXT.md]: x\r\n"),

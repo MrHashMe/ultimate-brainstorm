@@ -869,7 +869,11 @@ is not in the card's own words is now read back, and acts only after your `yes` 
   old figures, because the one-pager's text was not in the fix prompt.
 - New lint rule P11 (warn): the one-pager states every money figure of section 1, and every money figure or ISO date
   in the one-pager still appears in sections 1-13. Amounts are compared as exact numbers (currency, thousands
-  separators and `k`, `M`, `MM`, `B` magnitudes normalized, so `$9k-$27k` equals `9,000-27,000 USD`).
+  separators and `k`, `M`, `MM`, `B` magnitudes normalized, so `$9k-$27k` equals `9,000-27,000 USD` and
+  `9,000 USD to 27,000 USD`). The basis of an `[ESTIMATE: range; basis]` tag is not a headline figure, and a date
+  after an amount (`$800 - 2026-10-01`) is not a range.
+- For another vendor, the one-pager in the proposal prompts is filtered apart from the proposal, so the glossary
+  filter of an Appendix E that runs to the end of the proposal no longer drops the one-pager from the prompt.
 - A second fix pass (13.6b, then the assembly 13.4c) runs once when a lint FAIL or a P11 item is left after 13.6 and
   G13 has not been shown yet. A run that reached sign-off under an older kit is never re-fixed, `redo 13.7` included.
   `ub plan` counts the pass as an optional call (standard 55-74 calls).

@@ -636,6 +636,26 @@ def filter_glossary(text):
     return "\n".join(lines) if found else text
 
 
+ONE_PAGER_MARK = "--- FILE: ONE-PAGER.md ---"  # SECTIONS_ALL: registry._ph_sections appends ONE-PAGER.md after this line
+_ONE_PAGER_MARK_RE = re.compile(r"(?m)^(?=%s$)" % re.escape(ONE_PAGER_MARK))
+
+
+def mark_free(text):
+    """`text` (LF) with every line equal to ONE_PAGER_MARK indented one space, so the engine's is the only one."""
+    return _ONE_PAGER_MARK_RE.sub(" ", text)
+
+
+def filter_sections_all(text):
+    """SECTIONS_ALL for another vendor: filter_glossary on the proposal and, on its own, on the ONE-PAGER.md after the
+    engine's marker line, so an Appendix E that runs to the end of the proposal (the last part, or a fence a section
+    left open hides the '## ' lines below it) cannot take the one-pager with it. No other line equals the marker
+    (mark_free), so model text cannot move the split."""
+    head, mark, tail = textio.normalize_newlines(text or "").rpartition("\n%s\n" % ONE_PAGER_MARK)
+    if not mark:
+        return filter_glossary(text)
+    return filter_glossary(head) + mark + filter_glossary(tail)
+
+
 # ---------------------------------------------------------------- untrusted text (DATA blocks)
 #
 # A value quoted from run files (model output, much of it written from web pages) goes into a prompt as
@@ -680,7 +700,7 @@ def refilter_prompt(prompt, state, family, run_dir=None):
     text = textio.normalize_newlines(prompt or "")
     if repo_labeled(state, run_dir) or not _DATA_BLOCK_RE.search(text):
         text = strip_code(text)
-    filters = {"FACTS": _facts_for_other_vendor, "SECTIONS_ALL": filter_glossary}
+    filters = {"FACTS": _facts_for_other_vendor, "SECTIONS_ALL": filter_sections_all}
 
     def refilter(m):
         fn = filters.get(m.group(1))

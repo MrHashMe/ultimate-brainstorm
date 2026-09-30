@@ -689,11 +689,15 @@ _MONEY_MAG = r"(?:\s?(?:[Tt]housand|[Mm]illion|[Bb]illion|[Mm]n|[Bb]n)|MM|mm|[kK
 _MONEY_AMT = r"%s(?:%s)?" % (_MONEY_NUM, _MONEY_MAG)
 _MONEY_SYM = r"(?:US\$|\$|\u20ac|\u00a3)"
 _MONEY_CODE = r"(?:USD|EUR|GBP|CHF)"
-_MONEY_RANGE = r"\s*(?:-|\u2013|to)\s*"
+# a range stays on one line (two list items are two figures); its second end may repeat the currency ("USD 9,000-USD
+# 27,000", "9,000 USD to 27,000 USD") and is never the year of an ISO date ("$800 - 2026-10-01")
+_MONEY_RANGE = r"[^\S\n]*(?:-|\u2013|to)[^\S\n]*(?!\d{4}-(?:0[1-9]|1[0-2])\b)"
+_MONEY_SFX = r"[^\S\n]?(?:%s\b|\u20ac)" % _MONEY_CODE
+_MONEY_SFX_RX = re.compile(_MONEY_SFX)
 _MONEY_RX = re.compile(
-    r"(?:{sym}\s?|\b{code}\s)(?P<a>{amt}(?:{rng}{sym}?{amt})?)"
-    r"|(?<![\w.,])(?P<b>{amt}(?:{rng}{amt})?)\s?(?:{code}\b|\u20ac)".format(
-        sym=_MONEY_SYM, code=_MONEY_CODE, amt=_MONEY_AMT, rng=_MONEY_RANGE))
+    r"(?:{sym}\s?|\b{code}\s)(?P<a>{amt}(?:{rng}(?:{sym}[^\S\n]?|{code}[^\S\n])?{amt})?)"
+    r"|(?<![\w.,])(?P<b>{amt}(?:{sfx})?(?:{rng}{amt})?){sfx}".format(
+        sym=_MONEY_SYM, code=_MONEY_CODE, amt=_MONEY_AMT, rng=_MONEY_RANGE, sfx=_MONEY_SFX))
 _MONEY_PART = re.compile(r"(%s)(%s)?" % (_MONEY_NUM, _MONEY_MAG))
 _MONEY_EXP = {"k": 3, "thousand": 3, "m": 6, "mm": 6, "mn": 6, "million": 6, "b": 9, "bn": 9, "billion": 9}
 _DATE_RX = re.compile(r"(?<![\w-])(\d{4}-(?:0[1-9]|1[0-2])(?:-(?:0[1-9]|[12]\d|3[01]))?)(?![\w-])")
@@ -710,9 +714,14 @@ def _money_figures(text):
     """[(key, shown)] for every money amount or range outside code fences. `key` holds the value (or both ends of a
     range) as plain numbers, so "$100" and "100 USD", or "$9k-$27k" and "9,000-27,000 USD", match. The first end of a
     range takes the second end's magnitude when that keeps the range in order ("$9-27k", but not "$500-$2k"); a second
-    end below the first is not part of a range ("$6,600 - 2 builders")."""
-    out = []
-    for m in _MONEY_RX.finditer(_unfenced(text)):
+    end below the first is not part of a range, and is read again on its own: a bare number is no amount ("$6,600 - 2
+    builders"), one with its own currency is ("from 1,200 USD to 300 USD")."""
+    out, text, pos = [], _unfenced(text), 0
+    while True:
+        m = _MONEY_RX.search(text, pos)
+        if not m:
+            return out
+        pos = m.end()
         grp = "a" if m.group("a") else "b"
         parts = list(_MONEY_PART.finditer(m.group(grp)))[:2]
         ends = [[p.group(1), p.group(2)] for p in parts]
@@ -723,9 +732,11 @@ def _money_figures(text):
                 lo[1] = hi[1]
             if _money_value(*hi) < _money_value(*lo):
                 ends = [lo]
-                shown = m.string[m.start():m.start(grp) + parts[0].end()]
+                pos = m.start(grp) + parts[0].end()
+                sfx = _MONEY_SFX_RX.match(text, pos)
+                pos = sfx.end() if sfx else pos
+                shown = text[m.start():pos]
         out.append(("-".join(format(_money_value(*e).normalize(), "f") for e in ends), _norm_space(shown)))
-    return out
 
 
 def _dates(text):
@@ -733,11 +744,15 @@ def _dates(text):
 
 
 def _without_basis(text):
-    """Drop the '; basis: ...' part of [ESTIMATE ...] tags: the figures a range was built from are not headline
-    figures."""
+    """Drop the basis of [ESTIMATE: range; basis] tags (everything after the first ';') and the '; basis: ...' part of
+    other tags: the figures a range was built from are not headline figures."""
     def drop(m):
-        b = _BASIS_RX.search(m.group(0))
-        return m.group(0)[:b.start()] + "]" if b else m.group(0)
+        t = m.group(0)
+        b = t.find(";") if re.match(r"\[ESTIMATE\b", t, re.I) else -1
+        if b < 0:
+            s = _BASIS_RX.search(t)
+            b = s.start() if s else -1
+        return t[:b] + "]" if b >= 0 else t
     # one pass over bracketed tags (no nesting): linear even on a long line of '; basis:' with no closing bracket
     return re.sub(r"\[[^\[\]\n]*\]", drop, text)
 

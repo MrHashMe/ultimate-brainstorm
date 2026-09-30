@@ -3537,7 +3537,7 @@ appendices A, B, F.
 | P8 | FAIL | Every `[ASSUMPTION` occurrence is listed in assumptions.md |
 | P9 | WARN | The word "novel" appears anywhere |
 | P10 | WARN | A `$` figure in §10 is not found in `../10_ARCHITECTURE/chosen/cost-model.md` |
-| P11 | WARN | ONE-PAGER.md agrees with the proposal: every money figure in §1 (a `$`, `€`, `£`, USD, EUR, GBP or CHF amount or range, compared as exact numbers: currency and thousands separators (comma, space, apostrophe) ignored, `k`/`M`/`MM`/`B` and thousand/million/billion/mn/bn applied, so `$9k-$27k` equals `9,000-27,000 USD`; the first end of a range takes the second end's magnitude only when the range stays in order, and a second end below the first is not part of a range; the `basis:` part of an `[ESTIMATE` tag is ignored) appears in ONE-PAGER.md; and (not with `--lite`) every money figure and ISO date (`YYYY-MM-DD` or `YYYY-MM`) in ONE-PAGER.md appears in §1-§13. Code fences and the one-pager's status stamp are ignored |
+| P11 | WARN | ONE-PAGER.md agrees with the proposal: every money figure in §1 (a `$`, `€`, `£`, USD, EUR, GBP or CHF amount or range, compared as exact numbers: currency and thousands separators (comma, space, apostrophe) ignored, `k`/`M`/`MM`/`B` and thousand/million/billion/mn/bn applied, so `$9k-$27k` equals `9,000-27,000 USD`; the first end of a range takes the second end's magnitude only when the range stays in order, and a second end below the first is not part of a range and counts on its own when it has its own currency; a range stays on one line, its second end may repeat the currency and is never the year of an ISO date; the basis of an `[ESTIMATE: range; basis]` tag (after its first `;`) is ignored) appears in ONE-PAGER.md; and (not with `--lite`) every money figure and ISO date (`YYYY-MM-DD` or `YYYY-MM`) in ONE-PAGER.md appears in §1-§13. Code fences and the one-pager's status stamp are ignored |
 
 **lint-frame.** Always exits 0.
 - `01_FRAME.md` has the v1 P-FRAME sections.
@@ -3588,9 +3588,9 @@ All numbers are estimates. `ub plan` recomputes them for the actual families.
 | Mode | Replies (guided) | Model time | Model calls, 3 families (4) | Tokens, 3 families (4) | Contents |
 |---|---|---|---|---|---|
 | quick | 4-5 | 33-77 min | 16 (16) | 0.22-0.49M (0.22-0.49M) | G0 brief + 5 ideas + 3 criteria -> one generation pass on 2 families -> QUICK-CURATE -> blind quick screen by both generating families and a third family -> quick-pick -> both-order judging by one other family -> gut pick (hands-on only) -> decide -> QUICK-PROBE -> arch-lite -> proposal-lite -> sign-off. Stamped "Novelty NOT checked" |
-| standard | 6-7 | 87-201 min, mostly unattended | 55-73 (56-74) | 0.65-1.84M (0.67-1.88M) | Stages 0-14 in full |
-| deep | 6-9 | 125-288 min (131-301) | 73-193 (78-226) | 0.82-4.23M (0.88-4.91M) | Standard plus v1 deep extras (BMAD seeds, ce-ideate go deep, S3 x100, LENS L1-L6, 2 gap rounds, per-pair judging when there are 6 or fewer finalists, rebuttal, forge, 10-day probe), 4 architecture candidates, 4 review lenses, PR/FAQ, G10 and G12 |
-| proposal | 5-6 | 72-166 min | 46-48 (47-49) | 0.55-1.28M (0.57-1.32M) | The user's idea: G0 -> frame -> ground -> the idea as I-001 (primary) + 2 contrast variants -> checks -> cards -> tournament (gut pick optional) -> red-team all 3 -> decide (default = the user's idea) -> probe -> Stage 12 -> 13 -> 14 |
+| standard | 6-7 | 92-212 min, mostly unattended | 55-74 (56-75) | 0.65-1.91M (0.67-1.94M) | Stages 0-14 in full |
+| deep | 6-9 | 130-299 min (136-312) | 73-194 (78-227) | 0.82-4.30M (0.88-4.98M) | Standard plus v1 deep extras (BMAD seeds, ce-ideate go deep, S3 x100, LENS L1-L6, 2 gap rounds, per-pair judging when there are 6 or fewer finalists, rebuttal, forge, 10-day probe), 4 architecture candidates, 4 review lenses, PR/FAQ, G10 and G12 |
+| proposal | 5-6 | 77-176 min | 46-49 (47-50) | 0.55-1.35M (0.57-1.39M) | The user's idea: G0 -> frame -> ground -> the idea as I-001 (primary) + 2 contrast variants -> checks -> cards -> tournament (gut pick optional) -> red-team all 3 -> decide (default = the user's idea) -> probe -> Stage 12 -> 13 -> 14 |
 
 The figures are `ub plan --mode <mode> --variant general --families claude,gpt,kimi --json` (in brackets:
 `--families claude,gpt,kimi,glm`) on kit 2.1.0 with no user configuration; the software variant gives the same numbers.
@@ -4011,7 +4011,10 @@ Let F = available ∩ privacy-allowed families, ordered with the host family fir
     these families `privacy.filter_glossary` runs the A2 filter above from that line to the end of the appendix
     (the next `## ` line by textio's fence rule); the FRAME's terms stay, and every `## Appendix E` line counts,
     inside a fence too. Without that line (a PROPOSAL.md an older kit assembled) the whole appendix is filtered
-    (fail closed). The user's PROPOSAL.md keeps the whole glossary. This holds in every run.
+    (fail closed). ONE-PAGER.md, which SECTIONS_ALL appends after the line `--- FILE: ONE-PAGER.md ---`, is filtered
+    apart from the proposal (`privacy.filter_sections_all`), so an appendix that runs to the end of the proposal
+    cannot take it along; the engine indents any other line equal to that marker, so model text cannot move the split.
+    The user's PROPOSAL.md keeps the whole glossary. This holds in every run.
   - `cwd: repo` is never used.
   - In a repo-labeled run every placeholder value of the prompt goes through `strip_code`, whatever its source (a
     DATA placeholder's value with the strict rule of a DATA block's body), `builders.make_job` passes the whole
@@ -6178,7 +6181,7 @@ Check:                 py -3 <kit>/install/install.py doctor --live
 
 ### 13.3 What the user sees (standard, guided)
 
-1. **G0 (one screen).** The plan: mode, variant, families, about 55-73 calls and about 0.7-1.8M tokens (estimates,
+1. **G0 (one screen).** The plan: mode, variant, families, about 55-74 calls and about 0.7-1.9M tokens (estimates,
    `ub plan` for three families), vendors, privacy. "Type your own ideas now, one per line (optional
    `Primary: <idea to test>`), or reply `go`."
 2. **Frame.** grilling asks one round of questions with recommended answers for constraints only. The user answers,
