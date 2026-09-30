@@ -6,7 +6,7 @@ Test modules are not packages (section 2), so every test file does:
     sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "harness"))
     import paths
 
-`paths` then puts SK/scripts on sys.path, so `import ublib.stubs` works.
+`paths` then puts SK/scripts and tests/harness on sys.path, so `import ublib` and `import stubs` work.
 
 Missing dependencies. B1, B2 and B3 land in parallel with B4. A test that needs another builder's file calls
 `paths.require(path, owner)`. When the file is missing the test is skipped with a reason that starts with

@@ -269,22 +269,16 @@ class Components(unittest.TestCase):
             # [U-18] CE Claude install resolves the marketplace name from `marketplace list --json`
             self.assertTrue(any(c["argv"][:3] == ["plugin", "install", "compound-engineering@compound-engineering-plugin"]
                                 for c in th.fake_calls("claude")), [c["argv"] for c in th.fake_calls("claude")])
-            npx = [c for c in th.fake_calls("npx")]
-            for agent in ("claude-code", "codex"):
-                step = self.expected_steps("mattpocock-grilling", agent)[0]
-                hits = [c for c in npx if c["argv"] == step[1:]]
-                self.assertTrue(hits, "missing exact grilling step for %s: %s" % (agent, step))
-                if agent == "codex":
-                    self.assertTrue(paths.same_path(hits[0]["cwd"], th.home), "codex skills step runs in ~")
-            for c in npx:
-                self.assertEqual(c["env"].get("DISABLE_TELEMETRY"), "1", "npx skills runs with DISABLE_TELEMETRY=1")
+            self.assertEqual(th.fake_calls("npx"), [], "the mattpocock skills come from a pinned archive, not npx")
 
-    def test_node_20_makes_npx_rows_manual(self):
-        with inst.installer_home(tools=("claude", "npx", "node"), versions={"node": "v20.11.0"}) as th:
+    def test_archive_rows_need_no_node(self):
+        with inst.installer_home(tools=("claude",), versions={"node": "v20.11.0"}) as th:
+            grill = load_components()["components"]["mattpocock-grilling"]
+            th.write(os.path.join(th.env["UB_COMPONENTS_DIR"], grill["archive"]["file"]), "an archive\n")
             plan = inst.run_plan(th, "--components", "core")
-            grill = [r for r in plan["rows"] if "grilling" in r["item"]]
-            self.assertTrue(grill)
-            self.assertTrue(all(r["action"] == "manual" for r in grill), grill)
+            rows = [r for r in plan["rows"] if r["item"] == "component mattpocock-grilling"]
+            self.assertTrue(rows)
+            self.assertTrue(all(r["action"] == "install" and r["how"] == "archive" for r in rows), rows)
 
     def test_offline_rows_are_manual(self):
         with inst.installer_home(tools=("claude", "codex", "npx", "node"),

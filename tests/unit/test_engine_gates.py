@@ -137,6 +137,9 @@ class PolicyTests(tl.EngineTestCase):
         self.assertEqual(pol("G0"), "ask")
         self.assertEqual(pol("G0", ap="full-auto"), "ask")  # privacy defaults unset
         st.config_set("privacy_defaults", {"web": True, "vendors": True, "code": False})
+        self.assertEqual(pol("G0", ap="full-auto"), "ask")  # saved before the vendor set was kept: asked once
+        st.config_set("privacy_defaults", {"web": True, "vendors": True, "code": False,
+                                           "vendor_set": ["anthropic", "moonshot", "openai", "zhipu"]})
         self.assertEqual(pol("G0", ap="full-auto"), "auto")
         for gid in ("G1", "G2c", "G3", "G6", "G7", "G9"):
             self.assertEqual(pol(gid, ap="hands-on"), "ask", gid)
@@ -196,9 +199,13 @@ class ValidationTests(tl.EngineTestCase):
         self.assertTrue(self.v("G13", {"action": "runner-up"}))  # no runner-up recorded
         self.ctx.state["counters"]["g13_loops"] = 2
         self.assertTrue(self.v("G13", {"action": "changes", "changes": "x"}))
-        self.ctx.state["counters"]["launched"] = 100
+        # the cap counts backend requests (the ledger), not launches, and must cover the launch it refused
+        self.ctx.state["counters"]["launched"] = 1
+        self.ctx.write("logs/calls.jsonl", "".join('{"id": "j%d", "requests": 5}\n' % i for i in range(20)))
+        self.ctx.state["budget"]["need"] = 3
         self.assertTrue(self.v("GB", {"raise_to": 50}))
-        self.assertEqual(self.v("GB", {"raise_to": 150}), [])
+        self.assertIn("at least 103", self.v("GB", {"raise_to": 102})[0])
+        self.assertEqual(self.v("GB", {"raise_to": 103}), [])
         self.assertEqual(self.v("GB", {"stop": True}), [])
 
     def test_answer_file_protocol_reasks_with_error(self):
@@ -285,7 +292,11 @@ class ApplyTests(tl.EngineTestCase):
         self.assertEqual(ctx.state["choice"]["idea"], "I-002")
         self.assertIn(("supersede", "11.1"), effects)
         self.assertIn("RESULT: MISSED (K6)", ctx.read("09_PROBE.md"))
-        self.assertIn("K6", ctx.read("08_DECISION.md"))
+        # the decision line and the ledger row follow the supersede that commits the kill (#11)
+        self.assertEqual([e[0] for e in effects], ["supersede", "append", "ledger"])
+        self.assertEqual(effects[1][1], "08_DECISION.md")
+        self.assertIn("I-001 - K6", effects[1][2])
+        self.assertNotIn("K6", ctx.read("08_DECISION.md"))
 
 
 class DisplayTests(tl.EngineTestCase):

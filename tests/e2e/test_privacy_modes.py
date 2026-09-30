@@ -104,6 +104,12 @@ class Privacy(unittest.TestCase):
                 prompt = e2elib.read(os.path.join(run, job["prompt_file"].replace("/", os.sep)))
                 self.assertNotIn(CODE_MARKER, prompt, job["id"])
                 self.assertNotIn("def request_swap", prompt, job["id"])
+                # the repo label (C8): filtered by the engine, re-checked (and passed) by the worker
+                self.assertTrue((job.get("privacy") or {}).get("code_filtered"), job["id"])
+            for dirpath, _dirs, names in os.walk(run):
+                for name in names:
+                    if name.endswith(".failed.md"):
+                        self.assertNotIn("privacy.code is false", e2elib.read(os.path.join(dirpath, name)), name)
 
 
 class SeedLeak(unittest.TestCase):

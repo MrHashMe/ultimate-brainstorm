@@ -3,7 +3,7 @@ Owner: B4 (written at integration).
 
 HUMAN cards get `default_answer`, except G8b (a non-leader idea, with the user's `why`) and G11 (candidate B).
 The HOST frame-grill step (`--components grilling`) writes the fixture frame files and runs `done_cmd`.
-HOST_BATCH cards (`UB_FAKE_HOST_BACKEND=glm`) are answered with `ublib.stubs.respond(job, prompt)`.
+HOST_BATCH cards (`UB_FAKE_HOST_BACKEND=glm`) are answered with `stubs.respond(job, prompt)` (tests/harness/stubs.py).
 """
 
 import os
@@ -23,7 +23,7 @@ class GuidedProtocol(unittest.TestCase):
 
     def setUp(self):
         paths.require(paths.UB_PY, paths.PIPELINE_JSON, owner="B3")
-        paths.require(os.path.join(paths.SCRIPTS, "ublib", "stubs.py"), owner="B4")
+        paths.require(os.path.join(paths.HARNESS, "stubs.py"), owner="B4")
 
     def test_guided_standard_to_done(self):
         chosen = {}

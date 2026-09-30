@@ -11,24 +11,26 @@ Extras (B2 internal, safe for B3/B4):
     vendor_of(label, cfg=None) -> str             claude=anthropic, gpt=openai, kimi=moonshot, glm=zhipu
     backend_cfg(cfg, backend_id) -> dict          {} for unknown ids; "stub" and "host" are built in
     backend_type(cfg, backend_id) -> str
-    backend_provider(cfg, backend_id) -> str|None
     backend_web(cfg, backend_id) -> bool
     expand_path(path, ub_home=None) -> str        "~/.ultimate-brainstorm/..." follows UB_HOME
     timeout_for(cfg, kind) -> int
+    strict_glm(cfg) -> bool                       families.glm.allow_scripted_plan_use is false (5.6 rule 6)
+    drop_scripted_glm(cfg, family, chain) -> list  the chain without worker-run GLM plan backends when strict
     fake_families(), fake_disabled(), fake_host_families()   test seams (3.3, 4.19)
 """
 
 import copy
-import json
 import os
+import re
 
 from . import SCRIPTS_DIR
+from . import proc
 from . import textio
 
 __all__ = ["load_families", "resolve_chain", "provider_settings_env", "ub_home", "split_label", "vendor_of",
-           "backend_cfg", "backend_type", "backend_provider", "backend_web", "expand_path", "timeout_for",
-           "fake_families", "fake_disabled", "fake_host_families", "FAMILY_VENDORS", "DEFAULT_FILE",
-           "HOST_DEFAULT_FAMILY"]
+           "backend_cfg", "backend_type", "backend_web", "expand_path", "timeout_for", "strict_glm",
+           "drop_scripted_glm", "fake_families", "fake_disabled", "fake_host_families", "FAMILY_VENDORS",
+           "DEFAULT_FILE", "HOST_DEFAULT_FAMILY"]
 
 DEFAULT_FILE = "families.default.json"
 FAMILY_VENDORS = {"claude": "anthropic", "gpt": "openai", "kimi": "moonshot", "glm": "zhipu"}
@@ -162,10 +164,6 @@ def backend_type(cfg, backend_id):
     return (backend_id or "").split("@", 1)[0]
 
 
-def backend_provider(cfg, backend_id):
-    return backend_cfg(cfg, backend_id).get("provider")
-
-
 def backend_web(cfg, backend_id):
     """Static web capability of a backend (5.5). HTTP backends have no tools, so no web."""
     b = backend_cfg(cfg, backend_id)
@@ -184,8 +182,17 @@ def timeout_for(cfg, kind):
 
 # ---------------------------------------------------------------- chains
 
-def _strict_glm(cfg):
-    return not bool(((cfg.get("families") or {}).get("glm") or {}).get("allow_scripted_plan_use", True))
+def strict_glm(cfg):
+    """True when families.glm.allow_scripted_plan_use is false: GLM runs only as the host family.  # [U-20]"""
+    return not bool((((cfg or {}).get("families") or {}).get("glm") or {}).get("allow_scripted_plan_use", True))
+
+
+def drop_scripted_glm(cfg, family, chain):
+    """The chain without the worker-run GLM backends (claude-cli, codex-cli) when strict_glm(cfg) holds for a GLM
+    label; any other chain unchanged."""
+    if split_label(family)[0] != "glm" or not strict_glm(cfg):
+        return list(chain)
+    return [b for b in chain if b == "host" or backend_type(cfg, b) not in ("claude-cli", "codex-cli")]
 
 
 def resolve_chain(cfg, family, detect_result):
@@ -210,8 +217,8 @@ def resolve_chain(cfg, family, detect_result):
         detect_result = _detect.detect(cfg, live=False, only=[fam])
     info = ((detect_result or {}).get("families") or {}).get(fam) or {}
     chain = [b for b in (info.get("chain") or []) if isinstance(b, str)]
-    if fam == "glm" and _strict_glm(cfg):
-        chain = [b for b in chain if b == "host" or backend_type(cfg, b) not in ("claude-cli", "codex-cli")]
+    if fam == "glm" and strict_glm(cfg):
+        chain = drop_scripted_glm(cfg, fam, chain)
         host_fam = ((detect_result or {}).get("host") or {}).get("family")
         if host_fam == "glm" and "host" not in chain:
             chain = ["host"] + chain
@@ -220,17 +227,46 @@ def resolve_chain(cfg, family, detect_result):
 
 # ---------------------------------------------------------------- providers
 
+# the keys of a providers.<p> entry and the shape each must have (launch.py's _shape_error checks the same keys); a
+# missing or empty value counts as absent
+_PROVIDER_SHAPES = (("base_url", "a JSON object or a URL", (dict, str)), ("models", "a JSON object", (dict,)),
+                    ("env", "a JSON object", (dict,)), ("token_env", "a string", (str,)),
+                    ("token_var", "a string", (str,)))
+_HTTP_URL = re.compile(r"https?://[^\s/?#]", re.I)
+
+
+def provider_entry(cfg, provider):
+    """providers.<provider> of the families config, or None when there is none. A hand-edited entry of the wrong shape
+    raises ValueError naming the key, so every reader refuses that provider with a config error instead of crashing."""
+    provs = (cfg or {}).get("providers") or {}
+    if not isinstance(provs, dict):
+        raise ValueError("providers in families config must be a JSON object")
+    prov = provs.get(provider)
+    if prov is None:
+        return None
+    if not isinstance(prov, dict):
+        raise ValueError("providers.%s in families config must be a JSON object" % provider)
+    for key, want, types in _PROVIDER_SHAPES:
+        if not isinstance(prov.get(key) or types[0](), types):
+            raise ValueError("providers.%s.%s in families config must be %s" % (provider, key, want))
+    return prov
+
+
 def provider_settings_env(cfg, provider, tier="default", region=None):
     """The env block for a claude-cli provider backend (4.9), WITHOUT the token value.
 
     Callers add {token_var: os.environ[token_env]} only when writing the 0600 settings file.
     An unknown region falls back to "global" (the Moonshot cn Anthropic endpoint is not included).  # [U-22]
+    ANTHROPIC_BASE_URL is set only to an http(s) URL: an empty, blank or other value is no URL, so every caller (the
+    worker, detection, the launchers) refuses the provider instead of starting claude on Anthropic's own endpoint.
+    Raises KeyError for an unknown provider and ValueError for an entry of the wrong shape (provider_entry).
     """
-    prov = ((cfg or {}).get("providers") or {}).get(provider)
-    if not isinstance(prov, dict):
+    prov = provider_entry(cfg, provider)
+    if prov is None:
         raise KeyError("unknown provider %r" % provider)
     urls = prov.get("base_url") or {}
-    reg = region or (cfg or {}).get("region") or "global"
+    reg = region or (cfg or {}).get("region")
+    reg = reg if isinstance(reg, str) and reg else "global"
     if isinstance(urls, str):
         base = urls
     else:
@@ -253,19 +289,19 @@ def provider_settings_env(cfg, provider, tier="default", region=None):
         env["ANTHROPIC_DEFAULT_HAIKU_MODEL"] = fast_model
     for k, v in (prov.get("env") or {}).items():
         env[str(k)] = str(v)
+    url = str(env.pop("ANTHROPIC_BASE_URL", None) or "").strip()
+    if _HTTP_URL.match(url):
+        env["ANTHROPIC_BASE_URL"] = url
     return env
 
 
 def provider_token(cfg, provider, environ=None):
-    """(token_env, token_var, value_or_None) for a provider. The value is never logged."""
+    """(token_env, token_var, value_or_None) for a provider. The value is never logged. token_env is looked up as
+    detection looks it up (proc._env_get: in any letter case on Windows). Raises ValueError for an entry of the wrong
+    shape (provider_entry)."""
     environ = os.environ if environ is None else environ
-    prov = ((cfg or {}).get("providers") or {}).get(provider) or {}
+    prov = provider_entry(cfg, provider) or {}
     token_env = prov.get("token_env")
     token_var = prov.get("token_var") or "ANTHROPIC_AUTH_TOKEN"
-    value = (environ.get(token_env) or "").strip() if token_env else ""
+    value = (proc._env_get(environ, token_env) or "").strip() if token_env else ""
     return token_env, token_var, (value or None)
-
-
-def dump(cfg):
-    """JSON text of a config without the private keys (for debugging)."""
-    return json.dumps({k: v for k, v in (cfg or {}).items() if not k.startswith("_")}, indent=1, sort_keys=True)

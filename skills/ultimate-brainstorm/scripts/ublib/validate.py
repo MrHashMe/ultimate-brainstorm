@@ -3,31 +3,42 @@
 Frozen API (4.8):
     check_contract(text, contract, run_dir) -> (ok: bool, errors: list[str], parsed: object|None)
 
-Extras: repair_prompt(errors, previous_output), load_schema(ref, run_dir), OUTPUT_CAP_BYTES, CONTRACT_TYPES.
+Extras: repair_prompt(errors, previous_output), load_schema(ref, run_dir), parse_idea_blocks(text, prefix),
+idea_fields(body), canonical_id(value), REGISTER_SCHEMAS, OUTPUT_CAP_BYTES, CONTRACT_TYPES.
 
 Contract types: text, idea-blocks, json, sections, cards, files. `parsed` per type:
     text         the stripped text
-    idea-blocks  [{"id", "title", "body"}] for the valid blocks
-    json         the extracted JSON value
+    idea-blocks  [{"id", "title", "body", "fields"}] for the valid blocks
+    json         the extracted JSON value (cover keys canonicalized in place)
     sections     {"sections": {heading_prefix: body}, "json_tail": obj|None, "final_line": str}
     cards        {ID: {line_prefix: value}}
-    files        {"files": {relpath: content}, "status": dict|None, "warnings": [...]}
+    files        {"files": {relpath: content}, "status": dict|None, "warnings": [...], "json": {relpath: value}}
+
+Every parser here is linear in the output (headings and fences come from textio's line scanners).
 """
 
-import json
 import os
 import re
+import unicodedata
 
 from . import SK_DIR
 from . import filesproto
 from . import schema_lite
 from . import textio
 
-__all__ = ["check_contract", "repair_prompt", "load_schema", "OUTPUT_CAP_BYTES", "CONTRACT_TYPES", "REPAIR_MAX_CHARS"]
+__all__ = ["check_contract", "repair_prompt", "load_schema", "OUTPUT_CAP_BYTES", "CONTRACT_TYPES", "REPAIR_MAX_CHARS",
+           "parse_idea_blocks", "idea_fields", "canonical_id", "REGISTER_SCHEMAS", "card_sections"]
 
 OUTPUT_CAP_BYTES = 2 * 1024 * 1024  # 5.4: larger output counts as invalid
 REPAIR_MAX_CHARS = 1500
 CONTRACT_TYPES = ("text", "idea-blocks", "json", "sections", "cards", "files")
+
+# FILE-protocol .json files that the engine reads back as registers: their value must match this schema even when the
+# contract's per_file names none (a per_file "schema" replaces it). Keyed by the path relative to the split root.
+CRITERIA_SCHEMA = {"type": "object", "minProperties": 1,
+                   "additionalProperties": {"type": "number", "minimum": 0, "maximum": 100}}
+REGISTER_SCHEMAS = {"decisions.json": "SK:templates/schemas/arch-decisions.schema.json",
+                    "criteria.json": CRITERIA_SCHEMA}
 
 
 # ---------------------------------------------------------------- helpers
@@ -85,38 +96,12 @@ def _nonempty_lines(text):
     return [ln for ln in text.split("\n") if ln.strip()]
 
 
-def _mask_fences(lines):
-    """Per line: True when the line is inside (or is a delimiter of) a fenced code block."""
-    inside, fence, mask = False, None, []
-    for ln in lines:
-        s = ln.strip()
-        if not inside:
-            m = re.match(r"^(`{3,}|~{3,})", s)
-            if m:
-                inside, fence = True, m.group(1)
-                mask.append(True)
-                continue
-            mask.append(False)
-        else:
-            mask.append(True)
-            if s.startswith(fence) and s.strip("`~") == "":
-                inside, fence = False, None
-    return mask
-
-
-_HEADING_RE = re.compile(r"^(#{1,6})\s+(.*?)\s*#*\s*$")
-
-
-def _headings(lines, mask):
+def _headings(text):
     """[(line_index, level, full_line_normalized, text_normalized)] for headings outside fences."""
     out = []
-    for i, ln in enumerate(lines):
-        if mask[i]:
-            continue
-        m = _HEADING_RE.match(ln.rstrip())
-        if m:
-            text = " ".join(m.group(2).split())
-            out.append((i, len(m.group(1)), (m.group(1) + " " + text).lower(), text.lower()))
+    for i, level, title in textio.headings(text):
+        t = " ".join(title.split())
+        out.append((i, level, ("#" * level + " " + t).lower(), t.lower()))
     return out
 
 
@@ -129,12 +114,81 @@ def _prefix_hit(heading, prefix):
 
 def _words(text):
     lines = text.split("\n")
-    mask = _mask_fences(lines)
-    return sum(len(re.findall(r"\S+", ln)) for i, ln in enumerate(lines) if not mask[i])
+    mask = textio.fence_mask(lines)
+    return sum(len(ln.split()) for i, ln in enumerate(lines) if not mask[i])
 
 
-_JSON_FENCE_RE = re.compile(r"^[ \t]*(`{3,}|~{3,})[ \t]*json[^\n]*\n(.*?)^[ \t]*\1[ \t]*$",
-                            re.MULTILINE | re.DOTALL | re.IGNORECASE)
+def canonical_id(value):
+    """An ID as a cover compares it: NFKC-normalized, with Unicode format characters (zero-width, bidi controls)
+    removed and surrounding whitespace stripped. 'I-001' + U+200B and 'I-001' in fullwidth digits (U+FF10, U+FF11)
+    are both 'I-001'."""
+    s = unicodedata.normalize("NFKC", str(value))
+    return "".join(ch for ch in s if unicodedata.category(ch) != "Cf").strip()
+
+
+# ---------------------------------------------------------------- idea blocks (one parser: contract and consumers)
+
+_BULLET_LINE = re.compile(r"^[ \t]*[-*][^\n]*", re.MULTILINE)
+_BULLET = re.compile(r"[ \t]*[-*][ \t]*")
+_LABEL_CHARS = frozenset("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz /")
+IDEA_REQUIRED_LINES = ("Pitch", "Mechanism", "Fails if")
+
+
+def idea_fields(body):
+    """{label_lowercase: value} for the '- Label: value' lines of an idea block (the first line of a label wins).
+    A label is letters, spaces and '/', optionally in **bold**. String operations only: linear per line."""
+    fields = {}
+    for m in _BULLET_LINE.finditer(body or ""):
+        line = m.group(0)
+        rest = line[_BULLET.match(line).end():]
+        colon = rest.find(":")
+        if colon < 0:
+            continue
+        label = rest[:colon].rstrip()
+        if label.startswith("**"):
+            label = label[2:]
+        if label.endswith("**"):
+            label = label[:-2]
+        label = label.strip()
+        if label and all(ch in _LABEL_CHARS for ch in label):
+            fields.setdefault(label.lower(), rest[colon + 1:].strip())
+    return fields
+
+
+def parse_idea_blocks(text, prefix=None):
+    """The idea-blocks format (4.5), parsed once for the contract and for every consumer (registry.idea_blocks).
+
+    A block starts at a '### <PREFIX>-NN <title>' heading outside fenced code (NN: ASCII digits; any prefix of the
+    form [A-Z][A-Za-z0-9]* when prefix is None) and ends at the next heading of any level. It counts when it has
+    '- Pitch:', '- Mechanism:' and '- Fails if:' lines. Only the first heading of an ID opens a block.
+    Returns (blocks, problems, duplicates): blocks [{"id", "title", "body", "fields"}] that count, in order;
+    problems for the blocks that do not count; the IDs that head more than one block.
+    """
+    pfx = re.escape(prefix) if prefix else r"[A-Z][A-Za-z0-9]*"
+    head_rx = re.compile(r"^###\s+(%s-[0-9]+)[:.)]?\s+(\S.*)$" % pfx)
+    text = text or ""
+    lines = text.split("\n")
+    heads = textio.headings(text)
+    blocks, problems, dups, seen = [], [], [], set()
+    for k, (i, _level, _title) in enumerate(heads):
+        m = head_rx.match(lines[i].rstrip())
+        if not m:
+            continue
+        bid = m.group(1)
+        if bid in seen:
+            if bid not in dups:
+                dups.append(bid)
+            continue
+        seen.add(bid)
+        end = heads[k + 1][0] if k + 1 < len(heads) else len(lines)
+        body = "\n".join(lines[i + 1:end])
+        fields = idea_fields(body)
+        missing = [name for name in IDEA_REQUIRED_LINES if name.lower() not in fields]
+        if missing:
+            problems.append("%s lacks %s" % (bid, ", ".join("- %s:" % n for n in missing)))
+            continue
+        blocks.append({"id": bid, "title": m.group(2).strip(), "body": body.strip("\n"), "fields": fields})
+    return blocks, problems, dups
 
 
 # ---------------------------------------------------------------- contract types
@@ -162,48 +216,20 @@ def _check_text(text, c, run_dir):
     return errors, body
 
 
-_BLOCK_LINES = (("Pitch", re.compile(r"^\s*[-*]\s*(?:\*\*)?Pitch(?:\*\*)?\s*:", re.I | re.M)),
-                ("Mechanism", re.compile(r"^\s*[-*]\s*(?:\*\*)?Mechanism(?:\*\*)?\s*:", re.I | re.M)),
-                ("Fails if", re.compile(r"^\s*[-*]\s*(?:\*\*)?Fails if(?:\*\*)?\s*:", re.I | re.M)))
-
-
 def _check_idea_blocks(text, c, run_dir):
     prefix = str(c.get("prefix") or "").strip()
     need = c.get("min", 1)
     need = need if isinstance(need, int) else 1
     if not prefix:
         return ["contract idea-blocks has no prefix"], None
-    head_rx = re.compile(r"^###\s+(%s-\d+)[:.)]?\s+(\S.*)$" % re.escape(prefix))
-    lines = text.split("\n")
-    mask = _mask_fences(lines)
-    starts = []
-    for i, ln in enumerate(lines):
-        if mask[i]:
-            continue
-        if re.match(r"^#{1,6}\s", ln):
-            m = head_rx.match(ln.rstrip())
-            starts.append((i, m))
-    blocks, problems, seen = [], [], set()
-    for k, (i, m) in enumerate(starts):
-        if not m:
-            continue
-        end = starts[k + 1][0] if k + 1 < len(starts) else len(lines)
-        body = "\n".join(lines[i + 1:end])
-        missing = [name for name, rx in _BLOCK_LINES if not rx.search(body)]
-        bid = m.group(1)
-        if missing:
-            problems.append("%s lacks %s" % (bid, ", ".join("- %s:" % n for n in missing)))
-            continue
-        if bid in seen:
-            problems.append("%s appears more than once" % bid)
-            continue
-        seen.add(bid)
-        blocks.append({"id": bid, "title": m.group(2).strip(), "body": body.strip("\n")})
+    blocks, problems, dups = parse_idea_blocks(text, prefix)
     errors = []
     if len(blocks) < need:
         errors.append("found %d valid %s-NN idea blocks, need at least %d (heading '### %s-NN <title>' with "
                       "'- Pitch:', '- Mechanism:' and '- Fails if:' lines)" % (len(blocks), prefix, need, prefix))
         errors.extend(problems[:10])
+    # a repeated ID is ambiguous (which idea is meant?) however many blocks are valid: it earns the repair call
+    errors.extend("%s appears more than once: one block per ID" % bid for bid in dups[:10])
     return errors, blocks
 
 
@@ -219,22 +245,99 @@ def _get_path(obj, dotted):
     return cur
 
 
-def _check_cover(value, cover):
+def _cover_key(value, loose=False):
+    """canonical_id, and with `loose` also case and the separators '_', '-' and space folded ('Time to MVP' is
+    'time_to_mvp'), as bs.py reads criterion ids."""
+    k = canonical_id(value)
+    return re.sub(r"[\s_-]+", "_", k.lower()) if loose else k
+
+
+def _check_cover(value, cover, where=None):
+    """The array's keys must be exactly the cover IDs: every ID once, no repeats, nothing else. Keys are compared by
+    canonical_id (`loose`: also case and separators folded); a string key that differs from its expected ID only by
+    that normalization is rewritten to that ID in place, so the written output carries the engine's IDs. `each` (a
+    cover of the same shape) applies to the inner array of every item whose key is a cover ID, for example every
+    criterion once in each candidate's scores."""
     errors = []
     if not isinstance(cover, dict):
         return errors
     arr_name, key, ids = cover.get("array"), cover.get("key", "id"), cover.get("ids") or []
+    loose = bool(cover.get("loose"))
     arr = _get_path(value, arr_name)
+    where = "%s.%s" % (where, arr_name or "$") if where else (arr_name or "$")
     if not isinstance(arr, list):
-        return ["cover: %s is not an array" % (arr_name or "$")]
-    present = set()
+        return ["cover: %s is not an array" % where]
+    expected = dict((_cover_key(i, loose), str(i)) for i in ids)
+    counts, order, shown = {}, [], {}
     for item in arr:
         if isinstance(item, dict) and key in item:
-            present.add(str(item[key]))
-    missing = [str(i) for i in ids if str(i) not in present]
+            k = _cover_key(item[key], loose)
+            if isinstance(item[key], str) and k in expected and item[key] != expected[k]:
+                item[key] = expected[k]
+            if k not in counts:
+                order.append(k)
+                shown[k] = expected.get(k, canonical_id(item[key]))
+            counts[k] = counts.get(k, 0) + 1
+    missing = [str(i) for i in ids if _cover_key(i, loose) not in counts]
     if missing:
-        errors.append("cover: %s is missing %s %s" % (arr_name or "$", key, ", ".join(missing[:30])))
+        errors.append("cover: %s is missing %s %s" % (where, key, ", ".join(missing[:30])))
+    repeated = [k for k in order if counts[k] > 1 and k in expected]
+    if repeated:
+        errors.append("cover: %s lists %s %s more than once (exactly one entry each)"
+                      % (where, key, ", ".join(shown[k] for k in repeated[:30])))
+    unknown = [k for k in order if k not in expected]
+    if unknown:
+        errors.append("cover: %s has unknown %s %s (only the listed ones)"
+                      % (where, key, ", ".join(repr(shown[k]) if not textio.is_ascii(shown[k]) else shown[k]
+                                               for k in unknown[:30])))
+    inner = cover.get("each")
+    if isinstance(inner, dict):
+        for item in arr:
+            if isinstance(item, dict) and isinstance(item.get(key), str) and _cover_key(item[key], loose) in expected:
+                errors.extend(_check_cover(item, inner, "%s[%s]" % (where, item[key])))
     return errors
+
+
+def _array_specs(value, specs):
+    """[(spec, array path, array)] for the entries of a `unique` or `nonempty` option whose array exists (the schema
+    reports a missing one)."""
+    out = []
+    for spec in specs if isinstance(specs, list) else []:
+        arr = _get_path(value, spec.get("array")) if isinstance(spec, dict) else None
+        if isinstance(arr, list):
+            out.append((spec, spec.get("array") or "$", arr))
+    return out
+
+
+def _check_unique(value, specs):
+    """`unique` [{"array", "key"}]: no two items of the array have the same key (compared by canonical_id), so a
+    curator that lists one idea twice earns the repair call instead of blocking bs.py map or quick-pick later."""
+    errors = []
+    for spec, where, arr in _array_specs(value, specs):
+        key = spec.get("key", "id")
+        seen, repeated = set(), []
+        for item in arr:
+            k = canonical_id(item[key]) if isinstance(item, dict) and isinstance(item.get(key), str) else ""
+            if k and k in seen and k not in repeated:
+                repeated.append(k)
+            seen.add(k)
+        errors.extend("unique: %s lists %s %r more than once" % (where, key, r) for r in repeated[:30])
+    return errors
+
+
+def _check_nonempty(value, specs):
+    """`nonempty` [{"array", "fields"}]: every listed field of every item is a string with a non-space character or a
+    non-empty list (the schemas cannot say so, 7.4)."""
+    errors = []
+    for spec, where, arr in _array_specs(value, specs):
+        for n, item in enumerate(arr):
+            if not isinstance(item, dict):
+                continue
+            for f in spec.get("fields") or []:
+                v = item.get(f)
+                if (isinstance(v, str) and not v.strip()) or (isinstance(v, list) and not v):
+                    errors.append("nonempty: %s[%d].%s is empty" % (where, n, f))
+    return errors[:30]
 
 
 def _check_json(text, c, run_dir):
@@ -251,14 +354,15 @@ def _check_json(text, c, run_dir):
         errors.extend(schema_lite.validate(value, schema))
     if c.get("cover"):
         errors.extend(_check_cover(value, c["cover"]))
+    errors.extend(_check_unique(value, c.get("unique")))
+    errors.extend(_check_nonempty(value, c.get("nonempty")))
     return errors, value
 
 
 def _check_sections(text, c, run_dir):
     errors = []
     lines = text.split("\n")
-    mask = _mask_fences(lines)
-    heads = _headings(lines, mask)
+    heads = _headings(text)
     wanted = [h for h in (c.get("headings") or []) if str(h).strip()]
     pos, found = 0, {}
     for want in wanted:
@@ -287,15 +391,16 @@ def _check_sections(text, c, run_dir):
 
     tail_obj, remaining = None, text
     if c.get("json_tail"):
-        blocks = list(_JSON_FENCE_RE.finditer(text))
-        if not blocks:
+        tails = [s for s in textio.fence_spans(text) if s[4] == "json"]
+        if not tails:
             errors.append("no fenced ```json tail block found")
         else:
-            last = blocks[-1]
-            remaining = text[:last.start()] + text[last.end():]
+            a, b = tails[-1][0], tails[-1][1]
+            end = len(lines) if b is None else b + 1
+            remaining = "\n".join(lines[:a] + lines[end:])
             try:
-                tail_obj = json.loads(last.group(2).strip())
-            except (ValueError, RecursionError) as e:
+                tail_obj = textio.loads_strict("\n".join(lines[a + 1:b if b is not None else end]))
+            except ValueError as e:
                 errors.append("json tail is not valid JSON: %s" % e)
             else:
                 if isinstance(c["json_tail"], (dict, str)):
@@ -333,30 +438,46 @@ def _check_sections(text, c, run_dir):
     return errors, {"sections": sections, "json_tail": tail_obj, "final_line": final}
 
 
+# an ID at the start of a card heading: letters and digits, then (after an optional '-') digits: I-001, E-02, Q-03
+_CARD_ID_RE = re.compile(r"[A-Za-z][A-Za-z0-9]*-?\d+(?![A-Za-z0-9_-])")
+
+
+def card_heading_id(htext, ids=None):
+    """The card ID that the text of a '## ' heading names: the listed ID it is or starts with, a title may follow
+    ('## I-001 - Nurse swap board' and '## I-001: Title' are the card of I-001); without `ids`, its leading ID token
+    ('## Notes' names none). None for any other heading."""
+    if ids is None:
+        m = _CARD_ID_RE.match(htext)
+        return m.group(0) if m else None
+    for want in ids:
+        if htext == want or re.match(re.escape(want) + r"(?![A-Za-z0-9_-])", htext):
+            return want
+    return None
+
+
+def card_sections(text, ids=None):
+    """[(card ID, [lines])] of text's cards in order (the `cards` contract's rule, 4.5): a '## ' heading outside fences
+    whose text names a card ID (card_heading_id) opens a card, which runs to the next level-1 or level-2 heading; any
+    other such heading only ends the card before it. The engine reads tournament/cards.md with the same rule
+    (registry.parse_cards), so the cards the contract accepted are the ones the tournament ranks."""
+    lines = (text or "").split("\n")
+    heads = [i for i, level, _t in textio.headings(text) if level <= 2]
+    out = []
+    for k, i in enumerate(heads):
+        cid = card_heading_id(lines[i].lstrip("#").strip(), ids) if lines[i].startswith("## ") else None
+        if cid is not None:
+            out.append((cid, lines[i + 1:heads[k + 1] if k + 1 < len(heads) else len(lines)]))
+    return out
+
+
 def _check_cards(text, c, run_dir):
     ids = [str(i) for i in (c.get("ids") or [])]
     prefixes = [str(p) for p in (c.get("lines") or [])]
-    lines = text.split("\n")
-    mask = _mask_fences(lines)
-    heads = []  # (index, heading text) for level 1-2 headings
-    for i, ln in enumerate(lines):
-        if not mask[i] and re.match(r"^#{1,2}\s", ln):
-            heads.append((i, ln.lstrip("#").strip()))
     cards, counts = {}, {}
-    for k, (i, htext) in enumerate(heads):
-        if not lines[i].startswith("## "):
-            continue
-        cid = None
-        for want in ids:
-            if htext == want or re.match(re.escape(want) + r"(?![A-Za-z0-9_-])", htext):
-                cid = want
-                break
-        if cid is None:
-            continue
+    for cid, body in card_sections(text, ids):
         counts[cid] = counts.get(cid, 0) + 1
-        end = heads[k + 1][0] if k + 1 < len(heads) else len(lines)
         values = {}
-        for ln in lines[i + 1:end]:
+        for ln in body:
             s = ln.strip()
             for p in prefixes:
                 if p not in values and s.lower().startswith(p.lower()):
@@ -397,28 +518,46 @@ def _check_files(text, c, run_dir):
     for req in c.get("required") or []:
         if req not in files:
             errors.append("%s: required file missing" % req)
-    per_file = c.get("per_file") or {}
-    if isinstance(per_file, dict):
-        for rel, rules in per_file.items():
-            if rel not in files or not isinstance(rules, dict):
-                continue
-            content = files[rel]
-            lines = content.split("\n")
-            heads = _headings(lines, _mask_fences(lines))
-            for want in rules.get("headings") or []:
-                if not any(_prefix_hit(h, want) for h in heads):
-                    errors.append("%s: heading %r is missing" % (rel, want))
-            mtypes = [t.lower() for t in _mermaid_types(content, rel)]
-            for want in rules.get("mermaid") or []:
-                w = str(want).lower()
-                if not any(t == w or t.startswith(w + " ") or t.startswith(w + "\t") for t in mtypes):
-                    errors.append("%s: no mermaid %s block" % (rel, want))
+    per_file = c.get("per_file") if isinstance(c.get("per_file"), dict) else {}
+    for rel, rules in per_file.items():
+        if rel not in files or not isinstance(rules, dict):
+            continue
+        content = files[rel]
+        heads = _headings(content)
+        for want in rules.get("headings") or []:
+            if not any(_prefix_hit(h, want) for h in heads):
+                errors.append("%s: heading %r is missing" % (rel, want))
+        mtypes = [t.lower() for t in _mermaid_types(content, rel)]
+        for want in rules.get("mermaid") or []:
+            w = str(want).lower()
+            if not any(t == w or t.startswith(w + " ") or t.startswith(w + "\t") for t in mtypes):
+                errors.append("%s: no mermaid %s block" % (rel, want))
+    # .json files: strict JSON (validate_files reported the ones that do not parse), then the per_file or register
+    # schema, so a malformed or wrong register earns the repair call instead of reaching the engine
+    values = {}
+    for rel, content in files.items():
+        if not rel.lower().endswith(".json"):
+            continue
+        try:
+            values[rel] = textio.loads_strict(content)
+        except ValueError:
+            continue
+        rules = per_file.get(rel) if isinstance(per_file.get(rel), dict) else {}
+        ref = rules.get("schema", REGISTER_SCHEMAS.get(rel))
+        if ref is None:
+            continue
+        try:
+            schema = load_schema(ref, run_dir)
+        except (ValueError, RecursionError) as e:
+            errors.append("%s: %s" % (rel, e))
+            continue
+        errors.extend("%s: %s" % (rel, e) for e in schema_lite.validate(values[rel], schema))
     if c.get("status_trailer"):
         if status is None:
             errors.append("STATUS trailer is missing or not valid JSON")
         elif status.get("status") not in filesproto.STATUS_VALUES:
             errors.append("STATUS status must be one of %s" % "|".join(filesproto.STATUS_VALUES))
-    return errors, {"files": files, "status": status, "warnings": warnings}
+    return errors, {"files": files, "status": status, "warnings": warnings, "json": values}
 
 
 _CHECKERS = {

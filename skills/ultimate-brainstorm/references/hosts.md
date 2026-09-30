@@ -18,10 +18,10 @@ behaviors carry their id from the kit spec (U-n) and have a fallback.
 
 - Runner: `py -3 "KIT/scripts/ub.py"` (KIT = the skill folder, SKILL.md Setup) (Windows) or `python3 ...`; the first card's `runner` field is authoritative.
 - Windows shell: Git Bash when installed, or the PowerShell tool. Both work because every free-text answer goes through
-  an answer file, never through quoting.
+  an answer file, and the kickoff text through brainstorm/.kickoff.txt, never through quoting.
 - Every UB call: one Bash call with `timeout: 600000` and `--wait-s 540`. If a call is cut off, just run it again.
-- HOST_BATCH: one Agent call per job with `subagent_type: general-purpose` and the exact one-line task. Never the fork
-  type, never `/subtask`: a fork inherits the whole conversation (seeds, pool, judge results).
+- HOST_BATCH: templates/host/HOST-BATCH.md (the one source of the sub-agent task text): one Agent call per job,
+  `general-purpose`, never a fork or `/subtask` (a fork inherits the whole conversation: seeds, pool, judge results).
 - Interactive skills (grilling, domain-modeling, ce-ideate, bmad-*) run in the main conversation; non-fork sub-agents
   have no AskUserQuestion.
 - The claude family nested from a Claude Code host: the adapter scrubs `CLAUDECODE` and `CLAUDE_CODE_CHILD_SESSION`
@@ -37,8 +37,7 @@ behaviors carry their id from the kit spec (U-n) and have a fallback.
 - Windows: Codex runs commands in PowerShell (unified exec is off by default on Windows). Use `py -3`.
 - Shell command timeouts are short or unknown [U-9]: W=100, detached workers keep running, and re-running the command
   loses nothing. If Codex kills background workers repeatedly, the BLOCKED card offers the terminal route.
-- HOST_BATCH: "Spawn one new agent per job, with no conversation context. Each reads its prompt file, writes its
-  output file and replies with one line."
+- HOST_BATCH: templates/host/HOST-BATCH.md: one new agent per job with no conversation context.
 - The skill is explicit-only in Codex (`agents/openai.yaml` sets `allow_implicit_invocation: false`), because
   `codex exec` workers load the user's skills. Every worker prompt also starts with "Do not load or invoke any skill".
 - Codex IDE extension: skills copy only, no plugins; unsupported until tested [U-31]. Use the CLI or the app.
@@ -48,8 +47,8 @@ behaviors carry their id from the kit spec (U-n) and have a fallback.
 - Windows: Kimi needs Git for Windows (Git Bash) or `KIMI_SHELL_PATH`.
 - Approve the Bash prefix for `ub` once.
 - Bash commands time out at 5 minutes and keep running in the background: W=270.
-- HOST_BATCH: AgentSwarm with `prompt_template` "Read {{item}} and follow it exactly." (the exact text is in the
-  SKILL.md Hosts table) and `items` = the prompt files; or one Agent per job.
+- HOST_BATCH: templates/host/HOST-BATCH.md: AgentSwarm (its item variable is `{{item}}`) with the prompt files as
+  `items`, or one Agent per job.
 - Kimi Code ignores `KIMI_API_KEY`; sign in with `kimi login`. The legacy kimi-cli (version below 2.0) is not
   supported: `npm install -g @moonshot-ai/kimi-code`, then `kimi migrate`.
 - AskUserQuestion is available for gates with 2-4 options.
@@ -85,7 +84,9 @@ by hand: a shell-wide `CODEX_HOME` sends every later `codex` in that window to G
 
 ## Terminal mode
 
-`ub run "<topic>"` (or `ub run --continue "<run>"`) drives the same pipeline with no time limit and asks every gate on
-stdin: the gate text is printed, the user types, an empty line ends the answer. HOST steps use their engine
-alternatives (express frame, S1F, no forge). A family that only the host could run is dropped (PROVISIONAL). This is
-the most robust route for long unattended runs.
+`ub run "<topic>"` (the words after `run` are the topic; `--text-file F` reads it from a file), or
+`ub run --continue "<run>"`, drives the same pipeline with no time limit and asks every gate on stdin: the gate text is
+printed, the user types, an empty line ends the answer. While it waits it does not hold the run: another session may
+answer or drive, and the terminal then applies its own answer only if the run did not change meanwhile. HOST steps use
+their engine alternatives (express frame, S1F, no forge). A family that only the host could run is dropped
+(PROVISIONAL). This is the most robust route for long unattended runs.

@@ -9,7 +9,9 @@ Usage:
       --lenient         the opposite (sets UB_CI_LENIENT=1), also on CI
       --pattern P       unittest discovery pattern (default test_*.py), e.g. --pattern test_bootstrap.py
       --quiet           print only failures and the summary instead of the full verbose stream
-      --timeout S       per-suite timeout in seconds (default: none)
+      --timeout S       per-suite timeout in seconds (default: none). When it passes, even during a silent hang,
+                        the suite's whole process tree is killed and the suite is reported as TIMEOUT; 15 s before
+                        that, every thread's stack is dumped into the output (faulthandler)
       --failfast        stop each suite at its first failure, and stop after the first failing suite
 
 Each suite runs:  python -m unittest discover -s tests/<suite> -t tests/<suite> -p "<pattern>" -v
@@ -20,13 +22,22 @@ passed; 1 otherwise; 2 on usage errors.
 import argparse
 import os
 import re
+import signal
 import subprocess
 import sys
+import threading
 import time
 
 KIT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SUITES = ("static", "unit", "integration", "e2e")
 MISSING = "MISSING DEPENDENCY"
+READER_JOIN_S = 5.0  # after a kill: a leaked grandchild may still hold the output pipe; never wait on it longer
+# `python -m unittest ...`, plus a faulthandler stack dump shortly before the timeout (argv[1] = seconds, 0 = none)
+RUNNER = ("import faulthandler, sys, unittest\n"
+          "t = float(sys.argv.pop(1))\n"
+          "if t > 0:\n"
+          "    faulthandler.dump_traceback_later(t, exit=False)\n"
+          "unittest.main(module=None, argv=['python -m unittest'] + sys.argv[1:])\n")
 
 
 def _out(text):
@@ -66,35 +77,79 @@ def parse_summary(text):
     return res
 
 
+def kill_tree(proc):
+    """Kill a suite and every process it started: taskkill /T on Windows, the process group (its own session) on
+    POSIX. tools/ stays free of ublib imports, so this is the small local form of ublib.proc.kill_tree."""
+    if proc.poll() is None:
+        if os.name == "nt":
+            root = os.environ.get("SystemRoot") or os.environ.get("SYSTEMROOT") or r"C:\Windows"
+            try:
+                subprocess.run([os.path.join(root, "System32", "taskkill.exe"), "/PID", str(proc.pid), "/T", "/F"],
+                               stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                               timeout=60)
+            except (OSError, subprocess.SubprocessError):
+                pass
+        else:
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except OSError:
+                pass
+    try:
+        proc.kill()
+    except OSError:
+        pass
+    try:
+        proc.wait(timeout=30)
+    except subprocess.TimeoutExpired:
+        pass
+
+
 def run_suite(name, pattern, env, quiet, timeout, failfast):
     start = os.path.join(KIT, "tests", name)
     if not os.path.isdir(start):
         return {"suite": name, "status": "NO SUITE", "rc": 1, "ran": 0, "failures": 0, "errors": 0, "skipped": 0,
                 "missing": 0, "missing_reasons": [], "seconds": 0.0}
-    argv = [sys.executable, "-m", "unittest", "discover", "-s", start, "-t", start, "-p", pattern, "-v"]
-    if failfast:
-        argv.append("--failfast")
-    _out("\n=== suite %s: %s\n" % (name, " ".join(argv[1:])))
+    args = ["discover", "-s", start, "-t", start, "-p", pattern, "-v"] + (["--failfast"] if failfast else [])
+    dump_s = max(1.0, timeout - 15) if timeout else 0
+    argv = [sys.executable, "-X", "faulthandler", "-c", RUNNER, str(dump_s)] + args
+    _out("\n=== suite %s: -m unittest %s\n" % (name, " ".join(args)))
     t0 = time.time()
     proc = subprocess.Popen(argv, cwd=KIT, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                            stderr=subprocess.STDOUT)
+                            stderr=subprocess.STDOUT, **({} if os.name == "nt" else {"start_new_session": True}))
     chunks = []
     timed_out = False
-    deadline = t0 + timeout if timeout else None
+
+    def reader():
+        # a thread, so a test that hangs without printing a newline cannot keep the deadline from being checked
+        try:
+            for raw in iter(proc.stdout.readline, b""):
+                line = raw.decode("utf-8", "replace")
+                chunks.append(line)
+                if not quiet or re.search(r"\.\.\. (FAIL|ERROR)|^(FAIL|ERROR):|Traceback|^Ran |^OK|^FAILED", line):
+                    _out(line)
+        except (OSError, ValueError):
+            pass
+
+    t = threading.Thread(target=reader)
+    t.daemon = True
+    t.start()
     try:
-        for raw in iter(proc.stdout.readline, b""):
-            line = raw.decode("utf-8", "replace")
-            chunks.append(line)
-            if not quiet or re.search(r"\.\.\. (FAIL|ERROR)|^(FAIL|ERROR):|Traceback|^Ran |^OK|^FAILED", line):
-                _out(line)
-            if deadline and time.time() > deadline:
-                timed_out = True
-                proc.kill()
-                break
-        proc.wait()
+        try:
+            proc.wait(timeout=timeout or None)
+        except subprocess.TimeoutExpired:
+            timed_out = True
+            kill_tree(proc)
+    except BaseException:  # Ctrl+C: never leave the suite (and the workers it started) running
+        kill_tree(proc)
+        raise
     finally:
-        proc.stdout.close()
+        t.join(READER_JOIN_S)
+        if not t.is_alive():  # else a leaked grandchild holds the pipe: closing it would block on the reader
+            proc.stdout.close()
     text = "".join(chunks)
+    if timed_out:
+        _out("\n=== suite %s: TIMEOUT after %ss; the process tree was killed. Last output (with the stack dump):\n%s\n"
+             % (name, timeout, "".join(chunks[-80:])))
     if quiet:
         # show the failure details block at the end of the run
         idx = text.find("\n======")

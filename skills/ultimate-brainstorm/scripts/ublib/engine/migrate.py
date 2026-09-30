@@ -1,4 +1,5 @@
-"""v1 run folder -> run.json (KIT_SPEC 6.10).
+"""v1 run folder -> run.json (KIT_SPEC 6.10), and seat and decision-record fixes for runs an older kit started
+(upgrade, upgrade_decisions).
 
 A folder with 00_RUN.md and no run.json is migrated: mode, variant, topic, host and other family, privacy, python and
 the strategy map are parsed from the v1 lines; families are claude/gpt; `legacy_v1: true`. Steps whose v1 outputs
@@ -6,17 +7,17 @@ exist are marked done so the run continues where it stopped. A v1 run that alrea
 "extend with architecture + proposal" as a G0-lite card.
 """
 
-import glob
 import os
 import re
 
 from .. import textio
-from . import VENDORS
+from . import registry
 from . import state as st
+from . import vendor_of
 
 
 def _line(text, key):
-    m = re.search(r"^\W*" + key + r"\s*:\s*(.*)$", text, re.M | re.I)
+    m = re.search(r"^[^\w\n]*" + key + r"\s*:\s*(.*)$", text, re.M | re.I)
     return m.group(1).strip() if m else ""
 
 
@@ -55,18 +56,18 @@ def parse_run_md(text):
     return out
 
 
-# (stage steps, v1 outputs that prove the stage is done)
+# (stage steps, v1 outputs that prove the stage is done); every id is a pipeline.json step (a unit test checks it)
 STAGE_PROOF = [
     (["0.1", "0.2", "0.3", "1.1", "1.2"], ["@seeds"]),
     (["2.0", "2.1g", "2.1gd", "2.1q", "2.1a", "2.1w", "2.1f", "2.1k", "2.2", "2.2f", "2.3"],
      ["01_FRAME.md", "criteria.json"]),
     (["3.1", "3.1b", "3.2"], ["02_CONTEXT.md"]),
     (["4.1c", "4.1f", "4.2", "4.3"], ["pool/*"]),
-    (["5.1", "5.2", "5.2d", "5.2m", "5.3", "5.3c", "5.3m", "5.4", "5.4c", "5.4m"],
+    (["5.1", "5.2", "5.3", "5.3c", "5.3m", "5.4", "5.4c", "5.4m"],
      ["03_POOL.md", "clusters.json", "origins.json", "screen/ideas.md"]),
     (["6.1", "6.2", "6.3", "6.4"], ["04_SHORTLIST.md", "screen/shortlist.json"]),
     (["7.1", "7.2", "7.3"], ["checks/*.md"]),
-    (["8.0", "8.1", "8.1a", "8.2"], ["05_EVOLVED.md"]),
+    (["8.0", "8.1", "8.2"], ["05_EVOLVED.md"]),
     (["9.1", "9.1h", "9.2", "9.3", "9.5", "9.4", "9.6"], ["tournament/result.md", "06_TOURNAMENT.md"]),
     (["10.1", "10.1h", "10.2", "10.3", "10.3r", "10.3f", "10.4", "10.4x", "10.5", "10.6"],
      ["07_REDTEAM.md", "08_DECISION.md"]),
@@ -84,19 +85,78 @@ QUICK_PROOF = [
 def _proved(run_dir, items):
     for it in items:
         if it == "@seeds":
-            text = ""
-            for p in glob.glob(os.path.join(run_dir, "00_HUMAN_SEEDS*.md")):
-                text += textio.read_text(p)
-            if not (re.search(r"^\W*SKIPPED\b", text, re.M) or re.search(r"^##\s*(Ideas|Primary idea)[^\n]*\n\s*\S",
-                                                                        text, re.M)):
+            # a seeds file the engine reads as given (registry's no_seeds rule): SKIPPED, or an Ideas or Primary idea
+            # section with content (textio.section: a fenced '## Ideas' line is text)
+            texts = [textio.read_text(p) for p in textio.glob_in(run_dir, "00_HUMAN_SEEDS*.md")]
+            if not any(re.search(r"^[^\w\n]*SKIPPED\b", t, re.M) or textio.section(t, "Ideas")
+                       or textio.section(t, "Primary idea") for t in texts):
                 return False
-        elif not glob.glob(os.path.join(run_dir, *it.split("/"))):
+        elif not textio.glob_in(run_dir, *it.split("/")):
             return False
     return True
 
 
+def upgrade(state, alt_distinct):
+    """Bring the seats of a run an older kit wrote up to this engine's rules, in memory (the caller saves under the
+    driver lock). alt_distinct: False when families.<host>.alt_model is null (registry.alt_distinct), so <host>-alt
+    runs the host's model again. A kit 2.0.3 single-family run (and a v1 run migrated without its other family) seats
+    the host twice as screen and tournament judge, [host, host-alt]; with the same model that is one judge counted
+    twice, so those seats become [host], as seats.assign(..., alt_distinct=False) seats them (#89). The same holds for
+    any list made only of the host and `<host>-alt` (a cross-host continue of an older kit could seat [host, host-alt,
+    host-alt]). Returns the seat keys it changed."""
+    seats = state.get("seats") or {}
+    host = seats.get("host") or (state.get("host") or {}).get("family")
+    changed = []
+    if host and not alt_distinct:
+        for key in ("screen_judges", "tournament_judges"):
+            judges = list(seats.get(key) or [])
+            if len(judges) > 1 and set(judges) <= set([host, "%s-alt" % host]):
+                seats[key] = [host]
+                changed.append(key)
+    return changed
+
+
+DECISION_LINE = re.compile(r"^(?:Killed: \S+ - K6\b|Switched \().*$", re.M)  # the lines of run.json decision_log
+
+
+def upgrade_decisions(state, run_dir):
+    """The decision record of a run kit 2.0.3 (or an earlier 2.1 build) started, in memory: state.load calls it, and
+    the next locked save keeps it. That kit wrote a K6 kill and a switch only as a line of 08_DECISION.md, with no
+    run.json decision_log, and its probe record has no `idea`. So when run.json has no decision_log, those lines seed
+    it once (registry.k6_killed then knows the ideas their probe killed, and a rewrite of 08_DECISION.md keeps the
+    lines), a MISSED probe record gets the idea its K6 line names (the last one), and a runner-up its own probe killed
+    (that kit's switch made the old idea the runner-up) is cleared. A run that is then dead (render.k6_dead: that kit
+    left its documents as they were) gets its done probe_rerender steps back as pending, as a K6 kill does
+    (gates.probe_result): the next command that drives it (`continue RUN`, the same MISSED again) renders them again,
+    with no paid call (all are SCRIPT steps). Not while a supersede is pending: a redo from the decision dropped the
+    log, and the file it moves still has the lines."""
+    if "decision_log" in state or state.get("supersede"):
+        return
+    try:
+        lines = DECISION_LINE.findall(textio.read_text(os.path.join(run_dir, "08_DECISION.md")))
+    except OSError:
+        return
+    if not lines:
+        return
+    state["decision_log"] = [ln.strip() for ln in lines]
+    killed = registry.K6_LINE.findall("\n".join(state["decision_log"]))
+    probe = state.get("probe")
+    if killed and isinstance(probe, dict) and probe.get("result") == "MISSED" and not probe.get("idea"):
+        probe["idea"] = killed[-1]
+    choice = state.get("choice") or {}
+    if choice.get("runner_up") in killed:
+        choice["runner_up"] = None
+    from . import pipeline, render  # lazy: pipeline imports most engine modules
+    if render.k6_dead(state):
+        for sid in pipeline.step_ref("probe_rerender"):
+            if st.step_state(state, sid) == "done":
+                st.set_step(state, sid, "pending", note="rendered again: K6 killed the chosen idea", jobs=[])
+
+
 def migrate_v1(run_dir):
-    text = textio.read_text(os.path.join(run_dir, "00_RUN.md"))
+    # a repeated migration (run.json deleted) reads the kept v1 original, never the v2 00_RUN.md that replaced it (#20)
+    kept = os.path.join(run_dir, st.RUN_MD_V1)
+    text = textio.read_text(kept if os.path.exists(kept) else os.path.join(run_dir, st.RUN_MD))
     info = parse_run_md(text)
     host = info["host_family"]
     other = "gpt" if host == "claude" else "claude"
@@ -117,8 +177,8 @@ def migrate_v1(run_dir):
                 "web": True, "reason": "" if info["other_ok"] else "v1 run: other family none (PROVISIONAL)"},
     }
     fams = [host] + ([other] if info["other_ok"] else [])
-    state["privacy"]["allowed_vendors"] = sorted({VENDORS[f] for f in fams}) if state["privacy"]["vendors"] \
-        else [VENDORS[host]]
+    state["privacy"]["allowed_vendors"] = sorted({vendor_of(f) for f in fams}) if state["privacy"]["vendors"] \
+        else [vendor_of(host)]
     from . import seats as seats_mod
     web = dict((f, True) for f in fams)
     state["seats"] = seats_mod.assign(state["run"], host, fams, web, state["mode"], state["variant"], "s1f")

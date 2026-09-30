@@ -13,11 +13,7 @@ sys.path.insert(0, os.path.join(_KIT, "tests", "fixtures", "adapter"))
 import adapter_testlib as tl  # noqa: E402
 from ublib import detect, families, textio  # noqa: E402
 
-try:
-    from ublib import stubs as _stubs  # noqa: F401  (B4)
-    HAVE_STUBS = True
-except ImportError:  # pragma: no cover
-    HAVE_STUBS = False
+HAVE_STUBS = os.path.isfile(os.path.join(tl.KIT, "tests", "harness", "stubs.py"))  # the fake-mode responder
 
 VERSIONS = {"claude": "2.1.280 (Claude Code)\n", "codex": "codex-cli 0.156.1\n", "kimi": "kimi, version 2.0.2\n"}
 
@@ -26,7 +22,7 @@ def versions(overrides=None):
     table = dict(VERSIONS)
     table.update(overrides or {})
 
-    def run(argv, cwd=None, env=None, stdin_bytes=None, timeout_s=None):
+    def run(argv, cwd=None, env=None, stdin_bytes=None, timeout_s=None, **_kw):
         name = os.path.basename(argv[0]).split(".")[0]
         assert argv[1:] == ["--version"], argv
         assert timeout_s == 15
@@ -293,7 +289,7 @@ class FakeModeTests(DetectBase):
         self.assertEqual(families.resolve_chain(cfg, "glm", None), ["host"])
         self.assertEqual(families.resolve_chain(cfg, "host", None), ["host"])
 
-    @unittest.skipUnless(HAVE_STUBS, "ublib.stubs (B4) not present")
+    @unittest.skipUnless(HAVE_STUBS, "tests/harness/stubs.py not present")
     def test_live_preflight_in_fake_mode(self):
         os.environ["UB_FAKE_FAMILIES"] = "1"
         os.environ["UB_HOST"] = "claude-code"

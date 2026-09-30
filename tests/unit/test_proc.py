@@ -40,10 +40,12 @@ class RunTests(unittest.TestCase):
     def test_result_shape(self):
         r = proc.run([PY, "-c", "print('hi')"], None, None, None, 30)
         self.assertIsInstance(r, proc.ProcResult)
-        self.assertEqual(r._fields, ("returncode", "stdout_bytes", "stderr_bytes", "timed_out"))
+        self.assertEqual(r._fields, ("returncode", "stdout_bytes", "stderr_bytes", "timed_out", "overflow"))
         self.assertEqual(r.returncode, 0)
         self.assertEqual(r.stdout_bytes.strip(), b"hi")
         self.assertFalse(r.timed_out)
+        self.assertFalse(r.overflow)
+        self.assertFalse(proc.ProcResult(0, b"", b"", False).overflow, "the four-field seam still builds a result")
 
     def test_stdin_bytes_roundtrip_utf8(self):
         payload = ("prompt with ${x} and \"quotes\" & pipes | caf\u00e9\n" * 2000).encode("utf-8")
@@ -237,9 +239,6 @@ class RedactTests(unittest.TestCase):
         with mock.patch.dict(os.environ, {"CODEX_API_KEY": self.KEY}):
             s = redact.format_cmd(["codex", "exec", "-C", "C:/tmp/my dir", "--tools", "", "-c", self.KEY])
         self.assertEqual(s, 'codex exec -C "C:/tmp/my dir" --tools "" -c [REDACTED]')
-
-    def test_env_names_only(self):
-        self.assertEqual(redact.env_names({"B": "secret", "A": "x"}), ["A", "B"])
 
 
 if __name__ == "__main__":

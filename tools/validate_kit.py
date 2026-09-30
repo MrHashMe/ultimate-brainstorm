@@ -3,17 +3,20 @@
 
 Usage:
     python tools/validate_kit.py [--json] [--group G ...] [--no-exec]
-    python tools/validate_kit.py --drift-agents-ts agents.ts [--json]     (drift.yml: compare with targets.json)
+    python tools/validate_kit.py --drift-agents-ts agents.ts [--json] [--report drift-report.md]
+        (drift.yml: compare vercel-labs/skills src/agents.ts with EXPECTED_UPSTREAM; exit 0 no drift, 1 drift,
+         2 unreadable file)
 
-Groups: manifests, tree, skill, openai_yaml, single_skill_md, versions, targets, components, families.
+Groups: manifests, tree, skill, openai_yaml, single_skill_md, versions, targets, components, families, workflows.
 `versions` also runs `ub.py --version`, `family.py --version`, `bs.py --version` and `install.py version` unless
 --no-exec is given. Exit code: 0 when every selected check passes, 1 otherwise, 2 on usage errors.
 
 Python API: run_checks(kit=KIT, groups=None, execute=True) -> {group: [problem, ...]}; each check_<group>(kit)
-returns a list of problem strings; drift(agents_ts_text, targets) -> list of problems.
+returns a list of problem strings; drift(agents_ts_text, expected=None) -> list of problems.
 """
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -29,9 +32,8 @@ MANIFESTS = {
     "codex_marketplace": ".agents/plugins/marketplace.json",
     "kimi_plugin": ".kimi-plugin/plugin.json",
     "kimi_marketplace": ".kimi-plugin/marketplace.json",
-    "bundle_plugin": "bundles/stack/.claude-plugin/plugin.json",
 }
-VERSIONED = ("claude_plugin", "codex_plugin", "kimi_plugin", "bundle_plugin")
+VERSIONED = ("claude_plugin", "codex_plugin", "kimi_plugin")
 FORBIDDEN_ROOT = ("plugin.json", "agents", "bin", "hooks", ".mcp.json", "commands")
 SKILL_KEYS = {"name", "description", "license", "compatibility", "metadata", "allowed-tools"}
 KIMI_NAME = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
@@ -117,9 +119,6 @@ def check_manifests(kit=KIT):
     km = data["kimi_marketplace"]
     if isinstance(km, dict) and km.get("version") != "2":
         problems.append('.kimi-plugin/marketplace.json: version must be "2"')
-    bp = data["bundle_plugin"]
-    if isinstance(bp, dict) and not bp.get("name"):
-        problems.append("bundles/stack/.claude-plugin/plugin.json: missing name")
     for key, obj in data.items():
         if obj is None:
             continue
@@ -425,6 +424,58 @@ def check_targets(kit=KIT):
     return problems
 
 
+_SHA40 = re.compile(r"^[0-9a-f]{40}$")
+
+
+def _unpinned(step, comp):
+    """Why a component step runs third-party content that is not pinned (None when it is pinned): npx packages need an
+    exact version and `skills add` sources a #<commit>; marketplace sources a ref plus the component's 40-hex "commit"
+    (install.py checks the clone against it); `uv tool install` a git source at a commit or pkg==version."""
+    exe = step[0]
+    if exe == "npx":
+        pkgs = [a for a in step[1:] if not a.startswith("-")]
+        if not pkgs or not re.search(r".@\d+\.\d+\.\d+$", pkgs[0]):
+            return "npx package without an exact version"
+        if pkgs[1:2] == ["add"] and len(pkgs) > 2 and not re.search(r"#[0-9a-f]{40}$", pkgs[2]):
+            return "skills source without #<40-hex commit>"
+        return None
+    if step[1:4] == ["plugin", "marketplace", "add"]:
+        if len(step) < 5 or "@" not in step[4]:
+            return "marketplace source without an @ref"
+        if not _SHA40.match(str(comp.get("commit") or "")):
+            return "marketplace source without a 40-hex \"commit\" pin on the component"
+        return None
+    if exe == "uv" and step[1:3] == ["tool", "install"]:
+        src = step[step.index("--from") + 1] if "--from" in step else ""
+        if not (re.search(r"@[0-9a-f]{40}$", src) or any("==" in a for a in step[3:])):
+            return "uv tool without --from <git>@<40-hex commit> or ==<version>"
+    return None
+
+
+def _archive_problems(name, comp):
+    """An archive component is pinned twice: the archive of one 40-hex commit (the component's "commit") and, per skill
+    folder, the SHA-256 of its content (install.py tree_sha256), which no re-compression of the archive changes."""
+    problems = []
+    arc = comp.get("archive")
+    commit = str(comp.get("commit") or "")
+    if not isinstance(arc, dict) or not _SHA40.match(commit):
+        return ["components.json: %s.archive needs an object and a 40-hex \"commit\"" % name]
+    url, fname = str(arc.get("url") or ""), str(arc.get("file") or "")
+    if not re.match(r"^https://codeload\.github\.com/[\w.-]+/[\w.-]+/tar\.gz/%s$" % commit, url):
+        problems.append("components.json: %s.archive.url is not a codeload tar.gz of the commit %s" % (name, commit))
+    if not re.match(r"^[\w.-]+\.tar\.gz$", fname):
+        problems.append("components.json: %s.archive.file must be a plain <name>.tar.gz" % name)
+    skills = arc.get("skills") if isinstance(arc.get("skills"), dict) else {}
+    if sorted(skills) != sorted(comp.get("skills") or []):
+        problems.append("components.json: %s.archive.skills must pin exactly the component's skills" % name)
+    for skill, pin in sorted(skills.items()):
+        if not isinstance(pin, dict) or not re.match(r"^[0-9a-f]{64}$", str(pin.get("sha256") or "")) or \
+                not re.match(r"^[\w.-]+(/[\w.-]+)*$", str(pin.get("path") or "")) or ".." in str(pin.get("path")):
+            problems.append("components.json: %s.archive.skills.%s needs a relative path and a 64-hex sha256"
+                            % (name, skill))
+    return problems
+
+
 def check_components(kit=KIT):
     problems = []
     c = load_json(kit, "install/components.json", problems)
@@ -448,8 +499,10 @@ def check_components(kit=KIT):
         if not isinstance(comp, dict):
             problems.append("components.json: %s is not an object" % name)
             continue
+        if "archive" in comp:
+            problems.extend(_archive_problems(name, comp))
         for agent, spec in comp.items():
-            if agent in ("ref", "extra", "needs", "env"):
+            if agent in ("ref", "extra", "needs", "env", "commit", "source_match", "skills", "archive"):
                 continue
             if not isinstance(spec, dict):
                 problems.append("components.json: %s.%s is not an object" % (name, agent))
@@ -457,12 +510,17 @@ def check_components(kit=KIT):
             steps = spec.get("steps")
             if steps is not None and (not isinstance(steps, list) or not all(_is_argv(s) for s in steps)):
                 problems.append("components.json: %s.%s.steps must be a list of argv lists" % (name, agent))
-            if steps is None and "manual" not in spec:
-                problems.append("components.json: %s.%s has neither steps nor manual" % (name, agent))
+            if spec.get("copy_to") and "archive" not in comp:
+                problems.append("components.json: %s.%s.copy_to needs the component's archive" % (name, agent))
+            if steps is None and "manual" not in spec and not spec.get("copy_to"):
+                problems.append("components.json: %s.%s has neither steps, copy_to nor manual" % (name, agent))
             for step in steps or []:
                 for arg in step:
                     if re.search(r"_(KEY|TOKEN)\b", arg) and "<" not in arg:
                         problems.append("components.json: %s.%s step mentions a key value: %r" % (name, agent, arg))
+                why = _unpinned(step, comp)
+                if why:
+                    problems.append("components.json: %s.%s step %s: %s" % (name, agent, " ".join(step), why))
     clis = c.get("clis")
     if not isinstance(clis, dict) or not all(isinstance(v, dict) and v.get("npm") for v in clis.values()):
         problems.append("components.json: clis entries need an npm package")
@@ -495,6 +553,188 @@ def check_families(kit=KIT):
     return problems
 
 
+# ---------------------------------------------------------------- workflows (supply chain, 10.7 / 11.8)
+
+WORKFLOWS = (".github/workflows/ci.yml", ".github/workflows/release.yml", ".github/workflows/drift.yml")
+_USES_RE = re.compile(r"^\s*(?:-\s+)?uses:\s*(\S+)(.*)$")
+_JOB_RE = re.compile(r"^  ([A-Za-z0-9_-]+):\s*$")
+
+
+def _jobs(text):
+    """[(job id, body)] of a workflow file's top-level `jobs:` map (two-space indented job ids)."""
+    lines = text.replace("\r\n", "\n").split("\n")
+    try:
+        start = lines.index("jobs:")
+    except ValueError:
+        return []
+    out, cur = [], None
+    for line in lines[start + 1:]:
+        if line and not line.startswith(" ") and not line.startswith("#"):
+            break
+        m = _JOB_RE.match(line)
+        if m:
+            cur = [m.group(1), []]
+            out.append(cur)
+        elif cur is not None:
+            cur[1].append(line)
+    return [(j, "\n".join(body)) for j, body in out]
+
+
+def _publish_problems(body):
+    """The publishing job of release.yml never replaces a release: before `gh release create` it fails (exit 1) when
+    `gh release view` finds a release for the tag, and it never uploads to, edits or deletes a release."""
+    problems = []
+    create = body.find("gh release create")
+    refuse = re.search(r'if gh release view "\$GITHUB_REF_NAME"[^\n]*; then\n(?:[^\n]*\n){0,2}?\s*exit 1\n', body)
+    if create < 0:
+        problems.append("release.yml: the publish job never runs gh release create")
+    elif refuse is None or refuse.start() > create:
+        problems.append("release.yml: the publish job must fail (exit 1) when a release for the tag already exists, "
+                        "before gh release create")
+    for verb in ("upload", "edit", "delete", "delete-asset"):
+        if re.search(r"\bgh release %s\b" % verb, body):
+            problems.append("release.yml: gh release %s changes a published release" % verb)
+    return problems
+
+
+def _release_build_problems(text):
+    """release.yml runs tools/release.py with --notes, and --no-acceptance only behind the CHANGELOG override line."""
+    problems = []
+    runs = [ln for ln in text.split("\n")
+            if re.search(r"\btools/release\.py\b", ln) and not ln.lstrip().startswith("#")]
+    if not runs:
+        problems.append("release.yml: tools/release.py never runs")
+    body = "\n".join(ln for ln in text.split("\n") if not ln.lstrip().startswith("#"))
+    if runs and "--notes release-notes.md" not in body:
+        problems.append("release.yml: tools/release.py runs without --notes release-notes.md (the acceptance state)")
+    for ln in runs:
+        if "--no-acceptance" in ln:
+            problems.append("release.yml: tools/release.py runs with --no-acceptance unconditionally")
+    if "--no-acceptance" in body and not re.search(r"if grep -q '\^Acceptance override:' release-notes\.md; then\n"
+                                                    r"\s*set -- \"\$@\" --no-acceptance\n", body):
+        problems.append("release.yml: --no-acceptance is passed without the CHANGELOG line 'Acceptance override:'")
+    return problems
+
+
+def check_workflows(kit=KIT):
+    """Every action pinned to a full commit SHA with a `# vX.Y.Z` comment, checkout without persisted credentials,
+    `permissions: {}` at the top and per job, a timeout on every job, ci.py with --timeout, a release that never
+    replaces a release (it fails when one exists for the tag) and attests its assets, the acceptance gate of
+    release.py kept in the build, and a drift issue that is updated instead of re-opened."""
+    problems = []
+    texts = {}
+    for rel in WORKFLOWS:
+        path = _p(kit, rel)
+        if not os.path.isfile(path):
+            problems.append("missing: %s" % rel)
+            continue
+        with open(path, "r", encoding="utf-8") as f:
+            text = texts[rel] = f.read().replace("\r\n", "\n")
+        lines = text.split("\n")
+        if not re.search(r"(?m)^permissions:\s*\{\}\s*$", text):
+            problems.append("%s: the top-level permissions must be {} (each job asks for what it needs)" % rel)
+        for i, line in enumerate(lines, 1):
+            m = _USES_RE.match(line)
+            if not m or m.group(1).startswith("./"):
+                continue
+            ref, rest = m.group(1), m.group(2)
+            if not re.match(r"^[\w.-]+/[\w./-]+@[0-9a-f]{40}$", ref) or not re.search(r"#\s*v\d+\.\d+\.\d+", rest):
+                problems.append("%s:%d: %s is not pinned to a full commit SHA with a # vX.Y.Z comment" % (rel, i, ref))
+            if ref.startswith("actions/checkout@") and \
+                    not re.search(r"persist-credentials:\s*false", "\n".join(lines[i:i + 4])):
+                problems.append("%s:%d: actions/checkout without persist-credentials: false" % (rel, i))
+        for i, line in enumerate(lines, 1):
+            if re.search(r"\bpython tools/ci\.py\b", line) and "--timeout" not in line:
+                problems.append("%s:%d: tools/ci.py runs without --timeout" % (rel, i))
+            if "--clobber" in line:
+                problems.append("%s:%d: --clobber replaces published release assets" % (rel, i))
+        for job, body in _jobs(text):
+            if re.search(r"(?m)^    uses:\s*\./", body):
+                continue  # a reusable-workflow call: its jobs carry their own timeouts
+            if not re.search(r"(?m)^    timeout-minutes:\s*\d+\s*$", body):
+                problems.append("%s: job %s has no timeout-minutes" % (rel, job))
+            if not re.search(r"(?m)^    permissions:", body):
+                problems.append("%s: job %s does not declare its permissions" % (rel, job))
+    rel_text = texts.get(".github/workflows/release.yml", "")
+    if rel_text:
+        if "actions/attest-build-provenance@" not in rel_text:
+            problems.append("release.yml: the assets are not attested (actions/attest-build-provenance)")
+        writers = [j for j, body in _jobs(rel_text) if re.search(r"(?m)^      contents:\s*write", body)]
+        if len(writers) != 1:
+            problems.append("release.yml: exactly one job (publish) may hold contents: write, found %s" % writers)
+        for j, body in _jobs(rel_text):
+            if j in writers and ("id-token: write" not in body or "attestations: write" not in body):
+                problems.append("release.yml: job %s needs id-token: write and attestations: write" % j)
+            if j in writers:
+                problems.extend(_publish_problems(body))
+        problems.extend(_release_build_problems(rel_text))
+    drift_text = texts.get(".github/workflows/drift.yml", "")
+    if drift_text and "gh issue create" in drift_text and "gh issue list" not in drift_text:
+        problems.append("drift.yml: opens an issue without looking for the open one first")
+    return problems
+
+
+# ---------------------------------------------------------------- unverified items (KIT_SPEC section 15, 11.9)
+
+SPEC_REL = "docs/design/KIT_SPEC.md"
+ACCEPTANCE_REL = "docs/ACCEPTANCE.md"
+_U_ROW = re.compile(r"^\| U-(\d+) ", re.M)
+_U_TAG = re.compile(r"\[U-(\d+)")
+_TAG_SKIP_DIRS = SKIP_DIRS | {"research"}
+_TAG_DOT_DIRS = (".github", ".claude-plugin", ".codex-plugin", ".agents", ".kimi-plugin")  # other .dirs are not the kit
+
+
+def _read(kit, rel):
+    try:
+        with open(_p(kit, rel), "r", encoding="utf-8", errors="replace") as f:
+            return f.read()
+    except OSError:
+        return None
+
+
+def code_tags(kit=KIT):
+    """{n: [files]} for every [U-n] tag outside the spec and ACCEPTANCE.md (code, configuration and docs)."""
+    tags = {}
+    for dirpath, dirnames, filenames in os.walk(kit):
+        dirnames[:] = [d for d in dirnames if d not in _TAG_SKIP_DIRS and (not d.startswith(".") or d in _TAG_DOT_DIRS)]
+        for name in filenames:
+            path = os.path.join(dirpath, name)
+            rel = os.path.relpath(path, kit).replace(os.sep, "/")
+            if rel in (SPEC_REL, ACCEPTANCE_REL) or name.endswith((".pyc", ".png", ".zip", ".gz")):
+                continue
+            try:
+                with open(path, "r", encoding="utf-8", errors="replace") as f:
+                    text = f.read()
+            except OSError:
+                continue
+            for n in set(_U_TAG.findall(text)):
+                tags.setdefault(int(n), []).append(rel)
+    return tags
+
+
+def check_unverified(kit=KIT):
+    """KIT_SPEC section 15 lists exactly the items docs/ACCEPTANCE.md has a live-check row for, and every [U-n] tag in
+    the kit names one of them, so no assumption is used without its fallback and its live check."""
+    problems = []
+    spec, acc = _read(kit, SPEC_REL), _read(kit, ACCEPTANCE_REL)
+    if spec is None or acc is None:
+        return ["missing: %s" % (SPEC_REL if spec is None else ACCEPTANCE_REL)]
+    m = re.search(r"(?ms)^## 15\..*?(?=^## 16\.)", spec)
+    if not m:
+        return ["%s: section 15 (Unverified items) not found before section 16" % SPEC_REL]
+    spec_ids = set(int(n) for n in _U_ROW.findall(m.group(0)))
+    acc_ids = set(int(n) for n in _U_ROW.findall(acc))
+    for n in sorted(spec_ids - acc_ids):
+        problems.append("U-%d is in KIT_SPEC section 15 but has no row in %s" % (n, ACCEPTANCE_REL))
+    for n in sorted(acc_ids - spec_ids):
+        problems.append("U-%d has a row in %s but is not in KIT_SPEC section 15" % (n, ACCEPTANCE_REL))
+    for n, files in sorted(code_tags(kit).items()):
+        if n not in spec_ids:
+            problems.append("[U-%d] is used in %s but is not in KIT_SPEC section 15"
+                            % (n, ", ".join(sorted(files)[:3])))
+    return problems
+
+
 CHECKS = {
     "manifests": check_manifests,
     "tree": check_tree,
@@ -505,6 +745,8 @@ CHECKS = {
     "targets": check_targets,
     "components": check_components,
     "families": check_families,
+    "workflows": check_workflows,
+    "unverified": check_unverified,
 }
 
 
@@ -518,20 +760,45 @@ def run_checks(kit=KIT, groups=None, execute=True):
 
 # ---------------------------------------------------------------- drift (drift.yml)
 
-AGENT_KEYS = {"claude-code": "claude-code", "codex": "codex", "kimi": "kimi-code-cli", "zcode": "zcode"}
-HOME_TOKENS = {"{claude_home}": ".claude", "{kimi_home}": ".kimi-code"}
+# The folders vercel-labs/skills (`npx skills add -a <agent>`, src/agents.ts) is expected to use, per agent key. This is
+# an explicit map, not the installer's copy targets: the installer deliberately writes ~/.agents/skills for Codex (never
+# the -g target ~/.codex/skills) and {kimi_home}/skills for Kimi (10.3). A difference means upstream moved a folder:
+# review install/targets.json, install/install.py and this map by hand.
+EXPECTED_UPSTREAM = {
+    "claude-code": {"project": ".claude/skills", "user": "~/.claude/skills"},
+    "codex": {"project": ".agents/skills", "user": "~/.codex/skills"},
+    "kimi-code-cli": {"project": ".agents/skills", "user": "~/.agents/skills"},
+    "zcode": {"project": ".zcode/skills", "user": "~/.zcode/skills"},
+}
+# Home variables agents.ts joins paths onto, when its own `const` declarations cannot be read.
+HOME_VARS = {"home": "~", "claudeHome": "~/.claude", "codexHome": "~/.codex", "configHome": "~/.config"}
+_Q = "['\"`]"
+_LIT = "([^'\"`\\n]+)"
 
 
-def _norm_target(path):
-    p = path
-    for k, v in HOME_TOKENS.items():
-        p = p.replace(k, v)
-    p = p.replace("{project}/", "").replace("~/", "")
-    return p.strip("/")
+def _home_vars(text):
+    """{variable: path} from `const <v> = ... join(home, '<dir>')` declarations in agents.ts, over HOME_VARS."""
+    out = dict(HOME_VARS)
+    for m in re.finditer(r"const\s+(\w+)\s*=[^;\n]*?\bjoin\(\s*home\s*,\s*%s%s%s\s*\)" % (_Q, _LIT, _Q), text):
+        out[m.group(1)] = "~/" + m.group(2).strip("/")
+    return out
+
+
+def _entry_paths(block, homes):
+    """{"project": ..., "user": ...} read from one agents.ts entry (skillsDir, globalSkillsDir); missing keys = the
+    entry has a form this parser does not know."""
+    got = {}
+    m = re.search(r"\bskillsDir\s*:\s*%s%s%s" % (_Q, _LIT, _Q), block)
+    if m:
+        got["project"] = re.sub(r"^\./", "", m.group(1)).strip("/")
+    m = re.search(r"\bglobalSkillsDir\s*:\s*join\(\s*(\w+)\s*,\s*%s%s%s\s*\)" % (_Q, _LIT, _Q), block)
+    if m and m.group(1) in homes:
+        got["user"] = homes[m.group(1)].rstrip("/") + "/" + m.group(2).strip("/")
+    return got
 
 
 def _agent_block(text, key):
-    m = re.search(r"""['"]?%s['"]?\s*:\s*\{""" % re.escape(key), text)
+    m = re.search(r"""(?<![\w-])['"]?%s['"]?\s*:\s*\{""" % re.escape(key), text)
     if not m:
         return None
     depth, i = 0, m.end() - 1
@@ -547,26 +814,35 @@ def _agent_block(text, key):
     return text[m.end() - 1:]
 
 
-def drift(agents_ts_text, targets):
-    """Compare the skills dirs that vercel-labs/skills uses (src/agents.ts) with targets.json copy paths."""
+def drift(agents_ts_text, expected=None):
+    """Compare the skills folders vercel-labs/skills uses (src/agents.ts) with EXPECTED_UPSTREAM, exactly, per agent
+    and scope. An entry this parser cannot read is one "parser-outdated" problem (never a guess)."""
     problems = []
-    agents = (targets or {}).get("agents") or {}
-    for ours, theirs in AGENT_KEYS.items():
-        block = _agent_block(agents_ts_text, theirs)
+    homes = _home_vars(agents_ts_text)
+    for key, want in sorted((expected or EXPECTED_UPSTREAM).items()):
+        block = _agent_block(agents_ts_text, key)
         if block is None:
-            problems.append("agents.ts: no entry for %s" % theirs)
+            problems.append("agents.ts: no entry for %s" % key)
             continue
-        literals = [s.strip("/") for s in re.findall(r"""['"`]([^'"`\n]*skills[^'"`\n]*)['"`]""", block)]
-        copy = (agents.get(ours) or {}).get("copy") or {}
-        for scope in ("user", "project"):
-            want = copy.get(scope)
-            if not isinstance(want, str):
-                continue
-            norm = _norm_target(want)
-            if not any(lit == norm or lit.endswith("/" + norm) or norm.endswith(lit) for lit in literals if lit):
-                problems.append("%s %s path %r (normalized %r) not found in agents.ts %s entry %s" % (
-                    ours, scope, want, norm, theirs, literals[:6]))
+        got = _entry_paths(block, homes)
+        for scope in ("project", "user"):
+            if scope not in got:
+                problems.append("parser-outdated: %s: cannot read its %s skills folder (skillsDir / globalSkillsDir "
+                                "form changed); update tools/validate_kit.py" % (key, scope))
+            elif got[scope] != want[scope]:
+                problems.append("%s %s folder is %r upstream, expected %r" % (key, scope, got[scope], want[scope]))
     return problems
+
+
+def drift_report(problems):
+    """Markdown for the drift issue, ending in a marker drift.yml compares to avoid repeating the same report."""
+    digest = hashlib.sha256("\n".join(sorted(problems)).encode("utf-8")).hexdigest()
+    lines = ["The weekly drift check found differences between vercel-labs/skills `src/agents.ts` and the folders the "
+             "installer expects (tools/validate_kit.py EXPECTED_UPSTREAM). Review install/targets.json, "
+             "install/install.py and that map by hand; this workflow never edits the repository.", ""]
+    lines += ["- " + p for p in problems]
+    lines += ["", "<!-- drift-sha: %s -->" % digest]
+    return "\n".join(lines) + "\n"
 
 
 def main(argv=None):
@@ -581,13 +857,19 @@ def main(argv=None):
     ap.add_argument("--no-exec", action="store_true", help="do not run the --version commands")
     ap.add_argument("--kit", default=KIT)
     ap.add_argument("--drift-agents-ts", metavar="FILE")
+    ap.add_argument("--report", metavar="FILE", help="with --drift-agents-ts: write the issue text (Markdown) here")
     args = ap.parse_args(argv)
     if args.drift_agents_ts:
-        with open(args.drift_agents_ts, "r", encoding="utf-8") as f:
-            text = f.read()
-        problems = []
-        targets = load_json(args.kit, "install/targets.json", problems)
-        problems += drift(text, targets)
+        try:
+            with open(args.drift_agents_ts, "r", encoding="utf-8") as f:
+                text = f.read()
+        except (OSError, UnicodeDecodeError) as e:
+            sys.stderr.write("validate_kit.py: cannot read %s: %s\n" % (args.drift_agents_ts, e))
+            return 2
+        problems = drift(text)
+        if args.report:
+            with open(args.report, "w", encoding="utf-8", newline="\n") as f:
+                f.write(drift_report(problems))
         if args.json:
             print(json.dumps({"drift": problems}, ensure_ascii=True))
         else:

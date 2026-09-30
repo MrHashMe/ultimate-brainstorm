@@ -8,7 +8,8 @@
   shell (GitHub's Windows runners run as administrator) the shims get UB_ALLOW_ROOT=1, and a separate case checks that
   install.ps1 refuses to run elevated without it. A module path that cannot load Get-FileHash must end in a
   non-zero exit (never an unchecked exit 0).
-Shell availability is an environment property: missing shells skip (never "MISSING DEPENDENCY").
+Shell availability is an environment property: missing shells skip (never "MISSING DEPENDENCY"), except on GitHub's
+Windows runners, where the ci.yml matrix rows are the only place these cases run: there a missing shell fails.
 """
 
 import glob
@@ -51,6 +52,14 @@ def find_powershell():
     return shutil.which("powershell") if os.name == "nt" else None
 
 
+def shell_missing(tc, what):
+    """Skip without the shell, except on GitHub's Windows runners: ci.yml has no separate bootstrap jobs, so the
+    Windows matrix rows are where the Git Bash and PowerShell 5.1 cases must run."""
+    if os.name == "nt" and os.environ.get("GITHUB_ACTIONS") == "true":
+        tc.fail("%s is missing on a GitHub Windows runner; the bootstrap tests must run there" % what)
+    tc.skipTest("no %s on this machine" % what)
+
+
 def windows_elevated():
     """True in an elevated (administrator) Windows process, e.g. every GitHub Actions Windows runner. install.ps1
     and install.py refuse such a process unless UB_ALLOW_ROOT=1 (10.4 item 8), like tmphome.TmpHome sets it."""
@@ -86,8 +95,8 @@ class Release(object):
         out = os.path.join(cls.tmp, "dist")
         with open(os.path.join(paths.KIT, "VERSION"), encoding="utf-8") as f:
             version = f.read().strip()
-        proc = paths.run_py(paths.RELEASE_PY, ["--version", version, "--owner", "test", "--out", out], cwd=paths.KIT,
-                            timeout=600)
+        proc = paths.run_py(paths.RELEASE_PY, ["--version", version, "--owner", "test", "--out", out,
+                                               "--no-acceptance"], cwd=paths.KIT, timeout=600)
         tc.assertEqual(proc.returncode, 0, paths.describe(proc))
         cls.dir = out
         cls.version = version
@@ -136,7 +145,7 @@ class PosixShim(unittest.TestCase):
         paths.require(paths.INSTALL_SH, owner="B1")
         self.sh = find_sh()
         if not self.sh:
-            self.skipTest("no POSIX sh / Git Bash on this machine")
+            shell_missing(self, "POSIX sh / Git Bash")
 
     def run_sh(self, script, args, env, timeout=300):
         return paths.run([self.sh, script] + list(args), env=env, timeout=timeout)
@@ -149,7 +158,7 @@ class PosixShim(unittest.TestCase):
         text = read_bytes(paths.INSTALL_SH)
         self.assertNotIn(b"\r\n", text, "install.sh uses LF")
         lines = [l for l in text.decode("utf-8").splitlines() if l.strip()]
-        self.assertEqual(lines[-1].strip(), 'main "$@" || exit 1')
+        self.assertEqual([l.strip() for l in lines[-2:]], ['main "$@"', "exit $?"])
 
     def test_rendered_with_release_dir(self):
         dist = Release.build(self)
@@ -202,6 +211,8 @@ class PowerShellShim(unittest.TestCase):
         paths.require(paths.INSTALL_PS1, owner="B1")
         self.ps = find_powershell()
         if not self.ps:
+            if os.name == "nt":
+                shell_missing(self, "Windows PowerShell 5.1")
             self.skipTest("Windows PowerShell 5.1 is not available")
 
     def parse_check(self, path):

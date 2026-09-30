@@ -5,14 +5,13 @@ pings); tokens = sum of per-kind priors x [0.7, 1.6]; minutes = critical path of
 from the median durations in logs/calls.jsonl once observed; dollars only when UB_HOME/families.json sets `prices`.
 """
 
-import glob
 import json
 import math
 import os
 import statistics
 
 from .. import textio
-from . import (ESTIMATES_FILE, FAMILY_ORDER, LAST_STAGE, STAGE_NAMES, base_family, is_alt)
+from . import (ESTIMATES_FILE, FAMILY_ORDER, LAST_STAGE, STAGE_NAMES, base_family)
 from . import state as st
 
 DEFAULT_ESTIMATES = {
@@ -87,7 +86,7 @@ def families_line(ctx):
 # ---------------------------------------------------------------- calls
 
 def job_files(run_dir):
-    return sorted(glob.glob(os.path.join(run_dir, "jobs", "*.json")))
+    return sorted(textio.glob_in(run_dir, "jobs", "*.json"))
 
 
 def calls_summary(ctx):
@@ -96,15 +95,20 @@ def calls_summary(ctx):
     if not run_dir:
         return {"done": 0, "failed": 0, "running": 0, "provisional": 0}
     live = set()
-    for p in glob.glob(os.path.join(run_dir, ".ub", "jobs", "*.running.json")):
+    for p in textio.glob_in(run_dir, ".ub", "jobs", "*.running.json"):
         live.add(os.path.basename(p)[:-len(".running.json")])
     for p in job_files(run_dir):
         try:
             job = textio.read_json(p)
         except (OSError, ValueError):
             continue
-        jid = job.get("id")
-        meta = ctx.read_json((job.get("out") or "") + ".meta.json", None) or {}
+        if not isinstance(job, dict):
+            continue
+        jid, out = job.get("id"), job.get("out")
+        if not isinstance(jid, str) or not jid:
+            continue
+        meta = ctx.read_json(out + ".meta.json", None) if isinstance(out, str) and out else None
+        meta = meta if isinstance(meta, dict) else {}
         if meta.get("id") == jid and meta.get("status") == "ok":
             done += 1
             if meta.get("provisional") or job.get("provisional"):
@@ -130,11 +134,13 @@ def observed_durations(run_dir):
             continue
         try:
             rec = json.loads(ln)
-        except ValueError:
+            secs = float(rec["duration_s"]) if rec.get("status") == "ok" and rec.get("duration_s") else None
+        except (ValueError, TypeError, AttributeError, OverflowError):  # OverflowError: an integer past a float
             continue
-        if rec.get("status") == "ok" and rec.get("duration_s"):
-            out.setdefault(rec.get("kind") or "all", []).append(float(rec["duration_s"]))
-            out.setdefault("all", []).append(float(rec["duration_s"]))
+        if secs and math.isfinite(secs) and secs > 0:
+            kind = rec.get("kind")
+            out.setdefault(kind if isinstance(kind, str) and kind else "all", []).append(secs)
+            out.setdefault("all", []).append(secs)
     return out
 
 
@@ -163,26 +169,43 @@ def _factor(ctx, est):
     return max(0.2, min(5.0, statistics.median(ratios)))
 
 
+def _reserve_of(ctx, memo, fam):
+    """Worst-case requests of one launch on `fam` (C6), or 1 when the adapter cannot tell."""
+    if fam not in memo:
+        try:
+            memo[fam] = max(1, int(ctx.deps.request_reserve({"id": "plan", "family": fam,
+                                                              "chain": ctx.family_chain(fam)})))
+        except Exception:  # noqa: BLE001 - a plan never fails on an estimate
+            memo[fam] = 1
+    return memo[fam]
+
+
 def plan(ctx, sequence=None):
-    """{"calls":{"min","max","expected","by_family"},"tokens":[lo,hi],"minutes":[lo,hi]} (6.9)."""
+    """{"calls":{"min","max","expected","by_family"},"requests":{"min","expected","max","cap"},"tokens":[lo,hi],
+    "minutes":[lo,hi]} (6.9). requests are the budget unit: one per call when nothing is retried; max counts every
+    call at its worst case (every backend of its chain, every retry, one repair)."""
     from . import pipeline
     est = estimates()
     seq = sequence if sequence is not None else pipeline.simulate(ctx)
     cmin = cmax = 0
+    rmax = 0
+    reserves = {}
     tok_lo = tok_hi = 0.0
     secs = 0.0
     by_family = {}
     parallel = _parallel(ctx)
     factor = _factor(ctx, est)
-    npings = len([f for f, i in (ctx.state.get("families") or {}).items() if i.get("preflight")])
-    cmin += npings
-    cmax += npings
+    pinged = [f for f, i in (ctx.state.get("families") or {}).items() if i.get("preflight")]
+    cmin += len(pinged)
+    cmax += len(pinged)
+    rmax += sum(_reserve_of(ctx, reserves, f) for f in pinged)
     for item in seq:
         lo, hi = item["count"]
         kind = item.get("kind") or "generator"
         e = est.get(kind) or est["generator"]
         cmin += lo
         cmax += hi
+        rmax += hi * max([_reserve_of(ctx, reserves, f) for f in item.get("families") or {}] or [1])
         mid = (lo + hi) / 2.0
         per = float(e.get("in_tokens", 0) + e.get("out_tokens", 0))
         tok_lo += per * lo * 0.7
@@ -193,6 +216,8 @@ def plan(ctx, sequence=None):
             by_family[fam] = by_family.get(fam, 0) + n
     expected = int(round((cmin + cmax) / 2.0))
     out = {"calls": {"min": int(cmin), "max": int(cmax), "expected": expected, "by_family": by_family},
+           "requests": {"min": int(cmin), "expected": expected, "max": int(max(rmax, cmax)),
+                        "cap": (ctx.state.get("budget") or {}).get("max_calls")},
            "tokens": [int(tok_lo), int(max(tok_hi, tok_lo))],
            "minutes": [int(secs * 0.7 / 60.0), int(math.ceil(secs * 1.6 / 60.0))]}
     prices = _prices()
@@ -256,7 +281,7 @@ def stage_marks(ctx, steps):
     return out
 
 
-def progress_block(ctx, steps, current=None, extra_line=None):
+def progress_block(ctx, steps, current=None):
     total = len(steps) or 1
     finished = len([s for s in steps if st.step_state(ctx.state, s["id"]) in ("done", "skipped")])
     pct = int(round(100.0 * finished / total))
@@ -357,14 +382,74 @@ def _tokens_done(n):
     return n * 12000.0
 
 
-# ---------------------------------------------------------------- budget
+# ---------------------------------------------------------------- budget (I8)
 
-def calls_used(state):
+def _row_requests(line):
+    """Backend requests of one calls.jsonl row (C6): its integer `requests`; a row without it counts as 1, except the
+    engine's host sub-agent rows (backend host), which sent nothing."""
+    try:
+        rec = json.loads(line)
+    except ValueError:
+        return 1
+    n = rec.get("requests") if isinstance(rec, dict) else None
+    if isinstance(n, int) and not isinstance(n, bool) and n >= 0:
+        return n
+    return 0 if isinstance(rec, dict) and rec.get("backend") == "host" else 1
+
+
+def requests_used(ctx):
+    """Backend requests the run has sent: the sum over logs/calls.jsonl (the request ledger, one row per attempt).
+    Read incrementally: a call parses only the complete lines appended since the last call in this process."""
+    if not ctx.run_dir:
+        return 0
+    path = os.path.join(ctx.run_dir, "logs", "calls.jsonl")
+    memo = ctx.cache.get("ledger")
+    try:
+        size = os.path.getsize(path)
+    except OSError:
+        size = 0
+    if memo is None or size < memo["pos"]:
+        memo = ctx.cache["ledger"] = {"pos": 0, "total": 0}
+    if size > memo["pos"]:
+        try:
+            with open(path, "rb") as f:
+                f.seek(memo["pos"])
+                data = f.read(size - memo["pos"])
+        except OSError:
+            return memo["total"]
+        end = data.rfind(b"\n") + 1  # a line still being appended is counted at the next call
+        for ln in data[:end].split(b"\n"):
+            if ln.strip():
+                memo["total"] += _row_requests(ln.decode("utf-8", "replace"))
+        memo["pos"] += end
+    return memo["total"]
+
+
+def launches(state):
+    """Job launches (and relaunches) the driver made: shown next to the requests, never the budget unit."""
     return int((state.get("counters") or {}).get("launched", 0))
 
 
-def over_budget(state, extra=1):
-    cap = (state.get("budget") or {}).get("max_calls")
+def budget_status(ctx):
+    b = ctx.state.get("budget") or {}
+    return {"max_calls": b.get("max_calls"), "used": requests_used(ctx), "need": int(b.get("need") or 0),
+            "launches": launches(ctx.state)}
+
+
+def budget_binds(ctx, need=None):
+    """True while budget.max_calls refuses a launch that can send up to `need` backend requests (default: what the
+    launch the cap refused needed, budget.need): requests_used + need > max_calls."""
+    b = ctx.state.get("budget") or {}
+    cap = b.get("max_calls")
     if not cap:
         return False
-    return calls_used(state) + extra > int(cap)
+    if need is None:
+        need = int(b.get("need") or 1)
+    return requests_used(ctx) + int(need) > int(cap)
+
+
+def budget_line(ctx):
+    b = budget_status(ctx)
+    return ("Requests sent: %d of %s (budget.max_calls); job launches: %d.%s"
+            % (b["used"], b["max_calls"], b["launches"],
+               (" The next job can send up to %d requests." % b["need"]) if b["need"] else ""))

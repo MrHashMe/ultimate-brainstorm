@@ -2,6 +2,8 @@
 proposal has the table of contents, <pre class="mermaid"> blocks, the status badge and the section and appendix
 anchors; PROPOSAL.md assembly (13.4); the zip contents; export without pandoc."""
 
+import base64
+import hashlib
 import os
 import re
 import shutil
@@ -17,6 +19,9 @@ from ublib import textio  # noqa: E402
 from ublib.engine import render, render_arch, registry  # noqa: E402
 
 SECTIONS = [h for _, h in registry.PROPOSAL_SECTIONS]
+# sha384 of mermaid@11.17.2/dist/mermaid.min.js (3,572,661 bytes), computed from two jsDelivr downloads and the npm
+# tarball (whose sha512 matched the registry's dist.integrity) and confirmed by a browser's SRI check
+PINNED_MERMAID_SRI = "sha384-EOXBFmc3gx5mb+vn0vPvvGqACToJD24hhacX5Yx+8NUUQrHIle/Qi5Bg9o3zKwW2"
 
 
 def write_fixture(ctx):
@@ -67,6 +72,49 @@ class MarkdownTests(unittest.TestCase):
         out = render.md_to_html("[x](javascript:alert(1))", set())
         self.assertNotIn("javascript:", out)
         self.assertNotIn("<script", render.md_to_html("<script>alert(1)</script>", set()))
+
+
+class LinkSanitizerTests(unittest.TestCase):
+    """_inline checks and escapes a link target once, on the raw text: `&` is never double-escaped, emphasis never
+    runs inside a target, and only http(s), in-page anchors and relative paths are kept ("//host" is not relative)."""
+
+    def href(self, target):
+        m = re.fullmatch(r'<a href="([^"]*)">x</a>', render._inline("[x](%s)" % target))
+        self.assertIsNotNone(m, target)
+        return m.group(1)
+
+    def test_a_query_string_is_escaped_once(self):
+        self.assertEqual(render._inline("[a](https://x.example/p?a=1&b=2)"),
+                         '<a href="https://x.example/p?a=1&amp;b=2">a</a>')
+        self.assertEqual(self.href("https://x.example/a<b"), "https://x.example/a&lt;b")
+
+    def test_protocol_relative_absolute_and_other_schemes_become_an_anchor(self):
+        for target in ("//evil.example/a", "///evil.example/a", "/etc/passwd", "\\\\evil\\a", "file://evil.example/a",
+                       "javascript:alert", "data:text/html,x", "mailto:a@b.example", "vbscript:x"):
+            self.assertEqual(self.href(target), "#", target)
+
+    def test_http_links_anchors_and_relative_paths_are_kept(self):
+        for target in ("https://x.example/", "HTTPS://x.example/", "http://x.example/a", "#sec-1", "adr/0001-a.md",
+                       "../10_ARCHITECTURE/adr/0001-a.md#decision", "./ONE-PAGER.md", "_notes/x.md"):
+            self.assertEqual(self.href(target), target, target)
+
+    def test_emphasis_never_runs_inside_a_link_target(self):
+        self.assertEqual(self.href("https://x.example/_foo_"), "https://x.example/_foo_")
+        self.assertEqual(self.href("https://x.example/a*b*c"), "https://x.example/a*b*c")
+
+    def test_a_quote_in_a_target_cannot_break_out_of_the_attribute(self):
+        self.assertEqual(self.href('https://x.example/"onmouseover=alert(1'),
+                         "https://x.example/&quot;onmouseover=alert(1")
+
+    def test_code_spans_stay_literal_and_labels_are_escaped(self):
+        self.assertEqual(render._inline("`[x](y)` and `*z* & <b>`"),
+                         "<code>[x](y)</code> and <code>*z* &amp; &lt;b&gt;</code>")
+        self.assertEqual(render._inline("[a<b>&`c`](https://a.example)"),
+                         '<a href="https://a.example">a&lt;b&gt;&amp;<code>c</code></a>')
+
+    def test_emphasis_may_span_a_link(self):
+        self.assertEqual(render._inline("*see [x](https://a.example) now* and **[y](#top)**"),
+                         '<em>see <a href="https://a.example">x</a> now</em> and <strong><a href="#top">y</a></strong>')
 
 
 class PackTests(tl.EngineTestCase):
@@ -130,6 +178,47 @@ class PackTests(tl.EngineTestCase):
         for name in ("11_PROPOSAL/index.html", "11_PROPOSAL/PROPOSAL.md", "11_PROPOSAL/ONE-PAGER.md",
                      "10_ARCHITECTURE/README.md", "10_ARCHITECTURE/adr/0001-use-sqlite.md"):
             self.assertIn(name, names)
+
+    def test_mermaid_is_pinned_and_integrity_checked_under_a_csp(self):
+        self.ctx.write("11_PROPOSAL/PROPOSAL.md", render.assemble(self.ctx))
+        html = textio.read_text(render.render_pack(self.ctx)["index"])
+        self.assertRegex(render.MERMAID_CDN,
+                         r"^https://cdn\.jsdelivr\.net/npm/mermaid@\d+\.\d+\.\d+/dist/mermaid\.min\.js$")
+        self.assertEqual(render.MERMAID_SRI, PINNED_MERMAID_SRI)
+        self.assertEqual(re.findall(r"<script\b[^>]*>", html), [
+            '<script src="%s" integrity="%s" crossorigin="anonymous">' % (render.MERMAID_CDN, PINNED_MERMAID_SRI),
+            "<script>"])
+        self.assertNotIn("import(", html)
+        csp = re.findall(r'<meta http-equiv="Content-Security-Policy" content="([^"]+)">', html)
+        self.assertEqual(len(csp), 1)
+        self.assertLess(html.index("Content-Security-Policy"), html.index("<script"))
+        policy = dict((d.split()[0], d.split()[1:]) for d in csp[0].split(";") if d.strip())
+        inline = re.findall(r"<script>(.*?)</script>", html, re.S)
+        self.assertEqual(policy["script-src"], [render.MERMAID_CDN] + [
+            "'sha256-%s'" % base64.b64encode(hashlib.sha256(s.encode("utf-8")).digest()).decode("ascii")
+            for s in inline])
+        self.assertEqual(policy["default-src"], ["'none'"])
+        self.assertEqual(policy["base-uri"], ["'none'"])
+        self.assertIn('<meta name="referrer" content="no-referrer">', html)
+        self.assertIn("if (window.mermaid)", inline[0])  # blocked or offline: the diagram source stays as it is
+
+    def test_a_template_that_differs_from_the_engine_is_refused(self):
+        real = registry.load_template
+
+        def other_hash(name, *a, **k):
+            return real(name, *a, **k).replace(render.MERMAID_SRI, "sha384-" + "A" * 64)
+        with mock.patch.object(registry, "load_template", side_effect=other_hash):
+            self.assertRaises(render.EngineError, render.build_index_html, self.ctx)
+        with mock.patch.object(registry, "load_template", return_value=None):
+            self.assertRaises(render.EngineError, render.build_index_html, self.ctx)
+
+    def test_section_headings(self):
+        self.ctx.write("11_PROPOSAL/sections/03.md", "# Some heading\nbody\n")
+        self.assertEqual(render.section_text(self.ctx, "03", "## 3. Solution"), "## 3. Solution\n\nbody")
+        self.ctx.write("11_PROPOSAL/sections/03.md", "plain body\n")
+        self.assertEqual(render.section_text(self.ctx, "03", "## 3. Solution"), "## 3. Solution\n\nplain body")
+        self.ctx.write("11_PROPOSAL/sections/03.md", "## 3. Old wording\nbody\n")
+        self.assertEqual(render.section_text(self.ctx, "03", "## 3. Solution"), "## 3. Solution\nbody")
 
     def test_export(self):
         self.ctx.write("11_PROPOSAL/PROPOSAL.md", render.assemble(self.ctx))

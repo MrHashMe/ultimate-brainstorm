@@ -129,8 +129,6 @@ class SecondPassTests(tl.EngineTestCase):
 
     def test_redo_on_a_run_signed_off_under_the_older_kit_does_not_unlock_it(self):
         # run.json from 2.0.2 has no 13.6b entry; `redo 13.7` / `redo 13.8` reset G13 to pending
-        sys.path.insert(0, tl.SCRIPTS)
-        import ub
         for sid in ("13.7", "13.8"):
             ctx = self.make_ctx(run_name="redo-%s" % sid)
             steps = pipeline.load_steps()
@@ -138,7 +136,7 @@ class SecondPassTests(tl.EngineTestCase):
                 if s["id"] not in ("13.6b", "13.4c"):
                     st.set_step(ctx.state, s["id"], "done")
             write_lint(ctx, P4)
-            self.assertEqual(ub.preview_from(ctx, sid)["calls"]["max"], 0, sid)  # the preview counts no fix call
+            self.assertEqual(gates.redo_plan(ctx, sid)["calls"]["max"], 0, sid)  # the preview counts no fix call
             pipeline.supersede_from(ctx, steps, sid)
             self.assertEqual(pipeline.current_step(ctx, steps)["id"], sid, sid)
             self.assertEqual(st.step_state(ctx.state, "13.6b"), "skipped", sid)
@@ -244,7 +242,7 @@ class EndToEndTests(tl.EngineTestCase):
     """A guided standard run on the stubs whose 13.6 moves the ask in section 1 but leaves ONE-PAGER.md alone."""
 
     def drive(self, sync_one_pager):
-        from ublib import stubs
+        import stubs  # tests/harness, on the path through engine_testlib
         real = stubs.respond
 
         def respond(job, prompt):

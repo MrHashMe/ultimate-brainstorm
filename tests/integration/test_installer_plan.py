@@ -41,7 +41,7 @@ class PlanWritesNothing(unittest.TestCase):
                     self.assertIn(k, r)
                 self.assertIn(r["action"], ("create", "update", "unchanged", "backup+update", "install", "remove",
                                             "skip-not-owned", "migrate-v1", "manual", "blocked"))
-                self.assertIn(r["how"], ("copy", "native", "npx", "npm", "print"))
+                self.assertIn(r["how"], ("copy", "native", "archive", "npx", "npm", "print"))
                 for cmd in r["commands"]:
                     self.assertTrue(isinstance(cmd, list) and all(isinstance(a, str) for a in cmd), cmd)
             text = proc.out

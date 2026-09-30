@@ -5,11 +5,13 @@ judges_after (after 12.6), arch_matrix (12.7), stack_lite (quick), arch_render_l
 12.14), arch_readme (12.15), approach_after (approach build type), decisions_after.
 """
 
-import glob
 import json
+import math
 import os
 import re
 
+from .. import filesproto
+from .. import lints
 from .. import textio
 from . import EngineError, FAMILY_ORDER, VENDORS
 from . import privacy as privacy_mod
@@ -52,9 +54,12 @@ def table(headers, rows):
     return "\n".join(out)
 
 
+SLUG_MAX = 40  # adr/NNNN-<slug>.md stays short: the path budget under Windows MAX_PATH (KIT_SPEC 7.1)
+
+
 def slug(text, n=6):
     words = re.findall(r"[a-z0-9]+", str(text or "").lower())
-    return "-".join(words[:n]) or "decision"
+    return "-".join(words[:n])[:SLUG_MAX].strip("-") or "decision"
 
 
 # ================================================================ 12.1 brief
@@ -67,7 +72,7 @@ def arch_brief(ctx, step):
     probe = ctx.read("09_PROBE.md")
     red = ctx.read("07_REDTEAM.md")
     check = ctx.read("checks/%s.md" % iid) if iid else ""
-    kill = re.findall(r"(Fails if[^\n]*)", check + "\n" + red)[:6]
+    kill = re.findall(r"(Fails if[^\n]*)", registry._unfenced(check) + "\n" + registry._unfenced(red))[:6]
     not_doing = [m.group(1).strip() for m in re.finditer(r"^Not doing[^:]*:\s*(.*)$", dec, re.M)]
     riskiest = registry.section(probe, "Riskiest assumption") or registry.first_line(
         registry.section(probe, "2") or "") or "see 09_PROBE.md"
@@ -140,16 +145,18 @@ def normalize_drivers(d):
     for q in qg:
         try:
             q["weight"] = float(q.get("weight") or 0)
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):  # OverflowError: a JSON integer too large for a float
+            q["weight"] = 0.0
+        if not math.isfinite(q["weight"]) or q["weight"] < 0:
             q["weight"] = 0.0
         total += q["weight"]
     if qg and abs(total - 70.0) > 0.01:
-        if total <= 0:
+        if total <= 0 or not math.isfinite(total):  # weights near the float limit add up to infinity
             for q in qg:
                 q["weight"] = round(70.0 / len(qg), 1)
         else:
             for q in qg:
-                q["weight"] = round(q["weight"] * 70.0 / total, 1)
+                q["weight"] = round(q["weight"] / total * 70.0, 1)  # divided first: a weight near the float limit
         diff = round(70.0 - sum(q["weight"] for q in qg), 1)
         if qg and diff:
             big = max(qg, key=lambda q: q["weight"])
@@ -375,7 +382,7 @@ def candidates_after(ctx, step):
 def judges_after(ctx, step):
     crit = set(registry.arch_criteria(ctx))
     miss = []
-    for p in glob.glob(ctx.path(ARCH, "review", "judge_*.out.json")):
+    for p in textio.glob_in(ctx.run_dir, ARCH, "review", "judge_*.out.json"):
         try:
             data = textio.read_json(p)
         except (OSError, ValueError):
@@ -425,8 +432,20 @@ def stack_lite(ctx, step):
 # ================================================================ 12.12 ADRs, risks, stack
 
 def decisions(ctx):
-    d = ctx.read_json(_a("decisions.json"), {}) or {}
-    return d if isinstance(d, dict) else {}
+    """decisions.json, read strictly: {} when it does not exist; an EngineError when it is not a JSON object. A
+    tolerant read could return one ADR out of a malformed file, and the ADR files would then be re-rendered from it."""
+    try:
+        d = textio.read_json_strict(ctx.path(ARCH, "decisions.json"))
+    except FileNotFoundError:
+        return {}
+    except (OSError, ValueError) as e:
+        raise EngineError("10_ARCHITECTURE/decisions.json %s (%s); the ADRs were left as they are"
+                          % ("could not be read" if isinstance(e, OSError) else "is not valid JSON", e),
+                          fix=['fix 10_ARCHITECTURE/decisions.json by hand, then: %s next "%s"'
+                               % (ctx.state.get("runner") or "ub", textio.to_posix(ctx.run_dir))])
+    if not isinstance(d, dict):
+        raise EngineError("10_ARCHITECTURE/decisions.json is not a JSON object; the ADRs were left as they are")
+    return d
 
 
 def risk_rows(dec):
@@ -507,8 +526,11 @@ def render_adr(n, a, date, status, risk_ids, qg_names):
 
 
 def rerender_adrs(ctx):
+    """adr/NNNN-<slug>.md from decisions.json. Stale ADR files are removed only after at least one ADR was written:
+    a decisions.json without ADRs never empties adr/."""
     dec = decisions(ctx)
-    if not dec:
+    adrs = [x for x in dec.get("adrs") or [] if isinstance(x, dict)] if isinstance(dec.get("adrs"), list) else []
+    if not adrs:
         return []
     statuses = ctx.read_json(_a("adr_status.json"), {}) or {}
     drivers = registry.drivers(ctx)
@@ -517,18 +539,16 @@ def rerender_adrs(ctx):
     risk_ids = set(r["id"] for r in risk_rows(dec))
     date = textio.now_iso()[:10]
     written = []
-    old = glob.glob(ctx.path(ARCH, "adr", "*.md"))
-    targets = []
-    for n, a in enumerate([x for x in dec.get("adrs") or [] if isinstance(x, dict)], 1):
+    old = textio.glob_in(ctx.run_dir, ARCH, "adr", "*.md")
+    for n, a in enumerate(adrs, 1):
         num = "%04d" % n
         status = statuses.get(num, "proposed")
         rel = "adr/%s-%s.md" % (num, slug(a.get("title")))
-        targets.append(rel)
         ctx.write(_a(rel), render_adr(n, a, date, status, risk_ids, qg_names))
         written.append(rel)
     for p in old:
         rel = "adr/" + os.path.basename(p)
-        if rel not in targets:
+        if rel not in written:
             try:
                 os.remove(p)
             except OSError:
@@ -556,10 +576,7 @@ def render_stack(rows):
 
 
 def _version(v):
-    s = str(v or "").strip()
-    if not s or s.lower() in ("latest", "n/a", "none", "-", "?"):
-        return "UNVERIFIED"
-    return s
+    return "UNVERIFIED" if lints.unpinned_version(v) else str(v).strip()
 
 
 def decisions_after(ctx, step):
@@ -577,6 +594,7 @@ def lint_arch(ctx):
 
 
 def arch_render_lint(ctx, step):
+    filesproto.recover(ctx.path(ARCH))  # a FILE-protocol write that a crash interrupted is finished before any read
     rerender_adrs(ctx)
     ctx.write(_a("risks.md"), render_risks(decisions(ctx)))
     stack = ctx.read_json(_a("stack.json"), {}) or {}
@@ -596,7 +614,7 @@ def arch_fix_after(ctx, step):
     unresolved = ["lint %s: %s" % (i.get("id"), i.get("message")) for i in data.get("items") or []
                   if isinstance(i, dict) and str(i.get("severity")).upper() == "FAIL"]
     res = ctx.read(_a("review/resolution.md"))
-    for p in glob.glob(ctx.path(ARCH, "review", "L*_*.json")):
+    for p in textio.glob_in(ctx.run_dir, ARCH, "review", "L*_*.json"):
         if p.endswith(".meta.json"):
             continue
         try:
@@ -613,6 +631,14 @@ def arch_fix_after(ctx, step):
 
 
 # ================================================================ 12.15 README
+
+def leader_text(matrix):
+    """The matrix leader as the README and PACK B name it: '<label> (<status>)', or 'none (every candidate EXCLUDED)'
+    (bs.py arch-matrix names no leader only when vetoes EXCLUDED every candidate)."""
+    if matrix.get("leader"):
+        return "%s (%s)" % (matrix["leader"], matrix.get("leader_status"))
+    return "none (every candidate EXCLUDED)" if matrix.get("candidates") else "none (no matrix)"
+
 
 def write_readme(ctx):
     """10_ARCHITECTURE/README.md (templates/docs/ARCH-README.md): summary, the choice and why, alternatives,
@@ -631,20 +657,26 @@ def write_readme(ctx):
     title = registry.idea_lines(ctx).get(iid or "", {}).get("title") or s.get("topic", "")
     mrow = next((c for c in matrix.get("candidates") or [] if isinstance(c, dict) and c.get("label") == label), {})
     g11 = ((s.get("gates") or {}).get("G11") or {})
-    words = (g11.get("answer") or {}).get("reply") or (g11.get("answer") or {}).get("notes") or ""
+    ans = g11.get("answer") or {}
+    words = " ".join(str(ans.get("reply") or ans.get("notes") or "").split())
+    rule = " ".join(str(ans.get("rule") or "").split())  # why the rule took the default (gates.g11_recommendation)
+    if g11.get("by") == "human":
+        decided = 'by the human: "%s"' % words if words else "by the human"
+    else:
+        decided = "by rule (AUTO-DECISION)%s" % ((": " + rule) if rule else "")
     info = m.get(label) or {}
     why = ["Chosen: candidate %s, written by %s (revealed after the choice); archetype: %s." % (
         label or "?", info.get("family") or "?", registry.archetype_short(ctx, info.get("archetype") or "A")),
-        "Matrix: weighted score %s, rank range %s, veto %s; leader %s (%s)." % (
-            mrow.get("score"), registry.fmt_range(mrow.get("range")), mrow.get("veto"), matrix.get("leader"), matrix.get("leader_status")),
-        "Decided %s%s." % ("by the human" if g11.get("by") == "human" else "by rule (AUTO-DECISION)",
-                           (': "%s"' % " ".join(words.split())) if words and g11.get("by") == "human" else "")]
+        "Matrix: weighted score %s, rank range %s, veto %s; leader %s." % (
+            mrow.get("score"), registry.fmt_range(mrow.get("range")), mrow.get("veto"), leader_text(matrix)),
+        "Decided %s." % decided]
     alts = []
     for c in matrix.get("candidates") or []:
         if isinstance(c, dict) and c.get("label") != label:
+            # one reason per vetoing judge: each different reason once
             alts.append([c.get("label"), c.get("score"), registry.fmt_range(c.get("range")), c.get("veto"),
-                         "; ".join(c.get("veto_reasons") or []) or ("lower weighted score" if c.get("rank") else
-                                                                    "not chosen")])
+                         "; ".join(dict.fromkeys(str(x) for x in c.get("veto_reasons") or [])) or (
+                             "lower weighted score" if c.get("rank") else "not chosen")])
     mech = {}
     for x in cand.get("qas_mechanisms") or []:
         if isinstance(x, dict):
@@ -677,7 +709,7 @@ def write_readme(ctx):
         prov.append("- badge: same-family bake-off")
     lint = ctx.read_json(_a("lint.json"), {}) or {}
     prov.append("- lint-arch: %s" % (lint.get("status") or "not run yet"))
-    lenses = [os.path.basename(p)[:-5] for p in sorted(glob.glob(ctx.path(ARCH, "review", "L*_*.json")))
+    lenses = [os.path.basename(p)[:-5] for p in sorted(textio.glob_in(ctx.run_dir, ARCH, "review", "L*_*.json"))
               if not p.endswith(".meta.json")]
     prov.append("- review lenses: %s" % (", ".join(lenses) or "none"))
     for u in s.get("unresolved") or []:
@@ -749,12 +781,8 @@ def arch_readme(ctx, step):
 
 
 def approach_after(ctx, step):
-    text = ctx.read(_a("approach.md"))
-    bad = []
-    body = re.sub(r"(?s)```.*?```", "", text)
-    for rx in (r"\bTODO\b", r"\bTBD\b", r"\bXXX\b", r"lorem", r"\{\{", r"<[a-z][a-z0-9 _-]{1,40}>"):
-        if re.search(rx, body, re.I if rx == "lorem" else 0):
-            bad.append(rx)
+    # lint A2's own rule (lints.placeholder_hits: outside fences and inline code, HTML tags and type arguments allowed)
+    bad = ["%s (line %d)" % (snip, n) for n, _name, snip in lints.placeholder_hits(ctx.read(_a("approach.md")))]
     ctx.write_json(_a("lint.json"), {"status": "fail" if bad else "pass",
                                      "items": [{"id": "A2", "severity": "FAIL", "file": "approach.md",
                                                 "message": "placeholder %s" % b} for b in bad]})
@@ -819,7 +847,7 @@ def context_diagrams(d):
 def adr_index(ctx, prefix=""):
     """| ADR | title | status | table of the files in adr/ (the README decision index and proposal Appendix A)."""
     rows = []
-    for p in sorted(glob.glob(ctx.path(ARCH, "adr", "*.md"))):
+    for p in sorted(textio.glob_in(ctx.run_dir, ARCH, "adr", "*.md")):
         t = textio.read_text(p)
         m = re.search(r"^# (ADR-\d{4}): (.*)$", t, re.M)
         stat = re.search(r"^status:\s*(\S+)", t, re.M)

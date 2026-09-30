@@ -12,7 +12,6 @@ Shared helpers that bs.py also uses (not frozen): extract_assumptions, norm_assu
 parse_table, fence_mask, mermaid_blocks.
 """
 
-import glob
 import os
 import re
 from decimal import Decimal
@@ -74,17 +73,19 @@ _PLACEHOLDERS = (
     ("XXX", re.compile(r"\bXXX\b")),
     ("lorem", re.compile(r"\blorem\b", re.I)),
     ("{{", re.compile(r"\{\{")),
-    ("<...>", re.compile(r"<([a-z][a-z0-9 _-]{1,40})>")),
+    # a placeholder stands alone; a type argument follows its type's name (list<string>, Promise<void>, Vec<u8>)
+    ("<...>", re.compile(r"(?<![A-Za-z0-9_])<([a-z][a-z0-9 _-]{1,40})>")),
 )
 # Plain HTML tags that Markdown writers use legitimately (GFM tables); never placeholders.
 _HTML_OK = {"br", "hr", "b", "i", "u", "em", "strong", "sup", "sub", "code", "kbd", "p", "details", "summary"}
 _INLINE_CODE = re.compile(r"`[^`\n]*`")
-_FENCE_OPEN = re.compile(r"^[ \t]*(`{3,}|~{3,})[ \t]*([A-Za-z0-9_+-]*)")
 _SOLUTION_RE = re.compile(r"\b(an?|the) (app|platform|tool|bot|AI assistant|marketplace|dashboard) (that|to|for)\b",
                           re.I)
-_ASSUMPTION_COLON = re.compile(r"\[ASSUMPTION:\s*([^\]\n]*)\]", re.I)
+# a tag text is at most 2000 characters (_SENTENCE_MAX) after the blanks that follow the colon; the text starts with a
+# non-blank and the closing blanks belong to it, so no two blank runs compete and a line of unclosed tags stays linear
+_ASSUMPTION_COLON = re.compile(r"\[ASSUMPTION:[^\S\n]*(?:([^\]\s](?:[^\]\n]{0,1998}[^\]\s])?)[^\S\n]*)?\]", re.I)
 _ASSUMPTION_BARE = re.compile(r"\[ASSUMPTION\]", re.I)
-_ESTIMATE_COLON = re.compile(r"\[ESTIMATE:\s*([^\]\n]*)\]", re.I)
+_ESTIMATE_COLON = re.compile(r"\[ESTIMATE:[^\S\n]*(?:([^\]\s](?:[^\]\n]{0,1998}[^\]\s])?)[^\S\n]*)?\]", re.I)
 _SENT_END = re.compile(r"(?<=[.!?])\s+")
 _ID_TOKENS = re.compile(r"\[?\b(?:[A-Z]{1,6}-\d+|QG\d+|QAS-\d+)\b\]?")
 
@@ -100,20 +101,7 @@ def _read(path):
 
 def fence_mask(lines):
     """One bool per line: True when the line is part of a fenced code block (fence lines included)."""
-    mask, fence = [], None
-    for line in lines:
-        m = _FENCE_OPEN.match(line)
-        if fence is None:
-            if m:
-                fence = m.group(1)
-                mask.append(True)
-            else:
-                mask.append(False)
-        else:
-            mask.append(True)
-            if re.match(r"^[ \t]*" + re.escape(fence[0]) + "{%d,}[ \t]*$" % len(fence), line):
-                fence = None
-    return mask
+    return textio.fence_mask(lines)
 
 
 def _unfenced(text):
@@ -125,22 +113,13 @@ def _unfenced(text):
 def word_count(text):
     """Words outside fenced code blocks; heading and list markers are not words."""
     body = _unfenced(text)
-    body = re.sub(r"^\s*#{1,6}\s", " ", body, flags=re.M)
+    body = re.sub(r"^[ \t]*#{1,6}\s", " ", body, flags=re.M)
     return len([w for w in re.findall(r"\S+", body) if re.search(r"\w", w)])
 
 
 def _headings(text):
-    """[(level, title, line_index)] outside fences."""
-    lines = (text or "").split("\n")
-    mask = fence_mask(lines)
-    out = []
-    for i, (line, m) in enumerate(zip(lines, mask)):
-        if m:
-            continue
-        h = re.match(r"^(#{1,6})\s+(.*?)\s*#*\s*$", line)
-        if h:
-            out.append((len(h.group(1)), h.group(2), i))
-    return out
+    """[(level, title, line_index)] outside fences (textio.headings: one linear scanner)."""
+    return [(level, title, i) for i, level, title in textio.headings(text or "")]
 
 
 def _norm_heading(s):
@@ -225,25 +204,10 @@ def placeholder_hits(text):
 
 
 def mermaid_blocks(text):
-    """[(first_line_no 1-based, body_lines)] of every ```mermaid block."""
+    """[(first_line_no 1-based, body_lines)] of every ```mermaid block (a fence left open runs to the end)."""
     lines = (text or "").split("\n")
-    out, i = [], 0
-    while i < len(lines):
-        m = _FENCE_OPEN.match(lines[i])
-        if not m:
-            i += 1
-            continue
-        fence, lang = m.group(1), m.group(2).lower()
-        j = i + 1
-        body = []
-        while j < len(lines) and not re.match(r"^[ \t]*" + re.escape(fence[0]) + "{%d,}[ \t]*$" % len(fence),
-                                              lines[j]):
-            body.append(lines[j])
-            j += 1
-        if lang == "mermaid":
-            out.append((i + 1, body))
-        i = j + 1
-    return out
+    return [(a + 1, lines[a + 1:len(lines) if b is None else b])
+            for a, b, _c, _n, lang in textio.fence_spans(text or "") if lang == "mermaid"]
 
 
 def _mermaid_type(body):
@@ -262,7 +226,7 @@ def _mermaid_type(body):
     if k >= len(lines):
         return None, ""
     first = lines[k].strip()
-    word = re.split(r"[\s;]", first, 1)[0]
+    word = re.split(r"[\s;]", first, maxsplit=1)[0]
     return (word if word in MERMAID_TYPES else None), first
 
 
@@ -274,6 +238,11 @@ def norm_assumption(text):
     """Comparison key for assumption texts (P8 and bs.py assumptions share it)."""
     s = _norm_space(str(text).replace("|", "/")).lower()
     return s.rstrip(" .;:,")
+
+
+# the window a bare [ASSUMPTION] tag reads on each side: a longer 'sentence' is no sentence, and the bound keeps a line
+# of many tags linear
+_SENTENCE_MAX = 2000
 
 
 def _clip_sentence(s):
@@ -292,22 +261,22 @@ def extract_assumptions(text):
     out = []
     for n, line in enumerate((text or "").split("\n"), 1):
         for m in _ASSUMPTION_COLON.finditer(line):
-            t = _norm_space(m.group(1))
+            t = _norm_space(m.group(1) or "")
             if t:
                 out.append(("assumption", t, n))
         for m in _ESTIMATE_COLON.finditer(line):
-            t = _norm_space(m.group(1))
+            t = _norm_space(m.group(1) or "")
             if t:
                 out.append(("estimate", "ESTIMATE: " + t, n))
         for m in _ASSUMPTION_BARE.finditer(line):
-            after = _clip_sentence(line[m.end():])
+            after = _clip_sentence(line[m.end():m.end() + _SENTENCE_MAX])
             after = re.sub(r"^[\s:,-]+", "", after)
             # "[ASSUMPTION] <sentence>": a new sentence follows (capital, digit or quote). Otherwise the tag closes
             # the claim before it ("X happens [ASSUMPTION] and ...").
             if len(re.findall(r"\w+", after)) >= 3 and re.match(r"^[A-Z0-9\"'$(]", after):
                 out.append(("assumption", _norm_space(after), n))
                 continue
-            before = line[:m.start()]
+            before = line[max(0, m.start() - _SENTENCE_MAX):m.start()]
             before = before.split("|")[-1] if "|" in before else before
             pieces = _SENT_END.split(before.strip())
             prev = pieces[-1] if pieces else ""
@@ -365,14 +334,14 @@ def _arch_doc_files(arch):
         if os.path.isfile(p):
             files.append(p)
     for pattern in ("chosen/*.md", "chosen/**/*.md", "adr/*.md"):
-        for p in sorted(glob.glob(os.path.join(arch, pattern), recursive=True)):
+        for p in sorted(textio.glob_in(arch, *pattern.split("/"), recursive=True)):
             if os.path.isfile(p) and p not in files:
                 files.append(p)
     return files
 
 
 def _adr_files(arch):
-    return sorted(p for p in glob.glob(os.path.join(arch, "adr", "*.md"))
+    return sorted(p for p in textio.glob_in(arch, "adr", "*.md")
                   if re.match(r"^\d{4}-.+\.md$", os.path.basename(p)))
 
 
@@ -416,6 +385,14 @@ def _check_adr(path, text, risk_ids, rel):
     return items
 
 
+def unpinned_version(v):
+    """True for a stack version that pins nothing: empty, '-', 'n/a', 'none', '?' or anything starting with 'latest'
+    ('latest (managed service)'). The renderer shows such a version as UNVERIFIED (render_arch._version) and lint A4
+    fails one it finds in a table, so a rendered chosen/stack.md never fails A4 on a verifier's wording."""
+    s = str(v or "").strip().lower()
+    return s in ("", "-", "n/a", "none", "?") or s.startswith("latest")
+
+
 def _check_stack(text, rel):
     lines = text.split("\n")
     mask = fence_mask(lines)
@@ -436,7 +413,7 @@ def _check_stack(text, rel):
             ver = row[vcol].strip() if vcol < len(row) else ""
             stat = row[scol].strip() if scol is not None and scol < len(row) else ""
             name = " / ".join(c for c in row[:3] if c) or "row %d" % n
-            if ver.lower() in ("", "-", "latest", "n/a") or ver.lower().startswith("latest"):
+            if unpinned_version(ver):
                 items.append(_item("A4", "fail", rel, "no pinned version for '%s' (got '%s')" % (name, ver or "")))
             elif re.search(r"UNVERIFIED|TO[- ]VERIFY|NOT SEARCHED", ver + " " + stat, re.I):
                 unverified += 1
@@ -571,10 +548,10 @@ def lint_arch(run_dir, lite=False):
             items.append(_item("A7", "fail", rel, "%d words (at least 120, or name it in chosen/deferred.md)" % n))
         if rel.endswith("cost-model.md"):
             assum = _section(text, "## Assumptions")
-            if assum is None or not re.search(r"^\s*\|", assum, re.M):
+            if assum is None or not re.search(r"^[ \t]*\|", assum, re.M):
                 items.append(_item("A7", "fail", rel, "no '## Assumptions' table"))
             has_sens = any("sensitivity" in t.lower() for _l, t, _i in _headings(text)) or \
-                re.search(r"^\s*\|.*sensitivity", _unfenced(text), re.I | re.M)
+                re.search(r"^[ \t]*\|.*sensitivity", _unfenced(text), re.I | re.M)
             if not has_sens:
                 items.append(_item("A7", "fail", rel, "no Sensitivity heading or row"))
 

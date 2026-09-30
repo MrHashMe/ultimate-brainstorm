@@ -17,8 +17,7 @@ _KIT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
 sys.path.insert(0, os.path.join(_KIT, "tests", "fixtures", "adapter"))
 
 import adapter_testlib as tl  # noqa: E402
-from ublib import adapter, families, textio  # noqa: E402
-from ublib.backends import http_openai  # noqa: E402
+from ublib import adapter, backends, families, textio  # noqa: E402
 
 OPENAI_OK = tl.fixture_bytes("http", "openai_ok.json")
 ANTHROPIC_OK = tl.fixture_bytes("http", "anthropic_ok.json")
@@ -64,7 +63,7 @@ class HttpBase(tl.AdapterTestCase):
         os.environ["NO_PROXY"] = "127.0.0.1,localhost"
         os.environ["no_proxy"] = "127.0.0.1,localhost"
         self.sleeps = []
-        p = mock.patch.object(http_openai, "_sleep", side_effect=lambda s: self.sleeps.append(s))
+        p = mock.patch.object(backends, "_sleep", side_effect=lambda s: self.sleeps.append(s))
         p.start()
         self.addCleanup(p.stop)
 
@@ -121,9 +120,12 @@ class OpenAIChatTests(HttpBase):
         os.environ["OPENAI_API_KEY"] = KEY
         job = self.make_job(family="gpt", retries=0)
         meta = self.run_http(job, "openai-http", "gpt")
-        self.assertEqual(meta["status"], "failed")
+        self.assertEqual((meta["status"], meta["error_class"]), ("failed", "rate_limit"))
         self.assertEqual(len(script.requests), 3)
-        self.assertEqual(self.sleeps, [1.0, 2.0])
+        self.assertEqual(len(self.sleeps), 2)  # full jitter: uniform in [0, 2] then [0, 4] seconds
+        self.assertTrue(0 <= self.sleeps[0] <= 2 and 0 <= self.sleeps[1] <= 4, self.sleeps)
+        self.assertEqual(meta["requests"], 3)
+        self.assertEqual([row["requests"] for row in self.calls_log()], [3])
 
     def test_401_is_auth_and_unavailable(self):
         script, base = self.serve([(401, {}, b'{"error":{"message":"invalid api key"}}')])

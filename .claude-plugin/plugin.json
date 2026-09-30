@@ -2,7 +2,7 @@
   "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
   "name": "ultimate-brainstorm",
   "displayName": "Ultimate Brainstorm",
-  "version": "2.0.2",
+  "version": "2.1.0",
   "description": "Your ideas -> decided idea -> architecture package -> full proposal, across Claude, GPT, Kimi and GLM.",
   "author": {
     "name": "MrHashMe"

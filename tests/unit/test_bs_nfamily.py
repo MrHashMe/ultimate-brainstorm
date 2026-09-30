@@ -70,8 +70,8 @@ class RunCase(unittest.TestCase):
             if not name.endswith(".map.json"):
                 continue
             meta = self.r("tournament/" + name)
-            out = [{"pair_id": pid, "winner": decide(meta["family"], meta["order"], p["first"], p["second"]),
-                    "confidence": 0.7, "decisive_reason": "x"} for pid, p in meta["pairs"].items()]
+            out = [{"pair_id": pid, "winner": decide(meta["family"], meta["order"], p["first"], p["second"])}
+                   for pid, p in meta["pairs"].items()]
             self.w("tournament/" + name.replace(".map.json", ".out.json"), {"verdicts": out})
 
     def tourney(self, ids, origins, judges, decide, provisional=None):
@@ -125,18 +125,18 @@ class TournamentTests(RunCase):
         pair = ("A", "B")
 
         def pts_for(winners):
-            pts = {}
+            pts, kinds = {}, {}
             for f, w in winners.items():
                 pts[(f, pair)] = {w: 1.0, ("B" if w == "A" else "A"): 0.0} if w else {"A": 0.5, "B": 0.5}
-            return pts
+                kinds[(f, pair)] = "win" if w else "split"
+            return pts, kinds
 
         info = {f: {"provisional": False, "vendor": bs.vendor(f)} for f in ("claude", "gpt", "kimi", "glm")}
-        C = bs.collections.Counter
 
         def contested(winners):
             fams = list(winners)
-            res = bs.analyze_tournament(pts_for(winners), C({f: 1 for f in fams}), C({f: 1 for f in fams}), {},
-                                        info, fams)
+            pts, kinds = pts_for(winners)
+            res = bs.analyze_tournament(pts, kinds, {f: [1.0, 1] for f in fams}, {}, info, fams)
             return res["contested"]
 
         self.assertEqual(contested({"claude": "A", "gpt": "A", "kimi": "B"}), [])          # 2/3 holds
@@ -147,41 +147,9 @@ class TournamentTests(RunCase):
                          [["A", "B", "families disagree"]])                               # 1/2 of consistent
         self.assertEqual(contested({"claude": None, "gpt": None, "kimi": None}),
                          [["A", "B", "no order-consistent verdict"]])
-        # N = 2 equals v1: disagree -> contested; one consistent -> not contested
+        # N = 2: disagree -> contested; one consistent -> not contested
         self.assertEqual(contested({"claude": "A", "gpt": "B"}), [["A", "B", "families disagree"]])
         self.assertEqual(contested({"claude": "A", "gpt": None}), [])
-
-    def test_n2_reproduces_v1(self):
-        ids = ["I-001", "I-002", "I-003", "I-004", "I-005"]
-        origins = {"I-001": "claude", "I-002": "gpt", "I-003": "human", "I-004": "claude", "I-005": "gpt"}
-        strength = {"I-001": 3, "I-002": 5, "I-003": 1, "I-004": 4, "I-005": 2}
-
-        def decide(fam, order, a, b):
-            if fam == "gpt" and {a, b} == {"I-001", "I-004"}:
-                return "FIRST"  # order-dependent on one pair
-            if fam == "claude" and {a, b} == {"I-002", "I-005"}:
-                return "FIRST" if a == "I-005" else "SECOND"  # disagrees with gpt
-            return by_strength(strength)(fam, order, a, b)
-
-        self.cards(ids, origins)
-        quiet(bs.prepare_tournament, self.run)
-        self.verdicts(decide)
-        v1_text = quiet(bs.tournament, self.run)  # no run.json: v1 output
-        self.run_json(tournament=["claude", "gpt"])
-        res = self.r("tournament/result.json")
-        quiet(bs.tournament, self.run)
-        res2 = self.r("tournament/result.json")
-        self.assertEqual(res["contested"], res2["contested"])
-        v1_contested = [ln for ln in v1_text.split("## Contested pairs")[1].split("##")[0].splitlines()
-                        if ln.startswith("- I-")]
-        v2_lines = ["- %s vs %s: %s" % (a, b, "judge families disagree" if w == "families disagree" else w)
-                    for a, b, w in res2["contested"]]
-        self.assertEqual(v1_contested, v2_lines)
-        v1_standings = [ln for ln in v1_text.splitlines() if ln[:1].isdigit()]
-        v2_text = self.r("tournament/result.md")
-        v2_standings = [ln for ln in v2_text.split("## Debiased")[0].splitlines() if ln[:1].isdigit()]
-        self.assertEqual(v1_standings, v2_standings)
-        self.assertEqual(v1_text.splitlines()[0], v2_text.splitlines()[0])
 
     def test_debiased_drops_own_vendor_and_inconsistent(self):
         ids = ["I-001", "I-002", "I-003", "I-004"]
@@ -196,15 +164,18 @@ class TournamentTests(RunCase):
         res, text = self.tourney(ids, origins, ["claude", "gpt", "kimi", "glm"], decide)
         self.assertEqual(res["flags"]["position"], ["glm"])
         self.assertEqual(res["consistency"]["glm"], 0.0)
+        self.assertEqual(res["ranking"]["method"], "bradley-terry")
+        self.assertEqual(res["ranking"]["families_used"], ["claude", "gpt", "kimi"])
         deb = {d["id"]: d for d in res["debiased"]}
-        # I-001 (claude-origin): claude drops all 3 of its pairs (exactly one own card each); gpt drops (1,2);
-        # kimi drops (1,3). Remaining entries: gpt on (1,3),(1,4); kimi on (1,2),(1,4) -> 4 entries, all wins.
-        self.assertEqual(deb["I-001"]["n"], 4)
-        self.assertEqual(deb["I-001"]["pct"], 100.0)
-        # I-004 (human) is nobody's own: claude drops (1,4); gpt drops (2,4); kimi drops (3,4) -> 6 of 9 left
-        self.assertEqual(deb["I-004"]["n"], 6)
-        self.assertEqual(deb["I-004"]["pct"], 0.0)
-        self.assertEqual(res["debiased"][0]["id"], "I-001")
+        # every pair keeps a neutral judge (I-001 vs I-002: kimi; vs I-003: gpt; vs I-004: gpt and kimi), so all
+        # 3 pairs of each card are scored, once each, and the fit follows the unanimous order
+        self.assertEqual([d["id"] for d in res["debiased"]], ["I-001", "I-002", "I-003", "I-004"])
+        self.assertEqual(deb["I-001"]["n"], 3)
+        self.assertEqual(deb["I-004"]["n"], 3)
+        self.assertEqual([d["rank"] for d in res["debiased"]], [1, 2, 3, 4])
+        self.assertGreater(deb["I-001"]["pct"], deb["I-002"]["pct"])
+        self.assertEqual(res["ranking"]["self_judged"], [])
+        self.assertEqual(res["condorcet"], {"winner": "I-001", "cycles": []})
         # glm's 0.5 splits also pull the audit baseline down, so claude (whose own idea is best) is flagged too:
         # the spec compares against every other non-provisional judge
         self.assertIn("## Standings excluding flagged families (", text)
@@ -252,7 +223,15 @@ class TournamentTests(RunCase):
         for key in ("families", "raw", "debiased", "contested", "consistency", "flags", "provisional"):
             self.assertIn(key, res)
         self.assertEqual(set(res["raw"][0]), {"id", "points", "max"})
-        self.assertEqual(set(res["debiased"][0]), {"id", "pct", "n"})
+        self.assertEqual(set(res["debiased"][0]), {"id", "pct", "n", "rank", "ci", "rank_range"})
+        self.assertEqual(res["debiased"][0]["rank"], 1)
+        lo, hi = res["debiased"][0]["ci"]
+        self.assertLessEqual(lo, res["debiased"][0]["pct"])
+        self.assertGreaterEqual(hi, res["debiased"][0]["pct"])
+        self.assertEqual(set(res["ranking"]), {"method", "reason", "prior", "resamples", "families_used",
+                                               "self_judged", "unscored"})
+        self.assertEqual(res["ranking"]["resamples"], 200)
+        self.assertEqual(set(res["condorcet"]), {"winner", "cycles"})
         self.assertEqual(set(res["flags"]), {"position", "self_preference"})
         self.assertEqual(res["consistency"], {"claude": 1.0, "gpt": 1.0, "kimi": 1.0})
         self.assertIsInstance(res["provisional"], list)
@@ -321,7 +300,7 @@ class ScreenTests(RunCase):
 
     def test_gap_excludes_provisional_and_needs_three(self):
         origins = {"I-001": "gpt-alt", "I-002": "gpt", "I-003": "gpt", "I-004": "claude", "I-005": "claude",
-                   "I-006": "human"}
+                   "I-006": "human", "I-007": "human", "I-008": "human"}  # the gap's baseline: 3 ideas from neither
         judges = {"claude": lambda i: 3, "gpt": lambda i: 5 if origins[i].startswith("gpt") else 3,
                   "gpt-alt": lambda i: 5}
         text, sl = self.screen_run(["claude", "gpt", "gpt-alt"], judges, origins)
@@ -333,6 +312,76 @@ class ScreenTests(RunCase):
         self.assertNotIn("claude", gaps)  # 2 own ideas only
         judges_meta = {j["label"]: j["provisional"] for j in sl["judges"]}
         self.assertEqual(judges_meta, {"claude": False, "gpt": False, "gpt-alt": True})
+
+    def screen_matrix(self, seats, table, metas=None):
+        """table: {seat: {id: (failed gates, {criterion: score})}}, unnamed criteria score 3. Every idea is human
+        (no vendor exclusion) and its own cluster; metas: {seat: family that answered it}."""
+        self.run_json(screen=seats)
+        self.w("criteria.json", CRIT)
+        ids = sorted(set(i for per in table.values() for i in per))
+        self.w("origins.json", {i: "human" for i in ids})
+        self.w("clusters.json", {i: "C-" + i for i in ids})
+        self.w("screen/ideas.md", "".join("%s | t | p | m\n" % i for i in ids))
+        for seat, per in table.items():
+            self.w("screen/%s.out.json" % seat, {"scores": [
+                dict({"id": i, "c": dict((k, c.get(k, 3)) for k in CRIT), "risk": "r"},
+                     **dict((g, g not in failed) for g in bs.GATES))
+                for i, (failed, c) in sorted(per.items())]})
+        for seat, fam in (metas or {}).items():
+            self.w("screen/%s.out.json.meta.json" % seat, {"id": "5.1-" + seat, "family": fam, "status": "ok"})
+        text = quiet(bs.screen, self.run)
+        return text, self.r("screen/shortlist.json")
+
+    @staticmethod
+    def row(text, iid):
+        return next(ln for ln in text.splitlines() if ln.startswith("| %s |" % iid))
+
+    def test_k1_two_distinct_judges_failing_the_same_gate_kill(self):
+        text, sl = self.screen_matrix(["claude", "gpt"], {
+            "claude": {"I-001": (["g1"], {}), "I-002": (["g1"], {}), "I-003": ([], {}), "I-004": ([], {})},
+            "gpt": {"I-001": (["g1"], {}), "I-002": (["g2"], {}), "I-003": (["g3"], {}), "I-004": ([], {})}})
+        self.assertEqual(sl["killed_gate"], ["I-001"])                # both judges failed g1
+        self.assertEqual(sl["flagged_gate"], ["I-002", "I-003"])      # different gates, or one judge: a flag only
+        self.assertEqual(sorted(s["id"] for s in sl["shortlist"]), ["I-002", "I-003", "I-004"])
+        self.assertIn("| KILL |", self.row(text, "I-001"))
+        self.assertIn("| flag |", self.row(text, "I-002"))
+        self.assertIn("| flag |", self.row(text, "I-003"))
+        self.assertIn("| ok |", self.row(text, "I-004"))
+
+    def test_k1_needs_two_distinct_judges(self):
+        both_fail = {"I-001": (["g2"], {}), "I-002": ([], {}), "I-003": ([], {})}
+        # one model answering both seats (gpt's seat fell back to claude) is one judge: its gate failure only flags
+        text, sl = self.screen_matrix(["claude", "gpt"], {"claude": both_fail, "gpt": both_fail},
+                                      metas={"claude": "claude", "gpt": "claude"})
+        self.assertEqual(sl["killed_gate"], [])
+        self.assertEqual(sl["flagged_gate"], ["I-001"])
+        self.assertIn("I-001", [s["id"] for s in sl["shortlist"]])
+        self.assertIn("the gpt seat was answered by claude (fallback)", text)
+        # a single screen judge seat never kills either, and the table says K1 needs 2
+        shutil.rmtree(os.path.join(self.run, "screen"))
+        text, sl = self.screen_matrix(["claude"], {"claude": both_fail})
+        self.assertEqual(sl["killed_gate"], [])
+        self.assertEqual(sl["flagged_gate"], ["I-001"])
+        self.assertIn("K1 needs 2", text)
+
+    def test_k3_floor_on_the_criterion_means(self):
+        # both judges have the same Feasibility mean (2.0), so centering leaves every value as scored
+        text, sl = self.screen_matrix(["claude", "gpt"], {
+            "claude": {"I-001": ([], {"Value": 5, "Feasibility": 1, "Fit": 5, "Distinctiveness": 5, "Evidence": 5}),
+                       "I-002": ([], {"Feasibility": 2}), "I-003": ([], {"Feasibility": 1}),
+                       "I-004": ([], {"Feasibility": 4})},
+            "gpt": {"I-001": ([], {"Value": 5, "Feasibility": 1, "Fit": 5, "Distinctiveness": 5, "Evidence": 5}),
+                    "I-002": ([], {"Feasibility": 1}), "I-003": ([], {"Feasibility": 3}),
+                    "I-004": ([], {"Feasibility": 3})}})
+        # I-001: mean 1.0 despite the best score; I-002: mean 1.5 (the floor is inclusive)
+        self.assertEqual(sl["floor_fail"], ["I-001", "I-002"])
+        self.assertEqual(max(sl["scores"], key=sl["scores"].get), "I-001")
+        self.assertEqual(sl["killed_gate"], [])
+        # I-003: one judge's 1 does not fail the floor when the mean (2.0) is above it
+        self.assertEqual(sorted(s["id"] for s in sl["shortlist"]), ["I-003", "I-004"])
+        self.assertIn("| FAIL |", self.row(text, "I-001"))
+        self.assertIn("| FAIL |", self.row(text, "I-002"))
+        self.assertNotIn("FAIL", self.row(text, "I-003"))
 
     def test_spearman(self):
         self.assertAlmostEqual(bs.spearman([1, 2, 3, 4], [10, 20, 30, 40]), 1.0)

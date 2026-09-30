@@ -1,6 +1,6 @@
 """B2 adapter tests: detached workers, running marker + heartbeat, job states, relaunch counter, foreground batch
 budget stop, stop_all (KIT_SPEC 4.4 done rule, 4.7). Real worker processes run family.py with the stub backend
-(UB_FAKE_FAMILIES=1; ublib.stubs from B4). No model CLI and no network."""
+(UB_FAKE_FAMILIES=1; tests/harness/stubs.py). No model CLI and no network."""
 
 import json
 import os
@@ -17,13 +17,10 @@ from ublib import batch, proc, textio  # noqa: E402
 _KIT_V = open(os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "VERSION"),
               encoding="utf-8").read().strip()  # kit version, so a release bump needs no test edits
 
-try:
-    from ublib import stubs as _stubs  # noqa: F401  (B4)
-    HAVE_STUBS = True
-except ImportError:  # pragma: no cover
-    HAVE_STUBS = False
+HAVE_STUBS = os.path.isfile(os.path.join(tl.KIT, "tests", "harness", "stubs.py"))  # the fake-mode responder
 
 FAMILY_PY = os.path.join(tl.SCRIPTS, "family.py")
+TIMEOUT_S = 300  # a hung worker becomes a test error with a traceback, not a runner-level kill
 TEXT = {"type": "text", "min_chars": 5}
 
 
@@ -109,14 +106,14 @@ class StateTests(BatchBase):
         self.assertEqual(batch.job_state(self.run_dir, job), "dead")
         self.assertEqual(batch.running_jobs(self.run_dir), [])
         dead = subprocess.Popen([sys.executable, "-c", "pass"])
-        dead.wait()
+        dead.wait(timeout=TIMEOUT_S)
         self.write_marker("s4", dead.pid, age_s=0)  # fresh heartbeat but the process is gone
         self.assertEqual(batch.job_state(self.run_dir, job), "dead")
 
     def test_stale_marker_after_failed_meta_is_failed(self):
         job, _p = self.job("s6")
         dead = subprocess.Popen([sys.executable, "-c", "pass"])
-        dead.wait()
+        dead.wait(timeout=TIMEOUT_S)
         self.write_marker("s6", dead.pid, age_s=30)  # marker from this launch (started 30 s ago), worker gone
         prompt = os.path.join(self.run_dir, job["prompt_file"])
         started = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - 5))
@@ -140,7 +137,7 @@ class StateTests(BatchBase):
         self.assertEqual(batch.stale_after_s(), 60.0)
 
 
-@unittest.skipUnless(HAVE_STUBS, "ublib.stubs (B4) not present")
+@unittest.skipUnless(HAVE_STUBS, "tests/harness/stubs.py not present")
 class WorkerTests(BatchBase):
     def test_detached_launch_heartbeat_and_done(self):
         os.environ["UB_STUB_DELAY_S"] = "4"
@@ -175,16 +172,16 @@ class WorkerTests(BatchBase):
         _job, path = self.job("w3")
         env = dict(os.environ, UB_STUB_FAIL="^w3$")
         rc = subprocess.run([sys.executable, FAMILY_PY, "job", "--job", path], env=env,
-                            stdout=subprocess.PIPE, stderr=subprocess.PIPE).returncode
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=TIMEOUT_S).returncode
         self.assertEqual(rc, 4)
         env = dict(os.environ, UB_FAKE_DISABLE="claude")
         rc = subprocess.run([sys.executable, FAMILY_PY, "job", "--job", path], env=env,
-                            stdout=subprocess.PIPE, stderr=subprocess.PIPE).returncode
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=TIMEOUT_S).returncode
         self.assertEqual(rc, 3)
         bad = os.path.join(self.tmp, "bad.json")
         textio.write_text_atomic(bad, '{"id": "bad id with spaces"}')
         rc = subprocess.run([sys.executable, FAMILY_PY, "job", "--job", bad], env=env,
-                            stdout=subprocess.PIPE, stderr=subprocess.PIPE).returncode
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=TIMEOUT_S).returncode
         self.assertEqual(rc, 2)
 
     def test_relaunch_counter(self):
@@ -248,19 +245,19 @@ class WorkerTests(BatchBase):
         jobs_file = os.path.join(self.tmp, "jobs.json")
         textio.write_json_atomic(jobs_file, {"jobs": jobs})
         cp = subprocess.run([sys.executable, FAMILY_PY, "batch", "--jobs", jobs_file, "--json"],
-                            stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=TIMEOUT_S)
         self.assertEqual(cp.returncode, 0, cp.stderr)
         res = json.loads(cp.stdout.decode("ascii"))
         self.assertEqual(sorted(res["done"]), ["c0", "c1"])
 
 
-@unittest.skipUnless(HAVE_STUBS, "ublib.stubs (B4) not present")
+@unittest.skipUnless(HAVE_STUBS, "tests/harness/stubs.py not present")
 class CliTests(tl.AdapterTestCase):
     def run_cli(self, *args, **env):
         e = dict(os.environ)
         e.update(env)
         return subprocess.run([sys.executable, FAMILY_PY] + list(args), env=e, stdout=subprocess.PIPE,
-                              stderr=subprocess.PIPE)
+                              stderr=subprocess.PIPE, timeout=TIMEOUT_S)
 
     def test_version_and_usage(self):
         cp = self.run_cli("--version")

@@ -55,15 +55,17 @@ class FakeRun(object):
     """A side_effect for mock.patch("ublib.proc.run"): records every call and plays scripted responses.
 
     responses: a list of ProcResult or callables(call_dict) -> ProcResult; the last one repeats.
-    Each recorded call: {"argv", "cwd", "env", "stdin", "timeout_s", "cwd_listing"}.
+    Each recorded call: {"argv", "cwd", "env", "stdin", "timeout_s", "max_stdout", "on_line", "cwd_listing"}. The
+    scripted stdout is returned whole (it is not fed to on_line): the backends then parse it in one pass.
     """
 
     def __init__(self, responses):
         self.responses = list(responses)
         self.calls = []
 
-    def __call__(self, argv, cwd=None, env=None, stdin_bytes=None, timeout_s=None):
+    def __call__(self, argv, cwd=None, env=None, stdin_bytes=None, timeout_s=None, max_stdout=None, on_line=None):
         call = {"argv": list(argv), "cwd": cwd, "env": dict(env or {}), "stdin": stdin_bytes, "timeout_s": timeout_s,
+                "max_stdout": max_stdout, "on_line": on_line,
                 "cwd_listing": sorted(os.listdir(cwd)) if cwd and os.path.isdir(cwd) else None}
         self.calls.append(call)
         idx = min(len(self.calls) - 1, len(self.responses) - 1)
@@ -113,6 +115,11 @@ class AdapterTestCase(unittest.TestCase):
         self._env.start()
         self.addCleanup(self._env.stop)
         self.addCleanup(shutil.rmtree, self.tmp, True)
+        # retry back-offs are recorded, not slept (tests that check them read self.backoffs)
+        self.backoffs = []
+        p = mock.patch("ublib.backends._sleep", side_effect=self.backoffs.append)
+        p.start()
+        self.addCleanup(p.stop)
 
     # ---- config
     def write_families_override(self, obj):

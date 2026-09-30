@@ -20,15 +20,15 @@ off.
 
 | ID | Type | What |
 |---|---|---|
-| 13.1 | S | `bs.py sources` (stable S-### ids for every URL in the run); evidence packs: PACK_A (frame, context A+B, checks of the chosen idea, decision, card), PACK_B (architecture README, container view, top ADRs, matrix summary, deferred, probe, drivers), PACK_C (cost model, risks, pre-mortem, red-team kill-assumptions, frame success, open questions) |
+| 13.1 | S | `bs.py sources` (stable S-### ids for every URL in the run's model outputs, never in the adapter's `*.meta.json`, `*.failed.md` or `*.status.json` records); evidence packs: PACK_A (frame, context A+B, checks of the chosen idea, decision, card), PACK_B (architecture README, container view, top ADRs, matrix summary, deferred, probe, drivers), PACK_C (cost model, risks, pre-mortem, red-team kill-assumptions, frame success, open questions) |
 | 13.2 | D | PROPOSAL-A (sections 2-5), PROPOSAL-B (6-9), PROPOSAL-C (10-13), in parallel, drafter family |
 | 13.3 | D | EXEC-ONEPAGER (sections/01.md + ONE-PAGER.md); deep: PRFAQ |
-| 13.4 | S | assemble PROPOSAL.md: title block + status banner (DRAFT, APPROVED, AUTOPILOT DRAFT or PENDING MILESTONE 0) + sections + appendices (A ADR index, B assumptions index, C candidate comparison from matrix.json, D idea selection record with audits and PROVISIONAL badges, E glossary, F sources); `bs.py assumptions`; `bs.py lint-proposal` |
+| 13.4 | S | finish any interrupted FILE-protocol write in `11_PROPOSAL/` first; assemble PROPOSAL.md: title block + status banner (DRAFT, APPROVED, AUTOPILOT DRAFT or PENDING MILESTONE 0; KILLED (K6) before any of them) + sections + appendices (A ADR index, B assumptions index, C candidate comparison from matrix.json and its leader ('none' when every candidate is EXCLUDED), D idea selection record with audits and PROVISIONAL badges: a table of rank, idea, score % and pairs, the ranking method (and the fallback reason), the Condorcet winner and majority cycles, E glossary, F sources); `bs.py assumptions`; `bs.py lint-proposal` |
 | 13.5 | D | PROPOSAL-RUBRIC (rubric families, JSON) and PROPOSAL-REDTEAM (a non-drafter family, JSON) |
 | 13.6 | D | PROPOSAL-FIX (drafter; sees the sections and ONE-PAGER.md): every must-fix and the top 5 red-team items answered as ADDRESSED (where), ACCEPTED-RISK (moved to section 11) or REJECTED (reason); lint FAILs and P11 items fixed; ONE-PAGER.md reprinted when a changed figure, date or ask appears in it; then 13.4 again (13.4b) |
 | 13.6b | D | only when a lint FAIL or a P11 item is left after 13.4b and G13 has not been shown yet: one more PROPOSAL-FIX pass with that lint report; then 13.4 again (13.4c) |
 | 13.7 | S | `ub render` -> index.html |
-| 13.8 | H | G13: the card lists the lint FAIL and P11 items still open (the first 8; the rest in lint.md); approve -> status Approved and ADRs accepted (dated); `changes: ...` -> 13.6 (and 13.6b) with the user's changes (at most 2 loops); `switch B` -> redo 12.10; `runner-up` -> redo 12.1 (cost preview first) |
+| 13.8 | H | G13: the card lists the lint FAIL and P11 items still open (the first 8; the rest in lint.md); approve -> status Approved and ADRs accepted (dated); `changes: ...` -> 13.6 (and 13.6b) with the user's changes (at most 2 loops); `switch B` -> redo 12.10; `runner-up` -> redo 11.1, quick Q.6 (cost preview first) |
 
 Quick mode (lite): PROPOSAL-LITE writes sections 01, 02, 03, 06, 07, 11, 12, 13 and ONE-PAGER.md in one call; then
 assembly, 1 rubric family, no red-team, render, G13.
@@ -90,11 +90,16 @@ ONE-PAGER.md that sections 1-13 no longer state (the second check is skipped wit
 
 ## HTML pack
 
-`ub render RUN` writes a single `index.html` with inline CSS: system fonts, light and dark themes, print CSS with a
-page break before each h2 and the table of contents hidden. Layout: cover (title, pitch, date, status badge), the
-one-pager card, a sticky table of contents, the 13 sections, the architecture (diagrams, ADR cards, risk table), the
-appendices. Mermaid blocks become `<pre class="mermaid">` and render from the Mermaid CDN [U-26]; offline, the source
-text stays visible. `ub render --zip` also zips index.html, PROPOSAL.md, ONE-PAGER.md and `10_ARCHITECTURE/`.
+`ub render RUN` writes a single `index.html` with inline CSS: system fonts, light and dark themes, print CSS with a page
+break before each h2 and the table of contents hidden. Layout: cover (title, pitch, date, status badge), the one-pager
+card, a sticky table of contents, the 13 sections, the architecture (diagrams, ADR cards, risk table), the appendices.
+Mermaid blocks become `<pre class="mermaid">` and render with the pinned Mermaid 11.17.2 single-file build
+(`dist/mermaid.min.js` from jsDelivr, loaded with Subresource Integrity) [U-26], under a Content-Security-Policy that
+allows only that script and the page's own init script [U-60]; offline, blocked or tampered with, the source text stays
+visible. The page comes only from `templates/docs/index.html.tpl` (a
+missing or changed template stops with a BLOCKED card). Link targets are kept only for http(s), in-page anchors and
+relative paths; anything else becomes `#`. `ub render --zip` also zips index.html, PROPOSAL.md, ONE-PAGER.md and
+`10_ARCHITECTURE/`.
 
 ## Status banners
 
@@ -104,4 +109,5 @@ text stays visible. `ub render --zip` also zips index.html, PROPOSAL.md, ONE-PAG
 | APPROVED | the user approved at G13 |
 | AUTOPILOT DRAFT: no human decisions were made | full-auto |
 | PENDING MILESTONE 0 | approved, but the probe has no `RESULT: PASSED` yet |
+| KILLED (K6): the chosen idea's pre-registered probe missed; no runner-up is left | instead of all the above once the probe missed with no runner-up left (also the one-pager, index.html, the architecture README, the handoff seed, the published copies and 12_HANDOFF.md, which then ends with the K6 warning instead of "Do not reopen ...") |
 | PROVISIONAL | shown in addition when any seat ran as `<family>-alt` |
