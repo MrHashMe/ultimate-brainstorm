@@ -185,8 +185,8 @@ inputs changed), launch pending jobs and relaunch dead ones within the global co
 the request budget; HUMAN steps first launch their `prelaunch` jobs (tournament judges during G8a) and then return the
 gate; when W runs out the engine returns an AUTO card with progress. If another process holds the lock, or a kit
 2.0.x driver (also one waiting at a gate) holds `.ub/lock.json`, the card is AUTO "another session is driving this
-run" and its `then` retries; nothing is written. A driver that stalled while a 2.0.3 driver took its record over
-returns BLOCKED "another session took over this run; this one stopped without saving".
+run" and its `then` retries; nothing is written. A driver whose record a 2.0.3 driver took (in a stall or
+mid-rewrite) returns BLOCKED "another session took over this run; this one stopped without saving".
 
 - One detached worker per model call (`family.py job`), holding the job's own OS lock. Workers outlive the `ub` call
   that started them, so a host command timeout never loses finished work.
