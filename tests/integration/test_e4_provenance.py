@@ -154,8 +154,10 @@ class InstallPs1(unittest.TestCase):
         env["PATH"] = os.pathsep.join([th.bin, os.path.join(sysroot, "System32"),
                                        os.path.join(sysroot, "System32", "WindowsPowerShell", "v1.0"),
                                        env["PATH"]])
+        # 300 s like the other PowerShell 5.1 runs under a TmpHome: one takes about 25 s on GitHub's Windows runners,
+        # and a slow runner once needed more than 120 s
         proc = paths.run([self.ps, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", script,
-                          archive], env=env, timeout=120)
+                          archive], env=env, timeout=300)
         self.assertEqual(proc.returncode, 0, paths.describe(proc))
         return [ln for ln in proc.out.splitlines() if re.match(r"^(ok|failed)\[", ln)][-1]
 
