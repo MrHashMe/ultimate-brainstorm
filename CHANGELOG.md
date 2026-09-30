@@ -2,12 +2,16 @@
 
 All notable changes to ultimate-brainstorm are listed here, newest first.
 
-## 2.1.0 - 2026-09-26
+## 2.1.0 - 2026-09-30
 
 Reliability, fairness and privacy release. A run stays consistent when several sessions touch it, the rankings rest
 on sounder statistics, repository code no longer reaches other vendors, and the install is pinned and verifiable.
 One breaking change: G14 now publishes each run into its own `docs/<run>/` folder (see Publishing). A gate reply that
 is not in the card's own words is now read back, and acts only after your `yes` (see Validation and parsing).
+
+Acceptance override: released at the owner's request before the live acceptance run of docs/ACCEPTANCE.md. Every
+change passes the offline suites on Linux, macOS and Windows (Python 3.9, 3.12 and 3.14); the checks not yet verified
+live are listed at the end of these notes.
 
 ### Concurrency and run state
 
