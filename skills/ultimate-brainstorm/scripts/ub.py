@@ -427,6 +427,9 @@ def with_run(run_dir, deps, fn, host=None, retry=None, resume=False, lease=None,
         ctx.lease, ctx.takeover = lease, takeover
         if not host:
             lock.announce(ctx.host_agent)
+            lost = pipeline.lost_lock(ctx, pipeline.load_steps(), lock)
+            if lost:
+                return lost  # a kit 2.0.3 driver took the run while announce rewrote the record: nothing is saved
         if (ctx.state.get("exec") or {}).get("redetect"):
             reseat_for_host(ctx, host or ctx.host_agent)  # a migrated v1 run: its families were never detected (#20)
             ctx.state["exec"].pop("redetect", None)

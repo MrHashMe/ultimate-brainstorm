@@ -607,6 +607,27 @@ def _int(v, default=-1):
         return default
 
 
+def _put_back(aside, path):
+    """Put a record moved aside back at path, never over a record created meanwhile (that one stands): a link, or a
+    rename on Windows (which never replaces), fails when path exists. Where the file system has no hard links (exFAT,
+    FAT32, some network shares) the bytes are copied back with an exclusive create instead, so the record is never
+    lost."""
+    try:
+        (os.rename if os.name == "nt" else os.link)(aside, path)
+        return
+    except FileExistsError:
+        return
+    except OSError:
+        pass
+    try:
+        data = textio.read_bytes(aside)
+        fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY | getattr(os, "O_BINARY", 0), 0o644)
+    except OSError:
+        return
+    with os.fdopen(fd, "wb") as f:
+        f.write(data)
+
+
 class DriverLock(object):
     """The run's driver lock (C1): the kernel byte lock batch.JobLock(run_dir, "_driver") on .ub/jobs/_driver.lock,
     the primitive the workers use. The OS drops it when its process ends, even on a hard kill, so it never goes stale
@@ -742,14 +763,8 @@ class DriverLock(object):
                 return False  # the next beat writes it
             finally:
                 if aside is not None:
-                    if fd is None:  # put the moved record back
-                        # never over a record created meanwhile (a rename never replaces on Windows)
-                        # ponytail: on a POSIX file system without hard links the moved record is lost here;
-                        # copy its bytes back with an O_EXCL create if such run folders matter
-                        try:
-                            (os.rename if os.name == "nt" else os.link)(aside, self.info_path)
-                        except OSError:
-                            pass
+                    if fd is None:
+                        _put_back(aside, self.info_path)
                     try:
                         os.remove(aside)
                     except OSError:
@@ -788,18 +803,14 @@ class DriverLock(object):
 
     def _move_aside(self, seen):
         """Move the record judged stale aside (False when it cannot be moved); when what was moved is not that record
-        (a 2.0.3 driver replaced it meanwhile), put it back: a link fails when a new record exists already, and then
-        that one stands."""
+        (a 2.0.3 driver replaced it meanwhile), put it back (_put_back: never over a new record, which then stands)."""
         aside = "%s.stale-%s" % (self.info_path, os.urandom(4).hex())
         try:
             os.replace(self.info_path, aside)
         except OSError:
             return False
         if textio.read_json_or(aside) != seen:
-            try:
-                os.link(aside, self.info_path)
-            except OSError:
-                pass
+            _put_back(aside, self.info_path)
         try:
             os.remove(aside)
         except OSError:

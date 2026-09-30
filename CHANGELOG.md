@@ -9,10 +9,13 @@ All notable changes to ultimate-brainstorm are listed here, newest first.
 - During an upgrade alongside kit 2.0.3 drivers, a driver that stalled for more than 120 s could still miss that a
   2.0.3 driver took its `.ub/lock.json` record over. When the takeover landed while the heartbeat was refreshing the
   record, the refresh wrote over it. The driver then kept seeing its own record and could save over the other
-  driver's work. The heartbeat now moves the record aside and writes a new one only when the old one was its own. A
-  2.0.3 record is put back, and the driver stops without saving (BLOCKED "another session took over this run; this
-  one stopped without saving"). A 2.0.3 driver that starts in the instant the record is moved aside takes the run, and
-  this driver stops the same way. Seen as an intermittent Windows CI failure.
+  driver's work. The heartbeat, and a command when it names its host agent in the record, now move the record aside
+  and write a new one only when the old one was their own. A 2.0.3 record is put back, and the driver stops without
+  saving (BLOCKED "another session took over this run; this one stopped without saving"). A 2.0.3 driver that starts
+  in the instant the record is moved aside takes the run, and this driver stops the same way: a command at once, a
+  driver loop or the terminal before its next save. Seen as an intermittent Windows CI failure.
+- A lock record moved aside and put back is no longer lost on a file system without hard links (exFAT, FAT32, some
+  network shares): its bytes are copied back, never over a newer record.
 
 ## 2.1.0 - 2026-09-30
 

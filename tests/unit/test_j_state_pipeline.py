@@ -13,6 +13,7 @@
   write of a displaced session; a real late write still is
 """
 
+import errno
 import io
 import json
 import os
@@ -403,6 +404,41 @@ class LostRecord(Base):
 
     def test_a_record_that_went_away_is_not_recreated_by_the_beat(self):
         self.beat_meets_takeover("gone")
+
+    def test_a_takeover_is_put_back_where_hard_links_fail(self):
+        """Review 2.1.1: on a file system without hard links (exFAT, FAT32, some network shares) the put-back link
+        failed and the 2.0.3 record moved aside was deleted; its bytes are now copied back with an exclusive create."""
+        with mock.patch.object(os, "rename" if os.name == "nt" else "link",
+                               side_effect=PermissionError(errno.EPERM, "no hard links here")):
+            self.beat_meets_takeover("before")
+
+    def test_the_copy_back_never_writes_over_a_takeover(self):
+        with mock.patch.object(os, "rename" if os.name == "nt" else "link",
+                               side_effect=PermissionError(errno.EPERM, "no hard links here")):
+            self.beat_meets_takeover("after")
+
+    def test_a_takeover_while_a_command_announces_stops_it_without_saving(self):
+        """Review 2.1.1: announce moves the record aside as the beat does, at the start of every command; a 2.0.3
+        driver that creates its record in that moment takes the run. The command went on and saved run.json over the
+        other driver's; it now stops before it saves anything."""
+        run = self.run_dir()
+        info = os.path.join(run, ".ub", "lock.json")
+        before = textio.read_bytes(os.path.join(run, "run.json"))
+        taken, real = [], textio._replace_with_retry
+
+        def replace(src, dst, *args):
+            if taken or os.path.normcase(src) != os.path.normcase(info) or                     threading.current_thread().name == "ub-driver-beat":
+                return real(src, dst, *args)
+            taken.append(None)
+            real(src, dst, *args)
+            taken[0] = self.take_over(run)
+        with mock.patch.object(textio, "_replace_with_retry", side_effect=replace):
+            card = ub.with_run(run, tl.FakeDeps(), lambda ctx, lock: self.fail("drove the run"))
+        self.assertTrue(taken, "announce never moved lock.json aside")
+        self.assertEqual(card["type"], "BLOCKED", card)
+        self.assertIn("another session took over this run; this one stopped without saving", card["say"])
+        self.assertEqual(textio.read_bytes(os.path.join(run, "run.json")), before)
+        self.assertEqual(textio.read_json(info), taken[0])
 
     def test_a_driver_that_keeps_its_record_saves(self):
         run, lock = self.claimed()
