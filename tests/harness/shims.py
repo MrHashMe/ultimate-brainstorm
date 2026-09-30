@@ -5,7 +5,7 @@ POSIX: an executable `/bin/sh` wrapper per tool (a shebang script) that execs "$
 Windows: `<tool>.cmd` = `@"%UB_FAKE_PY%" "%~dp0fakecli.py" <tool> %*` (CRLF), so the real `.cmd` quoting path runs.
 
 fakecli.py is copied next to the shims together with `_kit_path.txt`, which tells the copy where the kit lives (for
-`ublib.stubs`).
+`tests/harness/stubs.py`).
 """
 
 import os

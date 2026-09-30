@@ -1,15 +1,16 @@
 # The Ultimate Brainstorming Workflow for Claude Code and Codex
 
 Checked against the component repositories, the Claude Code docs (v2.1.280) and the Codex docs (rust-v0.156.0) as of
-2026-09-23. Time and token figures are estimates unless a source is named. Anything not confirmed by a source is marked
-"likely", "inferred" or "not documented".
+2026-09-23. Time and token figures are estimates unless a source is named; the kit's call, token and time figures come
+from its own planner, `ub plan` (section 0 says how). Anything not confirmed by a source is marked "likely",
+"inferred" or "not documented".
 
 ---
 
 ## 0. The kit (v2)
 
-Everything in this guide is automated by the **ultimate-brainstorm kit v2.0**. You install it once, type one command in
-your agent, and answer about 7 short replies (standard mode, guided): kickoff, frame, gut pick, decision,
+Everything in this guide is automated by the **ultimate-brainstorm kit v2** (2.1.0). You install it once, type one
+command in your agent, and answer about 7 short replies (standard mode, guided): kickoff, frame, gut pick, decision,
 architecture choice, sign-off and handoff. Full-auto needs none after a one-time privacy confirmation.
 Out come a decided idea, an architecture package (`10_ARCHITECTURE/`) and a full proposal (`11_PROPOSAL/PROPOSAL.md`,
 `ONE-PAGER.md`, `index.html`). Every evidence rule in this guide still applies; the kit enforces them in code.
@@ -28,41 +29,103 @@ Claude Code and Kimi CLIs and a GLM key (`--with-clis claude,codex,kimi --login`
 | Kimi Code CLI v2 | `/skill:ultimate-brainstorm <topic>` |
 | ZCode | `$ultimate-brainstorm <topic>` |
 | Claude Code or Codex on GLM or Kimi models | start `claude-glm`, `codex-glm`, `claude-kimi` or `codex-kimi` from `~/.ultimate-brainstorm/bin/`, then as above |
-| Terminal only | `~/.ultimate-brainstorm/bin/ub run "<topic>"` |
+| Terminal only | `~/.ultimate-brainstorm/bin/ub run "<topic>"` (or `ub run --text-file <file>` for text with quotes or `$`) |
 
-Words before the topic choose the mode (`quick`, `deep`, `proposal <your idea>`), the variant (`software`, `product`,
-`growth`, `research`, `marketing`, `creative`, `naming`), the autopilot (`hands-on`, `full-auto`) and `private` (host
-vendor only, no web). `continue`, `status`, `stop` and `doctor` work the same way.
+Inside an agent, the skill writes what you typed to `brainstorm/.kickoff.txt` and starts the run with `ub init
+--text-file`, so no shell ever sees your words. Words before the topic choose the mode (`quick`, `deep`, `proposal
+<your idea>`), the variant (`software`, `product`, `growth`, `research`, `marketing`, `creative`, `naming`), the
+autopilot (`hands-on`, `full-auto`) and `private` (host vendor only, no web). `web: no`, `vendors: no` or `code: no`
+before the topic or ending a line applies to that run; a no the kit cannot place as a setting (`(vendors: no)`, `no
+vendors please`, `don't send anything to OpenAI`) makes the kickoff card ask, even in full-auto (docs/PRIVACY.md).
+Other wordings (`No web.`, `web off`) are not read: type `web: no`, `vendors: no`, `code: no` or `private`.
+Without a variant word the variant is guessed from keywords in the topic, and the first card says so ("inferred") and
+how to change it. `continue`, `status`, `stop` and `doctor` work the same way, alone or followed by a run's folder
+name or path; followed by anything else they are neither run nor started as a topic, and the card asks you to put a
+mode word first (`/ultimate-brainstorm standard stop smoking coach for nurses`). `stop` pauses a run (running calls
+are stopped and nothing new starts) until `continue` (or `run --continue` in a terminal; the agent's own polling never
+resumes it), and does nothing on a finished run; `ub budget "<run>" --max-calls N` raises a run's request cap. Keep
+runs out of folders whose path holds a `$` before a name (`pay$app`), a backtick or a double quote: the commands on
+every card would lose it in the shell, so such a run is not started.
 
 **How it runs.** The skill is a thin driver. A Python engine (`ub.py`) decides every step from a pipeline file and returns
 one card per call: AUTO (work is running), HUMAN (a question for you), HOST (an interactive skill such as grilling runs
 in your conversation), HOST_BATCH (fresh sub-agents run prompt files), DONE or BLOCKED (with fix commands). Each model
 call is a detached worker (`family.py`) that survives the host's command timeouts; `bs.py` does all counting. All state
-lives in `brainstorm/<run>/run.json` and plain files, so any agent can `continue` a run.
+lives in `brainstorm/<run>/run.json` and plain files, so any agent can `continue` a run. One session drives a run
+at a time (an operating-system lock that a crashed session never keeps); another session's command waits and
+retries.
+
+**Replies.** Answer a checkpoint in the words its card shows (`kill I-003`, `publish architecture, ce`, `raise to
+300`). Where a reply acts (a kill, a publish, a switch, an extension, a raised budget), a word the kit does not read
+next to the action is asked again instead of guessed (`publish everything, omit the proposal` gets "Your reply has
+words I cannot read next to `proposal` ('omit')"): put a reason after `because`, in brackets or after ` # ` (`kill
+I-003 (dup of I-007)`); a note that says no is read with the answer (`publish everything # not the proposal`
+reads as publishing the rest). A question, a hedge, sarcasm (`why not`) and a reply that corrects itself (`A,
+actually B`) are asked again too, wherever they stand (`raise to 300 (not sure)`, `idk, kill I-003`, `raise to 300
+(no, 250)`). Text that is not your own answer (a colleague's line such as `Sam (Slack): 'reject 3'`, a pasted card, a
+signature) is only a note, and a reply of nothing else is asked again. At the confirm checkpoints (G2c, G10) only a
+reply that is all correction starts a redo: `ok, corrections to follow` or `fine by me, I don't know much about this`
+is asked again.
+
+**Read-backs.** A reply in the card's own words acts at once (`kill I-003`, `publish all, ce`, `raise to 300`, `ok`).
+Any other reply the kit can read waits for you: the same card comes back with "I read your reply as: <what the kit will
+do>. Reply yes to do that, or tell me what you want instead." Nothing has happened yet. Reply `yes` (or `ok`, `go
+ahead`, `do it`, `alright`, `that's what I meant`, a thumbs-up) to do exactly that, `no` to be asked again, or say what
+you want instead, which is read
+afresh (and may be read back in turn). A question or an unclear reply brings the card back still offering the reading.
+A yes or no with more words (`yes, and kill I-007 too`) is asked again: say the whole answer in one reply. A
+correction at G2c or G10, `changes: ...` at G13 (a paid change round) and seed ideas at the start are always read
+back, the seeds listed as the vendors will receive them. At G13, `approve` after a reading of a switch or a change
+round is asked once; a second `approve` keeps the card's architecture. So is `go` after a reading that stops a v1 run
+(`ok go` too): a second `go` extends it. So is `publish` after a publish reading that names a handoff or only some
+items: a second `publish` publishes all three with no handoff. At the start, a new reply that leaves out the privacy
+you asked for (`start` after `let's go, and keep it private`) brings the private reading back: `yes` keeps it. If the
+run moves on before you answer (a stop and continue, a redo, a restore), a late `yes` is asked again rather than acting
+on the old reading.
+At the finalist, red-team and decision checkpoints, `ok` or the IDs alone act at once (`I-003, I-007, I-010`; at the
+decision `I-007 because nurses already trust it`, with `runner-up: I-004` or `park: I-009` if you like). Other words
+are read back with every consequence: `all but I-009` or `I-004 instead of I-001` as the set it leaves (and what it
+drops or adds), `not I-003, take I-007` as the idea the probe, architecture and proposal are built for, with the
+runner-up the rule records. A reply that both takes and leaves out an idea, names a range (`I-001 to I-004`), names an
+idea the card does not offer or puts an idea next to a word the kit does not read as taking or leaving it (`I-008
+trumps I-001`) is asked again. Your gut top 3 is recorded as you wrote it, without the ideas you leave out
+(`cut I-009`, `I-003 out`), never read back.
+Hosts write your answer to a read-back with only `reply` filled.
 
 **Model families.** claude (Claude Code CLI), gpt (Codex CLI), kimi (Kimi Code CLI, or Claude Code / Codex on Moonshot)
 and glm (Claude Code or Codex on Z.ai). With 2 or more, generation and judging are spread across families; with one,
 every "other family" seat is the same vendor in a fresh context, labeled PROVISIONAL.
 
-**Modes** (estimates; `ub plan` recomputes them for your families):
+**Modes.** The call, time and token figures are the kit's own plan, produced with
+`ub plan --mode <mode> --variant general --families claude,gpt,kimi --json` (and `--families claude,gpt,kimi,glm` for
+the figures in brackets) on kit 2.1.0 with no user configuration; the software variant gives the same numbers. The
+first card of every run shows the same estimate for the families you actually have, plus one preflight ping per family
+(and one web probe for Codex).
 
-| Mode | Replies (guided) | Wall time | Model calls (3 families) | Tokens | Contents |
+| Mode | Replies (guided) | Model calls, 3 families (4) | Model time | Tokens | Contents |
 |---|---|---|---|---|---|
-| quick | 3-4 | 30-50 min | 25-40 | 0.2-0.5M | brief + 5 ideas + 3 criteria, one generation pass on 2 families, both-order judging by the other families, gut pick, decision, quick probe, lite architecture and proposal; "Novelty NOT checked" |
-| standard | 6-7 | 3-5 h, mostly unattended | 75-110 | 1.0-2.5M | Stages 0-14 in full |
-| deep | 10-14 | 6-10 h | 180-350 | 3-6M | standard plus the deep extras of sections 4 and 7, 4 architecture candidates, 4 review lenses, PR/FAQ |
-| proposal | 4-5 | 1.5-2.5 h | 35-55 | 0.6-1.2M | your idea as the primary, 2 contrast variants, checks, tournament, red-team, decision (default: your idea), probe, Stages 12-14 |
+| quick | 4-5 | 16 (16) | 33-77 min | 0.22-0.49M | brief + 5 ideas + 3 criteria, one generation pass on 2 families, a blind score by both of them (and by a third family when you have one), both-order judging by one other family, gut pick (hands-on only), decision, quick probe, lite architecture and proposal; "Novelty NOT checked" |
+| standard | 6-7 | 55-73 (56-74) | 87-201 min, mostly unattended | 0.65-1.84M (0.67-1.88M) | Stages 0-14 in full |
+| deep | 6-9 | 73-193 (78-226) | 125-288 min (131-301) | 0.82-4.23M (0.88-4.91M) | standard plus the deep extras of sections 4 and 7, 4 architecture candidates, 4 review lenses, PR/FAQ |
+| proposal | 5-6 | 46-48 (47-49) | 72-166 min | 0.55-1.28M (0.57-1.32M) | your idea as the primary, 2 contrast variants, checks, tournament, red-team, decision (default: your idea), probe, Stages 12-14 |
+
+Model time is the plan's estimate for the model calls alone (at most 4 run at once); your replies, interactive skills
+such as grilling or ce-ideate, and the probe come on top. A call that succeeds the first time is one backend request.
+The run's budget counts backend requests, retries and repair calls included: the caps are quick 60, standard 180, deep
+600 and proposal 90, and a launch starts only when its worst case fits (`ub plan` prints that worst case as
+`requests.max`, counting every retry, the repair call and every backend of the family). A guided run asks before a
+launch would pass the cap (GB); full-auto stops, and `ub budget "<run>" --max-calls N` lets it go on.
 
 **Autopilot presets:**
 
 | | hands-on | guided (default) | full-auto |
 |---|---|---|---|
-| Kickoff (plan, cost, vendors, privacy, optional seeds) | asks | asks; the same reply can carry your seed ideas | asks only until privacy defaults are saved |
+| Kickoff (plan, cost, vendors, privacy, optional seeds) | asks | asks; the same reply can carry your seed ideas | asks until privacy defaults are saved, and again when a family from a new vendor is enabled |
 | Frame | grilling up to 3 rounds, then confirm | grilling 1 round if installed, otherwise a short question form | drafted, every item ASSUMED |
 | Round 2, rescues, K4 kills, finalists | asks | automatic; K4 candidates are parked, never killed | automatic |
-| Gut pick, then decision | gut pick before any judge runs; decide | gut pick while sealed judges run; decide (`ok` accepts the suggestion) | rule default, stamped AUTO-DECISION |
+| Gut pick, then decision | gut pick before any judge runs; decide | gut pick while sealed judges run (quick and proposal: no gut pick); decide (`ok` accepts the suggestion) | rule default, stamped AUTO-DECISION |
 | Probe | waits for the result | designed; report later with `probe passed`, `probe missed` or `probe inconclusive` | designed only |
-| Architecture choice | asks (plus drivers and each ADR) | asks | leader, AUTO-DECISION |
+| Architecture choice | asks (plus drivers and each ADR; quick: the choice only when the leader is vetoed, self-judged or confounded) | asks (quick: only when the leader is vetoed, self-judged or confounded) | leader, AUTO-DECISION |
 | Sign-off and handoff | asks | asks | DRAFT with "AUTOPILOT DRAFT: no human decisions were made" |
 
 **File names in sections 5-9.** Those sections describe the v1 method and keep its names. In the kit, the handoff stage
@@ -116,15 +179,15 @@ human decides.
              -> HUMAN CHOICE -> package, ADRs, verified stack, review lenses
 13 PROPOSAL  cited sections from evidence packs -> one-pager -> rubric + red-team -> fix -> HTML pack
              -> HUMAN SIGN-OFF
-14 HANDOFF   publish to docs/ on your yes; ce-brainstorm -> ce-plan | Spec Kit | one-pager; LEDGER rows
+14 HANDOFF   publish to docs/<run>/ on your yes; ce-brainstorm -> ce-plan | Spec Kit | one-pager; LEDGER rows
 ```
 
-| Mode | Time (estimate, kit v2) | What changes |
+| Mode | Model calls, time and tokens (`ub plan`, 3 families) | What changes |
 |---|---|---|
-| quick | 30-50 minutes, 25-40 model calls, 0.2-0.5M tokens | 5 human ideas and 3 criteria, one generation pass on 2 families, other-family both-order check, human pick plus risk test, then a lite architecture and proposal |
-| standard | 3-5 hours (mostly unattended; about 6-7 replies), 75-110 calls, 1.0-2.5M tokens split across the families | the 14 stages above |
-| deep | 6-10 hours, 180-350 calls, 3-6M tokens | adds a facilitated human round, more strategies, per-pair judging, forging, a 10-day build simulation, 4 architecture candidates and a PR/FAQ |
-| proposal | 1.5-2.5 hours, 35-55 calls | starts from your own idea: contrast variants, checks, red-team, decision, probe, then Stages 12-14 |
+| quick | 16 calls, about 30-80 minutes of model work, 0.2-0.5M tokens | 5 human ideas and 3 criteria, one generation pass on 2 families, a blind score by both (and a third family), other-family both-order check, human pick plus risk test, then a lite architecture and proposal |
+| standard | 55-73 calls, about 1.5-3.5 hours of model work (mostly unattended; about 6-7 replies), 0.6-1.8M tokens split across the families | the 14 stages above |
+| deep | 73-193 calls, about 2-5 hours of model work, 0.8-4.2M tokens | adds a facilitated human round, more strategies, per-pair judging, forging, a 10-day build simulation, 4 architecture candidates and a PR/FAQ |
+| proposal | 46-48 calls, about 1.2-2.8 hours of model work, 0.5-1.3M tokens | starts from your own idea: contrast variants, checks, red-team, decision, probe, then Stages 12-14 |
 
 ### The rules the pipeline never breaks
 
@@ -348,13 +411,14 @@ kit/                                  one repo = the plugin for Claude Code, Cod
     scripts/ub.py                     engine: the 14-stage state machine, one card per call
     scripts/family.py                 model-family adapter; one detached worker per model call
     scripts/bs.py                     Python 3.9+ standard library: init, status, schemas, map, screen, tournament
-                                      (N families), dupcheck, quick-pick, arch-matrix, lint-*, split, sources, assumptions
+                                      (N families), quick-pick, arch-matrix, lint-*, split, sources, assumptions
   docs/                               this guide, INSTALL, HOSTS, FAMILIES, PRIVACY, TROUBLESHOOTING
 ```
 
-The v1 `bs.py` behavior (gate kills and floor, human slot, both-order tallies, position and self-preference audits,
-per-pair mode, tolerant reads, dupcheck fallback, status checks) is kept byte for byte for runs without `run.json` and
-is covered by the kit's test suite (`python tools/ci.py all`), which uses fake CLIs and never calls a real model.
+bs.py works on v2 run folders (run.json); a `ub` command that drives the run (`ub continue "<run>"`) migrates a v1
+run folder once; `ub status` only reads it. Its behavior (gate kills and floor, human slot, both-order tallies,
+position and self-preference audits, per-pair mode, tolerant reads of model output, status checks) is covered by the
+kit's test suite (`python tools/ci.py all`), which uses fake CLIs and never calls a real model.
 
 The sections below are the manual route, **without the installer**.
 
@@ -370,7 +434,7 @@ The sections below are the manual route, **without the installer**.
 | ZCode desktop | host (glm family) | the skill is copied to `~/.zcode/skills`; its plugin screen is a manual step |
 | `ZAI_API_KEY` (GLM Coding Plan) | glm family through Claude Code or Codex; the `claude-glm` / `codex-glm` launchers | `install.py setup-glm --launcher --codex`; the plan may be used only in supported tools, so the kit sends GLM traffic only through Claude Code or Codex |
 | `KIMI_API_KEY` (Moonshot Platform) or `KIMI_CODE_API_KEY` (Kimi Code membership) | kimi family through Claude Code or Codex; `claude-kimi` / `codex-kimi` | optional; `install.py setup-kimi` |
-| Node.js and npx | installers; `npx skills@1.7.0` needs Node 22.20+ | BMAD's installer needs Node.js 20.12+ |
+| Node.js and npm | installers; the agent CLIs' npm installs need Node 22.20+ | BMAD's installer needs Node.js 20.12+; the mattpocock skills need no Node (the installer copies them from a pinned archive) |
 | Git for Windows (Git Bash) | bash commands, claude-council, Superpowers hook; ce-ideate's scratch-dir setup is a bash snippet (our inference; not a documented CE requirement) | Windows only; Codex on native Windows runs PowerShell (or use WSL) |
 | `GITHUB_TOKEN` | idea-reality search rate limits | optional |
 | `GEMINI_API_KEY`, `PERPLEXITY_API_KEY`, `XAI_API_KEY`, `OPENROUTER_API_KEY` or CLIs (`agy` as the separate `antigravity` seat, `grok`, `ollama`) | claude-council seats | optional; bash (Git Bash on Windows), curl and jq required |
@@ -380,7 +444,7 @@ The sections below are the manual route, **without the installer**.
 
 ```text
 # Shell: the kit as a native plugin (Claude Code 2.1.268+) from a local copy or the GitHub repo; this replaces the
-# skill copy below. After a release: claude plugin marketplace add MrHashMe/ultimate-brainstorm@v2.0.3
+# skill copy below. After a release: claude plugin marketplace add MrHashMe/ultimate-brainstorm@v2.1.0
 claude plugin marketplace add <abs path to kit>
 claude plugin install ultimate-brainstorm@ultimate-brainstorm --scope user
 
@@ -394,18 +458,21 @@ New-Item -ItemType Directory -Force "$HOME\.claude\skills" | Out-Null; Copy-Item
 
 # In a Claude Code session, inside the project: Compound Engineering. The dialog offers User, Project and Local scope;
 # pick Local in a shared repo (Project writes the tracked .claude/settings.json for everyone)
-/plugin marketplace add EveryInc/compound-engineering-plugin
+/plugin marketplace add EveryInc/compound-engineering-plugin@compound-engineering-v3.28.2
 /plugin install compound-engineering
 # Optional pin against fast releases (shell; tag name taken from the release name; `claude plugin install` without
 # --scope installs at user scope):
 #   claude plugin marketplace add EveryInc/compound-engineering-plugin@compound-engineering-v3.28.2
 
-# Shell: grilling + domain-modeling (used by the pipeline) and the grill-with-docs / grill-me wrappers (for typing
-# yourself outside the pipeline), user scope. --copy: without it the CLI keeps the canonical copy in ~/.agents/skills,
-# which Codex also scans (and symlinks can fail on Windows without Developer Mode)
-DISABLE_TELEMETRY=1 npx -y skills@1.7.0 add mattpocock/skills --skill grilling --skill domain-modeling --skill grill-with-docs --skill grill-me -g -a claude-code --copy
+# grilling + domain-modeling (used by the pipeline): the installer copies them (install.py install --components core);
+# by hand: download https://codeload.github.com/mattpocock/skills/tar.gz/c55ee46073ed923f86ce59a5eb3b6d895095d1b7
+# and copy skills/productivity/grilling and skills/engineering/domain-modeling into ~/.claude/skills/
 #   or, in a session: /plugin install mattpocock-skills@claude-plugins-official  (the whole set; never both routes;
 #   the plugin's skills are then called mattpocock-skills:grilling and mattpocock-skills:domain-modeling)
+# Optional, your own choice (the kit does not install them): the grill-with-docs / grill-me wrappers for typing
+# yourself outside the pipeline, user scope. --copy: without it the CLI keeps the canonical copy in ~/.agents/skills,
+# which Codex also scans (and symlinks can fail on Windows without Developer Mode)
+DISABLE_TELEMETRY=1 npx -y skills@1.7.0 add mattpocock/skills#c55ee46073ed923f86ce59a5eb3b6d895095d1b7 --skill grill-with-docs --skill grill-me -g -a claude-code --copy
 
 # Optional: council seats from more vendors
 /plugin marketplace add hex/claude-marketplace
@@ -413,7 +480,7 @@ DISABLE_TELEMETRY=1 npx -y skills@1.7.0 add mattpocock/skills --skill grilling -
 /claude-council:status
 
 # Optional, shell: prior-art counts for developer-tool ideas (documented option order: options, then the name)
-claude mcp add --env GITHUB_TOKEN=<token> --transport stdio idea-reality -- uvx idea-reality-mcp
+claude mcp add --env GITHUB_TOKEN=<token> --transport stdio idea-reality -- uvx idea-reality-mcp@0.5.0
 ```
 
 Check: `/skills` lists `ultimate-brainstorm` (and `compound-engineering:ce-ideate`, and `grilling` / `domain-modeling`
@@ -425,7 +492,7 @@ Start: `/ultimate-brainstorm standard product "<your topic>"`. Resume later with
 
 ```text
 # Shell: the kit as a native plugin (Codex 0.156+), then restart Codex; this replaces the skill copy below.
-# After a release: codex plugin marketplace add MrHashMe/ultimate-brainstorm@v2.0.3
+# After a release: codex plugin marketplace add MrHashMe/ultimate-brainstorm@v2.1.0
 codex plugin marketplace add <abs path to kit> --json
 codex plugin add ultimate-brainstorm@ultimate-brainstorm --json
 
@@ -441,15 +508,13 @@ New-Item -ItemType Directory -Force "$HOME\.agents\skills" | Out-Null; Copy-Item
 codex plugin marketplace add EveryInc/compound-engineering-plugin@compound-engineering-v3.28.2
 codex plugin add compound-engineering@compound-engineering-plugin
 
-# Shell: grilling + domain-modeling, user scope. Run it FROM YOUR HOME FOLDER without -g: the skills CLI's project scope for Codex
-# is ./.agents/skills, so this lands in ~/.agents/skills, the user folder Codex scans (learn.chatgpt.com/docs/build-skills).
-# Avoid -g here: for Codex, -g writes to $CODEX_HOME/skills (default ~/.codex/skills; vercel-labs/skills src/agents.ts),
-# a deprecated location Codex still loads for backward compatibility (codex-rs/ext/skills/src/host_roots.rs) but no
-# longer documents. Run inside a repo instead and it lands in
-# that repo's .agents/skills, which git tracks. It also writes ~/skills-lock.json (the CLI's project lock file);
-# harmless. Skip grill-me and grill-with-docs in Codex: each is one line naming a Skill tool that Codex does not have
-# under that name, so they are unreliable there. The line works in bash and both PowerShell versions (5.1 has no &&).
-cd ~; DISABLE_TELEMETRY=1 npx -y skills@1.7.0 add mattpocock/skills --skill grilling --skill domain-modeling -a codex -y
+# grilling + domain-modeling, user scope: the installer copies them (install.py install --components core); by hand:
+# download https://codeload.github.com/mattpocock/skills/tar.gz/c55ee46073ed923f86ce59a5eb3b6d895095d1b7
+# and copy skills/productivity/grilling and skills/engineering/domain-modeling into ~/.agents/skills/, the user folder
+# Codex scans (learn.chatgpt.com/docs/build-skills). Not ~/.codex/skills: a deprecated location Codex still loads for
+# backward compatibility (codex-rs/ext/skills/src/host_roots.rs) but no longer documents. Skip grill-me and
+# grill-with-docs in Codex: each is one line naming a Skill tool that Codex does not have under that name, so they are
+# unreliable there.
 
 # ~/.codex/config.toml, top-level key above any [table] header (default search mode is "cached")
 web_search = "live"
@@ -457,7 +522,7 @@ web_search = "live"
 # Optional: claude-council direct scripts (bash, curl, jq; API keys for other vendors)
 git clone https://github.com/hex/claude-council.git ~/claude-council
 # Optional: prior-art counts (matches Codex's documented syntax; the repo documents no Codex command; untested)
-codex mcp add idea-reality --env GITHUB_TOKEN=<token> -- uvx idea-reality-mcp
+codex mcp add idea-reality --env GITHUB_TOKEN=<token> -- uvx idea-reality-mcp@0.5.0
 ```
 
 Launch: `codex --sandbox workspace-write --ask-for-approval on-request --search` (`--search` gives live web search if
@@ -483,8 +548,10 @@ kimi login
 mkdir -p ~/.kimi-code/skills && cp -r kit/skills/ultimate-brainstorm ~/.kimi-code/skills/
 #   or, in a Kimi session (plugin route): /plugins install <abs path to kit>   then /reload
 
-# Shell: grilling + domain-modeling (skip when the Codex line in section 3.3 already put them in ~/.agents/skills)
-npx -y skills@1.7.0 add mattpocock/skills --skill grilling --skill domain-modeling -g -a kimi-code-cli --copy -y
+# grilling + domain-modeling (skip when section 3.3 already put them in ~/.agents/skills): the installer copies them
+# (install.py install --components core); by hand: download
+# https://codeload.github.com/mattpocock/skills/tar.gz/c55ee46073ed923f86ce59a5eb3b6d895095d1b7
+# and copy skills/productivity/grilling and skills/engineering/domain-modeling into ~/.agents/skills/
 
 # In a Kimi session: Compound Engineering
 /plugins install https://github.com/EveryInc/compound-engineering-plugin/releases/tag/compound-engineering-v3.28.2
@@ -500,8 +567,9 @@ step.
 ```text
 # Shell: the skill
 mkdir -p ~/.zcode/skills && cp -r kit/skills/ultimate-brainstorm ~/.zcode/skills/
-# Shell: grilling + domain-modeling
-npx -y skills@1.7.0 add mattpocock/skills --skill grilling --skill domain-modeling -g -a zcode --copy -y
+# grilling + domain-modeling: the installer copies them (install.py install --components core); by hand: download
+# https://codeload.github.com/mattpocock/skills/tar.gz/c55ee46073ed923f86ce59a5eb3b6d895095d1b7
+# and copy skills/productivity/grilling and skills/engineering/domain-modeling into ~/.zcode/skills/
 # ZCode > Settings > Plugins > add marketplace EveryInc/compound-engineering-plugin (manual; not yet verified here)
 ```
 
@@ -524,10 +592,11 @@ py -3 <kit>/install/install.py setup-kimi --launcher --codex [--provider kimi-co
 This writes `claude-glm`, `claude-kimi`, `codex-glm` and `codex-kimi` (each also as `.cmd` and `.ps1`) into
 `~/.ultimate-brainstorm/bin/`, and the Codex homes `~/.ultimate-brainstorm/codex-homes/{glm,kimi}/config.toml`. The
 Claude launchers pass the provider settings for one session through `claude --settings <temporary file>`; the Codex
-launchers set `CODEX_HOME`. Your own `~/.claude/settings.json` and `~/.codex/config.toml` are never changed, and keys stay
-in environment variables. The GLM Coding Plan may be used only in supported tools: the kit sends GLM traffic only through
-Claude Code or Codex, never through Kimi Code or plain HTTP (a separate pay-as-you-go key, `ZAI_PAYG_API_KEY`, can be
-enabled for HTTP). Details: `docs/FAMILIES.md`.
+launchers set `CODEX_HOME`. Codex also keeps its own data there (sessions, history) when you use codex-glm /
+codex-kimi; `uninstall --purge` moves that data to backups/. Your own `~/.claude/settings.json` and
+`~/.codex/config.toml` are never changed, and keys stay in environment variables. The GLM Coding Plan may be used
+only in supported tools: the kit sends GLM traffic only through Claude Code or Codex, never through Kimi Code or plain
+HTTP (a separate pay-as-you-go key, `ZAI_PAYG_API_KEY`, can be enabled for HTTP). Details: `docs/FAMILIES.md`.
 
 ### 3.4 Global or per project (updated in v2)
 
@@ -585,8 +654,9 @@ The `Agent(fork)` deny rule is meant to stop Claude from spawning conversation f
 is unverified: check the permissions docs. The dependable protection is the skill's hard rule 3, which requires
 `subagent_type: general-purpose` on every generator, judge and reviewer call. Add the `enabledPlugins` line only if
 Superpowers keeps taking over brainstorm requests. Optional: an allow rule such as `Edit(/brainstorm/**)` scopes write
-approvals to the run folder. In a git repo, also add `brainstorm/` to `.git/info/exclude` (local, never committed) so run
-files stay out of `git status`, commits and ce-ideate's codebase scan.
+approvals to the run folder. In a git repo the kit writes `brainstorm/.gitignore` (`*`) when a job first reads the
+repository, which keeps run files out of `git status`, commits and code searches; add `brainstorm/` to
+`.git/info/exclude` (local, never committed) to hide them earlier, for example from ce-ideate's codebase scan.
 
 | Auto-triggering component | Trigger | Control |
 |---|---|---|
@@ -638,21 +708,31 @@ so `/clear` (Codex: `/new`) between sessions loses nothing. `bs.py status` check
 strategy file, a check per shortlisted idea, the tournament result, a probe RESULT line), so `continue` never skips a
 half-done stage.
 
+The "Time" line of each stage gives the kit's figures for that stage from `ub plan` (a standard run with claude, gpt
+and kimi unless another mode is named): the model calls, the minutes they take (at most 4 at once) and their tokens.
+The time you spend answering and the host's interactive skills (grilling, ce-ideate, ce-brainstorm) come on top.
+
 ### Stage 0 - Route and set up
 - Goal: decide whether the pipeline is needed, create the run, detect tools and model families, set privacy.
 - Run: `/ultimate-brainstorm [quick|standard|deep] [variant] <topic>` (Codex: `$ultimate-brainstorm ...`). The skill finds
   a working Python (`py -3`, then `python`, then `python3`), runs `bs.py init R` (which also writes an empty seeds
   template), checks its skill list and `codex --version` / `claude --version`, and asks two privacy questions: (a) may
   idea text go to web search and a second vendor? (b) may code facts and repo files go to a second vendor or council
-  seats? In a git repo it asks you to add `brainstorm/` to `.git/info/exclude`; for a new product with no repo it suggests
+  seats? In a git repo the kit writes `brainstorm/.gitignore` (`*`) itself when a job first reads the repository (you
+  can add `brainstorm/` to `.git/info/exclude` to hide run files earlier); for a new product with no repo it suggests
   `mkdir <slug>; cd <slug>; git init` and relaunching there (never commit). Codex host: it checks `web_search = "live"`
   and suggests approving the nested-CLI command prefix for the session.
 - Variants: software, product, growth (activation, onboarding, conversion, retention or churn of an existing product),
   research, marketing, creative, naming, general.
 - In -> out: topic -> `R/00_RUN.md` (mode, variant, families, privacy (a) and (b), Python command, detected tools,
   strategy -> family map, session plan).
-- Checkpoint: confirm mode, variant and privacy.
-- Time: 2 minutes.
+- Checkpoint: confirm mode, variant and privacy. Reply `go`, a setting on a line of its own (`deep`, `hands-on`,
+  `private`, `web: no`), your seed ideas one per line, or `no seeds, go`. A line that reads as a privacy wish (`only
+  use Claude`, `keep it confidential`, `no web search`) or a setting in a sentence (`Quick mode is enough for me`) is
+  asked again rather than sent to the vendors as an idea; as a list item (`- a Claude plugin for nurses`) it is a seed,
+  while `- web: no` stays a setting. `Don't start yet`, two modes (`standard and deep`) and a line meant for another
+  checkpoint (`publish all, ce`) are asked again.
+- Time: about 2 minutes: one preflight ping per family (and one web-search probe for Codex).
 - Fallback: small, clear code changes are routed to `superpowers:brainstorming` (Spike or Bounded) or `ce-brainstorm`
   (Lightweight) instead.
 
@@ -664,7 +744,9 @@ half-done stage.
   session (`/bmad-brainstorming`, Codex `$bmad-brainstorming`), whose memlog idea lines are imported (Facilitator mode
   logs the user's ideas as `(idea)`; Creative Partner mode as `(idea by user)`).
 - Out: `00_HUMAN_SEEDS.md`.
-- Checkpoint: the Ideas or Primary idea section is filled. `SKIP-SEEDS` is allowed and recorded.
+- Checkpoint: the Ideas or Primary idea section is filled. `SKIP-SEEDS` is allowed and recorded. A `--seeds-file`
+  without these sections (an idea list, free text, `###` headings) is kept: its text goes under Ideas, or under the
+  section its heading names.
 - Time: 10 minutes of human time (deep 20-40), almost no tokens.
 
 ### Stage 2 - Frame (question-only)
@@ -688,8 +770,9 @@ half-done stage.
   `CONTEXT.before.md` (a safety snapshot) and `CONTEXT.proposed.md` when any term resolved. Stage 3 copies up to 12
   relevant terms into FACTS as a description of today's system; generators may break them.
 - Checkpoint: confirm STATED vs ASSUMED, the FRAME and the proposed terms.
-- Time: 10-20 minutes, 10-40k tokens; software and growth add about 5-10 minutes and 10-30k tokens for glossary reads
-  and code checks (estimate).
+- Time: the interview is your time (grilling runs 1 round in guided mode and up to 3 in hands-on; software and
+  growth add glossary reads and code checks). Without grilling the kit's express path makes 2 model calls: about 2-7
+  minutes, 8-19k tokens.
 - Fallback: without grilling, the built-in P-FRAME interview. Do not run Stage 2 in plan mode (Claude Code plan mode or
   Codex `/plan`).
 
@@ -704,7 +787,7 @@ half-done stage.
 - Software and growth: section A2 DOMAIN TERMS (today's system) holds at most 12 terms from the FRAME, headed by a note
   that ideas may split, merge, rename, redefine or remove them; code contradictions and relevant ADRs become FACTs. With
   privacy (b) = no, the other family gets only the terms you confirmed at Stage 2, not text from the repo's CONTEXT.md.
-- Time: 10-15 minutes, 30-80k tokens (estimate).
+- Time: 1 model call (deep 2), about 4-10 minutes (deep 8-20), 6-14k tokens (deep 13-29k).
 - Fallback: privacy (a) = no means local sources only.
 
 ### Stage 4 - Diverge (isolated strategy portfolio)
@@ -727,9 +810,10 @@ half-done stage.
 - Out: `pool/S1_ce-ideate.md`, `pool/S1_ce-ideate_raw.md`, `pool/S2_vs.md`, `pool/S3_enumerate.md`, `pool/S4_transfer.md`,
   `pool/S5_operators.md` (plus `L*.json` in deep). `bs.py status` requires a file for every strategy in the 00_RUN.md map.
 - Checkpoint: none. The human stays out until the map.
-- Time: 20-45 minutes; the heaviest stage. ce-ideate alone reads roughly 30k+ tokens of instructions and runs about a
-  dozen or more subagents on a default repo run (our estimate; CE prints the actual cost line before dispatching); the
-  other strategies are one subagent or one CLI call each.
+- Time: 5 model calls (the built-in S1 frame fan-out plus S2-S5; deep 11), run in parallel: about 4-10 minutes (deep
+  8-20), 49-112k tokens (deep 108-246k). ce-ideate as S1 comes on top: it reads roughly 30k+ tokens of instructions and
+  runs about a dozen or more subagents on a default repo run (our estimate; CE prints the actual cost line before
+  dispatching).
 - Codex host: S2 and S4 run as Codex subagents (each spawned as a new agent with no conversation context); S3 and S5 run
   through `claude -p` (approve the network escalation):
   `cat "<abs R>/prompts/S3.prompt.md" | claude -p "Follow the instructions in the piped input exactly. Print only the requested output." --output-format text --no-session-persistence --tools "" --disallowedTools "mcp__*" > "<abs R>/pool/S3_enumerate.md"`.
@@ -744,17 +828,18 @@ half-done stage.
 - Run: the curator subagent gives every raw idea an alias ID, merges only same mechanism keys (`<actor> | <verb + object>
   | <outcome>`), clusters by mechanism, assigns each idea an axis cell, runs a leak check on S1 and marks BASELINE and
   PRIMARY ideas, writing `merges.json` and `03_POOL_NOTES.md`. Then `bs.py map R` does the bookkeeping an LLM gets
-  wrong: random neutral IDs `I-###`, origins, yield per strategy, the coverage grid and the HOMOGENIZED alarm (largest
-  cluster above 25%, or fewer than 8 clusters with 40+ ideas). Gap round when the alarm fires or cells are empty: one
+  wrong: random neutral IDs `I-###`, origins, yield per strategy, the coverage grid, the HOMOGENIZED alarm (largest
+  cluster above 25%) and the covered share of the axis cells. Gap round when the alarm fires or fewer than 80% of the
+  cells hold an idea: one
   cell-targeted generator per chosen cell (max 6: empty cells next to populated clusters first, then cells you marked,
   skipping combinations the FRAME rules out; alternating families; "do not reinterpret the cell; output TENSION if it is
-  incoherent") plus one landscape-aware REOPEN generator that must do what existing solutions cannot. Deep:
-  `bs.py dupcheck R` (embeddings if sentence-transformers is installed, otherwise word overlap).
+  incoherent") plus one landscape-aware REOPEN generator that must do what existing solutions cannot.
 - Out: `merges.json`, `03_POOL.md`, `clusters.json`, `origins.json` (human, human-mixed, claude, gpt, ai-mixed, or
-  `gpt-alt` / `claude-alt` for a same-vendor substitute), `primary.json`, `screen/ideas.md`.
+  `gpt-alt` / `claude-alt` for a same-vendor substitute), `primary.json`, `ideas.json`, `screen/ideas.md`.
 - Checkpoint: you see every cluster (unranked), the empty cells and a 5-line landscape summary, and may add
   `00b_HUMAN_ROUND2.md` aimed at gaps and at what incumbents cannot copy.
-- Time: 10-25 minutes, 40-100k tokens (estimate).
+- Time: 1-9 model calls (the curator, then per gap round up to 6 cell generators, a REOPEN generator and a curator
+  pass; deep 1-19), about 9-21 minutes (deep 11-26), 29-291k tokens (deep up to 560k).
 
 ### Stage 6 - Two-family absolute screen
 - Goal: cut to at most 12 without losing diversity.
@@ -763,9 +848,23 @@ half-done stage.
 - Out: `screen/table.md`, `screen/shortlist.json`, `04_SHORTLIST.md`: gates (KILL only when at least two judges scored
   the idea and all of them failed the same gate; a single failing judge only flags), K3 floor, weighted score, rank range
   under +/-25% weights, best idea per cluster (max 10) + the most distinctive still-feasible idea + the best idea with a
-  human seed behind it + every primary idea. `04_SHORTLIST.md` ends with a `Rescued: <IDs>` line.
+  human seed behind it + every primary idea. `04_SHORTLIST.md` ends with a `Rescued: <IDs>` line (IDs only) and a
+  `- <ID>: <reason>` line per rescue. Every judge's scores count; a judge's preference for
+  its own vendor's ideas is measured against another judge on the ideas neither vendor wrote and taken off its
+  own-vendor scores when it is larger than its noise (1.5 standard errors of the per-idea differences; a smaller gap
+  is reported, not corrected), after centering each judge on the ideas no
+  judge's vendor wrote, so it does not decide a cluster. With two judge families and fewer than 3 ideas that neither judge's vendor
+  wrote (no human or merged ideas), that preference cannot be told from leniency and nothing is corrected: the screen
+  reports the pair's combined gap under `## Own-origin gap` in `04_SHORTLIST.md` (WARN above 0.5; the G4 card repeats
+  every WARN and FLAG), and the tournament and your G4 review decide.
+- Quick mode has a short version of this screen: after the curation, the two families that generated the ideas both
+  score the curated one-line versions blind (no source labels, each in its own order), with 3 or more families also a
+  third family that generated nothing (one more call; it lets each generator family's preference be measured and
+  corrected without human ideas), and the finalists come from their scores with the same own-origin correction. With one model family there is no second scorer, so the curator's
+  own scores pick the finalists and the run says so (quick/finalists.json `scoring: curator`, a run note, and
+  quick/screen.md).
 - Checkpoint: rescue up to 2 ideas with a reason; confirm flagged gates.
-- Time: 5-10 minutes, 20-40k tokens (estimate).
+- Time: 3 judge calls (one per screen judge family), about 1-4 minutes, 25-58k tokens.
 - Codex host: the host judge is a Codex subagent and the other judge is `claude -p` ("Output only the JSON object").
   No second vendor: Codex-only sends the `claude.*` file to `bs-alt` (read 'claude' as 'alt'); Claude-only uses a
   different-model subagent; both are labeled PROVISIONAL. No Python: the host applies the same rules by hand
@@ -782,7 +881,7 @@ half-done stage.
   add a codebase-fit item (does the product already do this, file:line; conflicts; files that would change).
 - Checkpoint: confirm every K4 kill. Growth (and software ideas for an existing product): K4 does not apply, because
   prior art is evidence the idea works; kill only if our product already shipped and measured it.
-- Time: 10-25 minutes, 60-160k tokens (estimate).
+- Time: 4-12 checker calls (one per shortlisted, rescued or primary idea), about 5-13 minutes, 22-154k tokens.
 - Codex host: checks stay on Codex subagents, which can use web search if it is enabled for the session
   (`web_search = "live"` for live results; the default is cached). A `claude -p` checker has no web tools.
   privacy (a) = no: the verdict is "NOT CHECKED" and cannot trigger K4.
@@ -790,11 +889,16 @@ half-done stage.
 ### Stage 8 - Evolve
 - Goal: add up to 4 (deep: 5) variants that must win on merit.
 - Run: standard runs it only when fewer than 6 ideas survive or you ask; deep always. Evolved ideas get their own checks.
+  Evolved ideas inherit their parents' screen score; with more than 8 ideas in the pool, at least two evolved ideas
+  (best CHECK verdict first) reach the finalists.
 - Out: `05_EVOLVED.md` (or "skipped").
-- Time: 5-10 minutes plus checks.
+- Time: standard usually skips it; deep 0-6 calls (the evolve call plus a check per evolved idea), about 4-12 minutes,
+  up to 86k tokens.
 
 ### Stage 9 - Tournament
-- Goal: a debiased ranking of up to 8 finalists.
+- Goal: a debiased ranking of up to 8 finalists: one Bradley-Terry fit on one share per pair (self-interested verdicts
+  left out), with 90% intervals, a Condorcet winner and majority cycles reported; raw points when no bias-free
+  comparison connects the finalists.
 - Run: primary ideas are always finalists; normalizer writes `tournament/cards.md`; you write a gut top 3 into
   `tournament/precommit.md` before any judge runs; `bs.py prepare-tournament R` (deep with 6 or fewer finalists:
   `--per-pair`); judge every prompt file (host family: fresh subagents; other family: `codex exec --output-schema`, one
@@ -804,7 +908,9 @@ half-done stage.
   self-preference audit (own-family win share more than 15 points above the other judge: discount; skipped when the
   second judge is a same-vendor substitute).
 - Checkpoint: standings next to your pre-commit; you pick 3-4 for the red-team and decide contested pairs.
-- Time: 10-20 minutes, 20-60k tokens (deep per-pair: 60 calls for 6 finalists).
+- Time: 7 calls (the normalizer and 6 judge prompts: 3 judge families x 2 orders), about 4-11 minutes, 59-134k
+  tokens. Deep per-pair mode makes 2 x F x C(n,2) judge calls: 90 for 6 finalists and F = 3 judge families (deep
+  7-91 calls, about 18-43 minutes).
 - Codex host: Codex subagents judge the `gpt_*` files, `claude -p` calls judge the `claude_*` files. No second vendor:
   Codex-only sends the `claude_*` files to `bs-alt` (fallback: `codex exec -m <another model>`); Claude-only uses a
   subagent on another model family alias; both are labeled PROVISIONAL, and `result.md` notes that 'claude' means 'alt'.
@@ -822,7 +928,8 @@ half-done stage.
   runner-up, parked with revisit trigger, killed with K-rule, dissent, Not doing, and a pointer to the test that Stage 11
   pre-registers in `09_PROBE.md`), rows in `brainstorm/LEDGER.md`.
 - Checkpoint: the human decision.
-- Time: 15-30 minutes, 50-120k tokens (estimate).
+- Time: 8-10 calls (pre-commit, an ADVOCATE and a CRITIC per red-teamed idea, synthesis; deep adds the rebuttals:
+  14-18), about 8-21 minutes (deep 13-30), 66-179k tokens (deep 104-294k), plus your decision.
 - Codex host: the Claude reviewer runs through `claude -p` without web tools (its claims stay NOT VERIFIED);
   claude-council runs through its direct scripts (section 5.3). Codex-only: ADVOCATE = host subagent, CRITIC = `bs-alt`
   (PROVISIONAL); for real cross-vendor critique, run claude-council's direct script with non-OpenAI seats only
@@ -843,9 +950,11 @@ half-done stage.
   written decision rule. Creative: a 24-hour re-read and 5 target-audience reactions.
 - Out: `09_PROBE.md` (plus a pointer line in `08_DECISION.md`); after you report, `## Result` and
   `RESULT: PASSED | MISSED (K6) | INCONCLUSIVE`.
-- Checkpoint: run it and report. Missed threshold: K6, the runner-up goes through the probe. INCONCLUSIVE never counts
-  as a pass: extend the test or run the qualitative test.
-- Time: 10 minutes to design; hours to 2 weeks to run.
+- Checkpoint: run it and report. Missed threshold: K6, the runner-up goes through the probe; with no runner-up left
+  the run stops before the architecture (a finished run says so on its documents, handoff seed, published copies
+  and DONE card: its status banner reads KILLED (K6)), and you switch to another finalist (`switch` refuses an idea its own probe killed).
+  INCONCLUSIVE never counts as a pass: extend the test or run the qualitative test.
+- Time: 1 call to design it (about 4-10 minutes, 16-37k tokens); hours to 2 weeks to run.
 - Codex host: run the spike with `codex exec --sandbox workspace-write -C ../<repo>-spike -o <absolute run path>/09_SPIKE.md - < <spike prompt>`;
   never merge the spike branch.
 
@@ -856,34 +965,43 @@ half-done stage.
   ARCH-DRIVERS (host family) turns it into 3-5 quality goals with weights summing to 70 (a fixed 30 goes to time to MVP
   10, team fit 5, run cost 5, reversibility 5, operational simplicity 5), 5-10 quality scenarios and the system context;
   missing facts are tagged `[ASSUMPTION]`. Then K independent architects (2 quick, 3 standard and proposal, 4 deep),
-  from different families where possible, each design one candidate from the same brief with an archetype seed: A
-  boring by default (a modular monolith on managed services, at most 3 innovation tokens), B variant-specific
-  (local-first when privacy-heavy, buy-and-integrate when the budget is tight, otherwise event-driven / serverless), C
-  the approach the others would not pick, D cost-minimal (deep). Software and growth use A = smallest change to the
-  current architecture (citing files) and B = one new bounded component. Candidates get random neutral labels; judge
-  sheets are rendered by script from each candidate's JSON (no archetype or family names), and judges from families
-  that authored nothing score every criterion 1-5 and may veto on a hard constraint (2 vetoes exclude, 1 flags).
-  `bs.py arch-matrix` computes weighted scores, rank ranges under +/-25% weights, disagreements, a clear or close-call
-  leader and a steal list. A pre-mortem by another family names 5 causes of failure. After your choice the writer
-  family produces the package; ADRs (MADR 4.0, status proposed), risks and technical debt are rendered by script from
-  JSON; STACK-VERIFY looks up every version on the web (UNVERIFIED otherwise); `bs.py lint-arch` checks files,
-  placeholders, ADR format, versions, mermaid, traceability and cost; review lenses from other families (web-verified
-  tech and a divergence adversary; deep adds failure modes with prior art, and security and privacy) feed one fix pass.
+  from different families where possible, each design one candidate from the same brief with an archetype seed: A boring
+  by default (a modular monolith on managed services, at most 3 innovation tokens), B variant-specific (local-first when
+  privacy-heavy, buy-and-integrate when the budget is tight, otherwise event-driven / serverless), C the approach the
+  others would not pick, D cost-minimal (deep). Software and growth use A = smallest change to the current architecture
+  (citing files) and B = one new bounded component. Candidates get random neutral labels; judge sheets are rendered by
+  script from each candidate's JSON (no archetype or family names), and judges (families that authored nothing, plus the
+  host when two or more families authored nothing; otherwise every family) score every candidate on every criterion 1-5
+  (a judge's score of its own family's candidate counts only when no other family's judge scored it, or in the balanced
+  two-family design) and may veto on a hard constraint (2 vetoes exclude, 1 flags). `bs.py arch-matrix` centers each
+  judge on its own mean, computes weighted scores, rank ranges under +/-25% weights, disagreements, a clear, close-call,
+  confounded or self-judged leader and a steal list. A pre-mortem by another family names 5 causes of failure. After
+  your choice the writer family produces the package; ADRs (MADR 4.0, status proposed), risks and technical debt are
+  rendered by script from JSON; STACK-VERIFY looks up every version on the web (UNVERIFIED otherwise); `bs.py lint-arch`
+  checks files, placeholders, ADR format, versions, mermaid, traceability and cost; review lenses from other families
+  (web-verified tech and a divergence adversary; deep adds failure modes with prior art, and security and privacy) feed
+  one fix pass.
 - Out: `10_ARCHITECTURE/` with `00_BRIEF.md`, `drivers.json`, `goals-constraints.md`, `quality-scenarios.md`,
   `context.md` (C4 context plus a flowchart), `candidates/`, `review/`, `tradeoff-matrix.md`, `premortem.md`,
   `chosen/` (containers, runtime flows with failure and recovery, data model, API, deployment, security and privacy,
   cost model, deferred decisions, stack), `adr/NNNN-*.md`, `risks.md`, `lint.md` and a `README.md` with the decision
   index and provenance (authors revealed, judges, PROVISIONAL badges).
 - Checkpoint: G11, the architecture choice: reply `ok` (the suggestion), a letter, or a letter plus elements to steal
-  (`B+steal`). Families are revealed only after the choice. Hands-on and deep also confirm the drivers (G10) and each
+  (`B+steal`). One chosen letter counts whatever you say of the others (`Not A. B.`, `C please, A looks too complex`);
+  two chosen letters, a hedge (`maybe B`) or a question (`Should I pick B?`) are asked again. Families are revealed
+  only after the choice. Hands-on and deep also confirm the drivers (G10) and each
   ADR (G12); guided bundles ADR acceptance into the sign-off.
-- Quick: lite path with 2 candidates (A and C), 1 judge, an automatic leader (switchable at sign-off), one package call,
-  versions left UNVERIFIED, a lite lint and no review.
+- Quick: lite path with 2 candidates (A and C), 1 judge, an automatic leader (switchable at sign-off; hands-on and
+  guided runs are asked when a judge vetoed the leader or its lead is self-judged or confounded), one package call,
+  versions left UNVERIFIED, a lite lint and no review. With 2 families the one judge is your host's family, which also
+  wrote one of the two candidates: that candidate is scored by its own family only, the lead is marked self-judged, and
+  G11 asks you (hands-on and guided) instead of taking the leader silently.
 - Research, marketing, creative and naming runs (build type `approach`) write `10_ARCHITECTURE/approach.md` instead
   (research: hypotheses and rival explanations, design, measures, analysis plan with a decision rule; marketing and
   creative: channels, assets, production, measurement, budget; naming: rollout, availability and trademark checks), with
   one review lens and no G11.
-- Time: about 30-50 minutes in standard (estimate).
+- Time: 15 calls in standard (deep 19, quick 5), about 28-64 minutes (deep 32-75, quick 14-35), 215-491k tokens
+  (deep 269-614k).
 
 ### Stage 13 - Proposal (updated in v2)
 - Goal: a cited proposal that a decision-maker can act on, plus a one-pager, without new claims.
@@ -904,10 +1022,16 @@ half-done stage.
 - Out: `11_PROPOSAL/PROPOSAL.md`, `sections/`, `ONE-PAGER.md`, `assumptions.md`, `open-questions.md`, `review/`,
   `lint.md`, `index.html` (deep: `PRFAQ.md`); `ub export --format docx` uses pandoc when it is installed.
 - Checkpoint: G13, sign-off: `approve` (the proposal becomes Approved and the ADRs accepted), `changes: ...` (at most two
-  loops), `switch B` (another architecture, from the package step) or `runner-up` (the runner-up idea, from Stage 12).
-  Full-auto leaves it a DRAFT with the AUTOPILOT banner.
+  loops), `switch B` (another architecture, from the package step) or `runner-up` (the runner-up idea, from its own
+  probe at Stage 11). The card shows the step each of those two redoes from and about how many requests it costs.
+  `approve it`, `I approve`, `sign off`, `sign it off` and `Looks good, thanks` approve; `Please fix the proposal` is a
+  change round; `use B instead` switches and `switch to the runner-up` is `runner-up`. A reply the engine cannot read
+  one way (`ok, but shorten section 4`, `approve and publish`, `switch to a simpler architecture`, `Switch to B? Costs
+  matter more`, `switch B / runner-up`), that says no change (`stop`, `not
+  yet`, `Great work`) or that is not yet a decision (`Should I switch to B?`, `Let me think about it overnight`) is
+  asked again with the reason, never taken as a change round. Full-auto leaves it a DRAFT with the AUTOPILOT banner.
 - Quick: one PROPOSAL-LITE call (sections 1, 2, 3, 6, 7, 11, 12, 13 and the one-pager), one rubric family, no red-team.
-- Time: about 30-60 minutes in standard (estimate).
+- Time: 8 calls in standard (deep 9, quick 2), about 14-34 minutes (quick 5-14), 153-349k tokens.
 
 ### Stage 14 - Handoff (updated in v2)
 - Goal: turn the decision into the next artifact without reopening it.
@@ -918,38 +1042,43 @@ half-done stage.
   candidates (ADR-CANDIDATE rows in the FRAME's Decision ledger plus decisions in `08_DECISION.md` that pass its three
   gates: hard to reverse, surprising without context, a real trade-off) are asked about one by one; zero ADRs is normal.
   The outcome is recorded in `00_RUN.md` and `12_HANDOFF.md`. Nothing is committed.
-- Publish (G14, all modes but full-auto): on your yes, `10_ARCHITECTURE/` is copied to `docs/architecture/`,
-  `adr/` to `docs/adr/` and `11_PROPOSAL/` to `docs/proposal/`, each with its own yes. When one of those folders
-  already holds another run's package, or files the kit did not publish (your own ADRs, say), this run's copy goes
-  to `docs/<run>/<item>/` instead, so two runs never mix (two ADR sets both numbered 0001, say); the card shows the
-  real target and warns you, naming the other run. The ADRs are published once, so no two copies drift apart: only
-  the adr copy (`docs/adr/` or `docs/<run>/adr/`) holds them, `architecture` and `proposal` publish them too, the
-  architecture copy leaves out its `adr/` folder, and the ADR links in the architecture README and the proposal
-  (Appendix A, `index.html`) point there. An old ADR file that a copy you did not publish again still links to stays
-  until nothing links to it. Only
-  this run's own earlier copy is updated in place; each file
-  it replaces or no longer has goes to `_superseded/<stamp>/published/<item>/` first. A folder that is (or holds) a
-  link or junction counts as taken. If `docs/` is a link, or `docs/<run>/<item>/` is taken too, that item is not
-  published and the card says why: move that folder
-  aside and publish again (`redo <run> 14.2` asks G14 again). In a folder last written by kit 2.0.2 or earlier,
-  files the old marker lists that this run's package does not have stay in place (they may be another run's, or
-  this run's own old ADRs) and the card warns, also before it replaces such a file with other content (backed up
-  first); move them aside by hand to clear them. To split folders 2.0.2 mixed,
-  move `docs/architecture`, `docs/adr` and `docs/proposal` aside and run `redo <run> 14.2` for each run, oldest
-  first. Without `RESULT: PASSED` in `09_PROBE.md` the card warns
-  "riskiest assumption untested" and the seed carries that warning.
+- Publish (G14, all modes but full-auto): on your yes, each copy goes into `docs/<run>/`, with the run's own layout:
+  `architecture` copies `10_ARCHITECTURE/` (with its ADRs) to `docs/<run>/10_ARCHITECTURE/`, `adr` copies only the
+  ADRs, and `proposal` copies `11_PROPOSAL/` to `docs/<run>/11_PROPOSAL/` together with the ADRs it links to. Each
+  copy needs its own yes. The files are copied byte for byte, so every link in them (the decision index, Appendix A,
+  `index.html`) resolves just as in the run folder. Only `docs/<run>/` is written: two runs never mix, your own
+  `docs/adr/` log is never touched, and two runs can publish at the same time. Publishing again is safe: unchanged
+  files are left alone, a file it replaces goes to `_superseded/<stamp>/published/` first, and a file the run no
+  longer has (the old ADRs after `ub switch --arch`, say) moves there too, once you publish every copy again (with a
+  partial answer it stays, so no copy loses a file it links to). Files you add to `docs/<run>/` yourself stay. What
+  was published is recorded in `brainstorm/<run>/handoff/published.json`, so an interrupted publish just runs again
+  (on a Linux or macOS disk without hard links, such as exFAT, a publish interrupted while it claims `docs/<run>/`
+  leaves an empty claim, which the same run takes over a minute later). If `docs/` or `docs/<run>/` is a link or junction, nothing is written through it: the card says what to move aside,
+  then `redo <run> 14.2` asks G14 again. Copies made by kit 2.0.x (`docs/architecture/`, `docs/adr/`,
+  `docs/proposal/`, `docs/<item>/ub-<run>/`) are left as they are and no longer updated; the card names them so you
+  can move or delete them. Without `RESULT: PASSED` in `09_PROBE.md` the card warns "riskiest assumption untested"
+  and the seed carries that warning.
+- Reply: `publish` (or `publish all`, `publish architecture`, `publish architecture, proposal`) or `no`, and one
+  handoff (`publish all, speckit`, `no, none`). Other words are read back before anything is copied: `publish all but
+  the proposal` and `publish everything, keep the proposal private` read as the architecture and the ADRs, `No
+  publishing. Spec-Kit please.` as nothing published with the Spec Kit handoff. A software or growth
+  run asks which handoff when the reply names none; `yes` alone, a question (`publish?`), a condition (`publish the
+  architecture if the tests pass`) or a keep that names nothing (`publish it but keep it private`) is asked again, and
+  `I'll publish it myself` publishes nothing.
 - Seed: the kit writes the handoff seed: CE (default for software and growth), Spec Kit for greenfield projects
   (`specify init <proj> --integration <agent>`, then `/speckit.specify` with PROPOSAL sections 3 and 6-8 and
   `chosen/`), Superpowers or OpenSpec only in repos that already use them. The CE seed adds "Architecture decisions:
   brainstorm/<run>/10_ARCHITECTURE/README.md (ADRs accepted). Milestone 0 (09_PROBE.md) runs first; do not plan beyond
-  its kill criterion." Every seed ends with "Do not reopen the choice of idea or architecture."
+  its kill criterion." Every seed ends with "Do not reopen the choice of idea or architecture." Once the chosen
+  idea's probe missed with no runner-up left, `12_HANDOFF.md` ends with a K6 warning instead (do not build this
+  idea; switch to another finalist first), and the seed is written again with it, without the closing line.
 - Run (fresh session in the target repo): `/compound-engineering:ce-brainstorm <seed>` then "Create the implementation
   plan" (Codex: `$ce-brainstorm <seed>`); Superpowers or OpenSpec in repos that use them; a one-pager otherwise. If you
   declined the terms, the seed tells ce-brainstorm not to copy them into any repo doc.
 - Out: `12_HANDOFF.md` (what went to which tool, with paths), LEDGER rows, the downstream spec or plan (CE: `docs/plans/YYYY-MM-DD-HHMM-<type>-<topic>-plan.md`); on your
   yes, updated `CONTEXT.md` and any ADRs in `docs/adr/`.
-- Time: 20-40 minutes; ce-brainstorm reads roughly 35-45k tokens of instructions on Standard or Deep runs (our
-  estimate).
+- Time: no model calls by the kit (the seed is written by script); the handoff session is yours: ce-brainstorm reads
+  roughly 35-45k tokens of instructions on Standard or Deep runs (our estimate).
 - Fallback: without CE, use the repo's Superpowers or OpenSpec prompt from section 5.3 (the Codex Superpowers copy is
   v6.3.0, so keep "Stop after the spec for my review"), or the one-pager.
 
@@ -1081,8 +1210,9 @@ score"), then `/pm-product-discovery:brainstorm-experiments-new`. Codex: type `$
 it may be listed under its plugin namespace (for example `pm-product-discovery:identify-assumptions-new`). Paste the
 idea text into each call and copy the results into `09_PROBE.md`. Never run `/discover` inside the funnel.
 
-Import from another tool: `/ultimate-brainstorm import <file> <run>` copies the idea list to `pool/IMPORT_<name>.md` and
-resumes at Stage 5.
+Import from another tool: `/ultimate-brainstorm import <file> <run>` copies the idea list to `pool/IMPORT_<name>.md`,
+and the pool is curated again with it (from step 5.1; quick mode: Q.3; a finished run goes on from there). A proposal
+run has no idea pool, so an import into one is refused.
 
 The full built-in prompt set (generators, curator, screen header, checks, evolve, normalizer, tournament header,
 reviewers, synthesis, decision, probe, quick) is in `ultimate-brainstorm/references/prompts.md`.
@@ -1103,9 +1233,9 @@ reviewers, synthesis, decision, probe, quick) is in `ultimate-brainstorm/referen
 | Planned retrieval | Mechanism transfer from 6 distant fields, ESTABLISHED/INFERRED links, what does not port (our additions to the lateral-thinking method) | Nova 2024; SciMON 2024 | 4, 5 | share of `external:` basis |
 | Defixation | 3 warm-up ideas discarded; mechanism, not category; competitor-swap test; mandatory opposite and subtraction ideas | IDEAFix 2026 (likely); Girotra 2023 recommend asking for novelty in the prompt (a recommendation, not a tested result) | all generators | BASELINE share |
 | Withheld examples | LANDSCAPE hidden from blind strategies, used only for reopening and checks | Wadinambiarachchi 2024 | 3-5 | - |
-| Mechanism-key dedup | Merge only same actor, mechanism, outcome; siblings kept; optional embedding check at cosine >= 0.8 | Si 2024 | 5 | unique share per strategy |
+| Mechanism-key dedup | Merge only same actor, mechanism, outcome; siblings kept | Si 2024 | 5 | unique share per strategy |
 | Coverage steering | Axis grid (counted by `bs.py map`); gap rounds into empty cells; TENSION escape | MAP-Elites-style cell targeting as in claude-brainstorm-multiagent, which feeds under-filled cells as hints and has a `tension_note` escape (heuristic) | 5 | cells covered |
-| HOMOGENIZED alarm and saturation stop | Largest cluster above 25% or fewer than 8 clusters: mandatory gap round; a round with 40% or more duplicates is saturated | heuristics from the designs, not measured | 5 | 03_POOL.md |
+| HOMOGENIZED alarm and saturation stop | Largest cluster above 25% or under 80% of the axis cells covered: mandatory gap round; a round with 40% or more duplicates is saturated | heuristics from the designs, not measured | 5 | 03_POOL.md |
 | Quotas | Best per cluster, protected tail slot, protected human slot, primary idea | design rule to keep diversity through the cut; ARIS "name the high-upside idea"; Boussioux 2024 | 6 | clusters represented |
 | Evolve, never replace | Variants must beat their parents | co-scientist; Girotra 2010 | 8-9 | - |
 | Suggest, never rewrite | The AI asks and suggests | Maier 2026 | 2, 10 | - |
@@ -1117,8 +1247,8 @@ do not stop repeats; the LEDGER banlist is only a secondary hint in gap rounds).
 
 1. Criteria and anchors are fixed at Stage 2, before any idea exists.
 2. Annotate, don't eliminate: until Stage 5 only exact duplicates disappear; tools' rejected ideas enter as PARKED.
-3. Absolute two-family screen with noncompensatory gates, a floor (any criterion mean at or below 1.5), weight
-   sensitivity and diversity quotas.
+3. Absolute two-family screen with noncompensatory gates, a floor (any criterion mean at or below 1.5 after
+   centering, or a criterion every judge scored 1), weight sensitivity and diversity quotas.
 4. Prior-art verdicts with named matches; falsifiable kill-assumptions with cheapest tests.
 5. Evolved variants compete with their parents.
 6. Human blind pre-commit, then the both-order, two-family pairwise tournament with audits; contested pairs are the
@@ -1133,10 +1263,10 @@ do not stop repeats; the LEDGER banlist is only a secondary hint in gap rounds).
 |---|---|---|
 | K1 | A gate (hard constraint, legal, ethics, safety) failed by both screen judges | one judge only (or only one judge scored the idea): the human confirms |
 | K2 | The problem or the insight cannot be stated in one sentence each | - |
-| K3 | Any criterion mean <= 1.5 | human rescue with a written reason |
+| K3 | Any criterion mean at or below 1.5 (after centering), or a criterion every judge scored 1 | human rescue with a written reason |
 | K4 | CROWDED (>= 2 named matches, same actor and mechanism) and no differentiator | human confirms; not used for growth or existing-product software ideas (prior art is evidence there; kill only if our product already shipped and measured it) |
 | K5 | A cheapest test confirms a high-likelihood "Fails if" | - |
-| K6 | The pre-registered probe threshold is missed (`RESULT: MISSED`; INCONCLUSIVE is not a pass) | move to the runner-up |
+| K6 | The pre-registered probe threshold is missed (`RESULT: MISSED`; INCONCLUSIVE is not a pass) | move to the runner-up (never an idea its own probe killed); with none, switch to another finalist |
 | Park | Blocked only by timing or a soft constraint | record a revisit trigger |
 | Whole effort | The FRAME's kill condition is met, or every finalist fails the same premise | go back to Stage 2 |
 
@@ -1151,7 +1281,7 @@ do not stop repeats; the LEDGER banlist is only a secondary hint in gap rounds).
 | New product or startup | First ask the stage (pre-product, has users, paying customers, infrastructure), then stage-routed forcing questions (demand reality, status quo, desperate specificity, narrowest wedge, observation and surprise, future-fit; one per message, at most one push-back, exempt from the round cap); a named solution type ("AI agents for X") is classified as constraint, preference or hypothesis; criteria Value/pain 30, Reachability 20, Feasibility 20, Distinctiveness 15, Evidence of demand 15 (B2B: Value/pain 25, Willingness to pay 20, Reachability 15, Feasibility 20, Distinctiveness 10, Evidence of demand 10, plus buyer vs user, budget, integrations, liability, regulated data and seasonality questions); landscape includes today's workarounds; optional `/pm-execution:red-team-prd` (a command; Codex: the strategy-red-team skill); pm-skills assumption and pretotype chain (consumer: at most 2 weeks and $100, at least 30 responses or 100 visitors; B2B: 8-12 problem interviews, a concierge pilot or 3+ LOIs; threshold first); one-pager, build only after the test passes |
 | Research idea | Freeze the observation, claim type, PICO/PECO, dated search boundary; criteria Significance 30, Testability 25, Feasibility 20, Distinctiveness 15, Evidence 10; S5 replaced by a research lens quota adapted from Phase 1 of Orchestra's brainstorming-research-ideas skill (5 tensions or trade-offs, 3 recent shifts used to revisit old negative results, 2 failure or boundary probes, 1 adjacent-field import, 1 compose/decompose, then up/down/sideways variants); CROWDED only with named papers (ARIS novelty-check: ABANDON only with a named paper; crowded with a stated delta is PROCEED); K-Dense `hypothesis-generation` for rival explanations; pilot with a written decision rule; pre-registration scaffold |
 | Creative, marketing, naming | Human is the main judge (LLM judges do not track expert creative judgment); marketing context via `/product-marketing` and a `/marketing-ideas` coverage sweep of its 17 categories after the map; `/marketing-council` as red-team; campaigns add `/creative-director` as a strategy (ask it to find an insight, then generate concepts; CC BY 4.0 attribution line required); naming adds `/naming` (Claude Code), which by design shows only 3-5 vetted finalists, with an explicit override to list every territory and raw candidate (undocumented) and a manual trademark check; probe = 24-hour re-read and 5 audience reactions |
-| 15-minute quick mode | Minute 0-3 human brief, 5 ideas, 3 criteria; 3-7 one VS plus operators pass (plus the other family in parallel if available); 7-9 merge, gate, pick 4 finalist cards (best per cluster, the most distinctive feasible idea, your best idea); 9-12 other-family both-order check with `bs.py`; 12-15 gut pick first, then the tally, then your decision with the riskiest assumption, a threshold and a kill criterion in `QUICK_DECISION.md`, stamped "Novelty NOT checked" |
+| 15-minute quick mode (manual route; the kit's quick mode makes about 16 model calls, section 0) | Minute 0-3 human brief, 5 ideas, 3 criteria; 3-7 one VS plus operators pass (plus the other family in parallel if available); 7-9 merge, gate, pick 4 finalist cards (best per cluster, the most distinctive feasible idea, your best idea); 9-12 other-family both-order check with `bs.py`; 12-15 gut pick first, then the tally, then your decision with the riskiest assumption, a threshold and a kill criterion in `QUICK_DECISION.md`, stamped "Novelty NOT checked" |
 | Codex-only | Host Codex; second model = a `bs-alt` custom agent in `~/.codex/agents/bs-alt.toml` with its own `model` (no nested CLI, no network escalation; fallback `codex exec -m <another model>`), labeled PROVISIONAL; it takes the `claude.*` / `claude_*` judge files, S3/S5 and the red-team CRITIC; origins labeled `gpt-alt`; self-preference audit skipped; ce-ideate native (not in the IDE extension; on native Windows prefer WSL for it); grilling + domain-modeling via the skills CLI run from your home folder without `-g` (grill-me and grill-with-docs are unreliable in Codex: their one-line bodies name a Skill tool Codex does not have under that name); claude-council's direct script with non-OpenAI seats (`--providers=gemini,perplexity`) restores cross-vendor critique; every built-in prompt says "Do not load or invoke any skill"; the Codex Superpowers copy is v6.3.0, so add "Stop after the spec for my review"; all tokens bill to one ChatGPT plan, so check usage before Session B |
 | Claude-only | Host Claude Code; second judge = a general-purpose subagent with a different model family alias (PROVISIONAL; self-preference audit skipped); claude-council seats (Gemini via GEMINI_API_KEY or the agy CLI's separate `antigravity` seat, Perplexity, Grok, OpenRouter, ollama) restore cross-vendor critique |
 | Cross-model maximum | Claude Code host, `codex exec` as second family, claude-council seats from 2-3 more vendors in Stage 10; vendors mainly de-bias judging, strategies drive diversity |
@@ -1181,7 +1311,7 @@ Details for each variant are in `ultimate-brainstorm/references/variants.md`.
 | Too many installed skills | The skill listing (1% of context) drops the least-used descriptions | Few core components; variant modules per project; check with `/context` or `/skill-doctor` (v2.1.252+) |
 | Misreading idea-reality | A low score read as "no competition" | 0.5.0 counts failed sources as 0: low = unknown; `GITHUB_TOKEN`; web check |
 | Leaking private ideas or code | Web search and other vendors see the idea; FACTS and council auto-context carry repo files | Two privacy questions at Stage 0 (idea text; code facts and repo files); local-only mode; file paths without contents; `--no-auto-context` |
-| Cost blowups | Hours of subagents | Modes; caps (8 finalists, 4 red-team ideas, 2 gap rounds); no claude-council `--agents` (about 456k tokens measured for 8 seats) |
+| Cost blowups | Hours of subagents | Modes; caps (8 finalists, 4 red-team ideas, 2 gap rounds); a per-run budget of backend requests that asks or stops before a launch could pass it (`ub budget` raises it); no claude-council `--agents` (about 456k tokens measured for 8 seats) |
 | Windows encoding and quoting | `?` in prompts, garbled non-ASCII output, empty arguments dropped, `python3` resolving to the Store stub, bash commands failing in Codex's PowerShell | ASCII prompt files; in PowerShell 5.1 set both `$OutputEncoding` (text piped into native commands) and `[Console]::OutputEncoding` (decoding their output) to UTF-8 and read prompts with `Get-Content -Raw -Encoding UTF8`; `--tools=` in PowerShell (`--tools ""` in bash); Git Bash for Claude Code, PowerShell forms or WSL for Codex; Python detected in the order `py -3`, `python`, `python3`; `bs.py` reads UTF-16 and BOM |
 | Long `codex exec` calls from Claude Code | The Bash tool's 2-minute default timeout (10-minute maximum) kills big generators and judge batches; shell variables vanish between calls | One call per Bash call with timeout 600000 or `run_in_background`; literal absolute paths |
 | `continue` after a crash | A stage that looks done on disk is half done | `bs.py status` checks every planned strategy file, a check per shortlisted/rescued/primary idea, the tournament result and a probe RESULT line |

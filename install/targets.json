@@ -3,8 +3,8 @@
   "verified": "2026-09-23: claude-code 2.1.280, codex rust-v0.156.1, kimi-code 2.0.2, skills 1.7.0, ZCode docs 3.4.0",
   "kit": {"name": "ultimate-brainstorm", "repo": "MrHashMe/ultimate-brainstorm", "skill": "ultimate-brainstorm",
           "marker": ".ub-owned", "marketplace": "ultimate-brainstorm", "plugin": "ultimate-brainstorm"},
-  "runtime_paths": [".claude-plugin", ".codex-plugin", ".agents", ".kimi-plugin", "bundles", "skills", "profiles",
-                    "install", "docs", "README.md", "LICENSE", "NOTICE.md", "VERSION", "CHANGELOG.md"],
+  "runtime_paths": [".claude-plugin", ".codex-plugin", ".agents", ".kimi-plugin", "skills", "profiles", "install",
+                    "docs", "README.md", "LICENSE", "NOTICE.md", "VERSION", "CHANGELOG.md"],
   "agents": {
     "claude-code": {
       "detect": {"bin": "claude", "home": ["$CLAUDE_CONFIG_DIR", "~/.claude"]},
@@ -12,6 +12,7 @@
         "marketplace_add": ["claude", "plugin", "marketplace", "add", "{kit_dir}"],
         "install": ["claude", "plugin", "install", "ultimate-brainstorm@ultimate-brainstorm", "--scope", "{claude_scope}"],
         "list": ["claude", "plugin", "list", "--json"],
+        "marketplace_list": ["claude", "plugin", "marketplace", "list", "--json"],
         "uninstall": ["claude", "plugin", "uninstall", "ultimate-brainstorm@ultimate-brainstorm"],
         "marketplace_remove": ["claude", "plugin", "marketplace", "remove", "ultimate-brainstorm"]},
       "copy": {"user": "{claude_home}/skills", "project": "{project}/.claude/skills"},
@@ -22,6 +23,7 @@
         "marketplace_add": ["codex", "plugin", "marketplace", "add", "{kit_dir}", "--json"],
         "install": ["codex", "plugin", "add", "ultimate-brainstorm@ultimate-brainstorm", "--json"],
         "list": ["codex", "plugin", "list", "--json"],
+        "marketplace_list": ["codex", "plugin", "marketplace", "list", "--json"],
         "uninstall": ["codex", "plugin", "remove", "ultimate-brainstorm@ultimate-brainstorm", "--json"],
         "marketplace_remove": ["codex", "plugin", "marketplace", "remove", "ultimate-brainstorm", "--json"]},
       "copy": {"user": "~/.agents/skills", "project": "{project}/.agents/skills"},

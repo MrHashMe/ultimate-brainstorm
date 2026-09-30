@@ -1,7 +1,14 @@
 #!/usr/bin/env python3
 """Build the release assets for the ultimate-brainstorm kit (KIT_SPEC 10.7). Python 3.9+, standard library only.
 
-    python tools/release.py --version 2.0.0 [--owner <github-user>] --out dist/ [--json]
+    python tools/release.py --version 2.0.0 [--owner <github-user>] --out dist/ [--notes FILE] [--no-acceptance]
+                            [--json]
+
+The live acceptance record comes first (KIT_SPEC 11.9): the build is refused (exit 3) while docs/ACCEPTANCE.md has a
+check without a live result ("not yet verified live", "not tested" or empty; the "(unused)" items are exempt), a result
+without its host and date, or fewer than 2 hosts with the Doctor check. --no-acceptance builds anyway; with --notes the
+list of what is unverified is appended to that release-notes file, so the release says so. --notes also records a
+complete acceptance.
 
 Writes into --out:
     ultimate-brainstorm-<ver>.tar.gz   runtime_paths (install/targets.json) under ultimate-brainstorm-<ver>/
@@ -15,12 +22,13 @@ docs. When --owner differs (a fork), that name, and any leftover OWNER placehold
 only; the repository is never modified. Archives are reproducible: sorted entries, fixed timestamps (SOURCE_DATE_EPOCH, default
 1980-01-01), normalized owners and modes.
 
-Exit codes: 0 ok, 1 failure, 2 usage (bad version/owner, VERSION mismatch).
+Exit codes: 0 ok, 1 failure, 2 usage (bad version/owner, VERSION mismatch), 3 the acceptance record is incomplete.
 """
 
 import argparse
 import gzip
 import hashlib
+import importlib.util
 import io
 import json
 import os
@@ -33,24 +41,23 @@ import zipfile
 KIT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 NAME = "ultimate-brainstorm"
 
-EXCLUDE_ANYWHERE = {"__pycache__", ".git", ".build"}
-EXCLUDE_TOP = {"tests", "tools", ".github", "dist"}
-EXCLUDE_SUFFIX = (".pyc", ".pyo")
-MARKER = ".ub-owned"
-
 # Files whose owner name is filled in the archive copy (10.7): manifests, targets.json and the docs.
 OWNER_GLOBS = (
     re.compile(r"^\.claude-plugin/[^/]+\.json$"),
     re.compile(r"^\.codex-plugin/[^/]+\.json$"),
     re.compile(r"^\.agents/plugins/[^/]+\.json$"),
     re.compile(r"^\.kimi-plugin/[^/]+\.json$"),
-    re.compile(r"^bundles/.+/plugin\.json$"),
     re.compile(r"^install/targets\.json$"),
     re.compile(r"^docs/[^/]+\.md$"),  # not docs/design/: the build spec discusses the placeholder itself
     re.compile(r"^README\.md$"),
 )
 DEFAULT_OWNER = "MrHashMe"
 OWNER_RE = re.compile(r"\b(?:OWNER|%s)\b" % DEFAULT_OWNER)
+
+ACCEPTANCE = "docs/ACCEPTANCE.md"
+# Result cells that record no live check (docs/ACCEPTANCE.md, Procedure step 5)
+NOT_VERIFIED = ("", "not yet verified live", "not tested")
+MIN_HOSTS = 2
 
 
 class ReleaseError(Exception):
@@ -79,35 +86,92 @@ def sha256_file(path):
     return h.hexdigest()
 
 
+def markdown_tables(text):
+    """[[{header: cell}, ...], ...]: the rows of every Markdown table in text (headers lower-cased)."""
+    tables, header, rows = [], None, None
+    lines = text.replace("\r\n", "\n").split("\n")
+    for i, line in enumerate(lines):
+        s = line.strip()
+        if not s.startswith("|"):
+            header = rows = None
+            continue
+        cells = [c.strip() for c in s.strip("|").split("|")]
+        if header is None:
+            nxt = lines[i + 1].strip() if i + 1 < len(lines) else ""
+            if re.match(r"^\|[\s:|-]+\|$", nxt):
+                header, rows = [c.lower() for c in cells], []
+                tables.append(rows)
+            continue
+        if re.match(r"^[\s:-]*$", "".join(cells)):
+            continue  # the separator line
+        rows.append(dict(zip(header, cells + [""] * (len(header) - len(cells)))))
+    return tables
+
+
+def acceptance_gaps(kit):
+    """What docs/ACCEPTANCE.md lacks before a release; [] when the record is complete. Every row of a table with a
+    Result column (platform checks, unverified items; items marked "(unused)" are exempt) needs a live result plus its
+    host and date, and at least MIN_HOSTS rows of the per-host table need a Doctor result (a cell outside
+    NOT_VERIFIED)."""
+    path = os.path.join(kit, *ACCEPTANCE.split("/"))
+    if not os.path.isfile(path):
+        return ["%s is missing" % ACCEPTANCE]
+    gaps, hosts = [], []
+    for rows in markdown_tables(read_text(path)):
+        for row in rows:
+            first = next(iter(row.values()), "")
+            name = re.sub(r"`", "", first)
+            m = re.match(r"^(U-\d+)\b", name)
+            label = m.group(1) if m else name[:60]
+            if "1 doctor" in row:
+                if row["1 doctor"].lower() not in NOT_VERIFIED:  # "not tested" records no check either
+                    hosts.append(first)
+                continue
+            if "result" not in row or "(unused)" in name:
+                continue
+            host = next((v for k, v in row.items() if k.startswith("host")), "")
+            if row["result"].lower() in NOT_VERIFIED:
+                gaps.append("%s: no live result" % label)
+            elif not host or not row.get("date"):
+                gaps.append("%s: the result has no host and date" % label)
+    if len(hosts) < MIN_HOSTS:
+        gaps.append("the per-host checks ran on %d host(s), not %d (Doctor column)" % (len(hosts), MIN_HOSTS))
+    return gaps
+
+
+def acceptance_notes(gaps):
+    """The release-notes section that records the state of the live acceptance."""
+    if not gaps:
+        return "\n## Live acceptance\n\nEvery check in docs/ACCEPTANCE.md has a recorded live result.\n"
+    return ("\n## Live acceptance\n\nThis release was built with `--no-acceptance`: %d check(s) of docs/ACCEPTANCE.md "
+            "have no recorded live result. Where such an assumption is wrong, the fallback in KIT_SPEC section 15 "
+            "is what you get.\n\n%s\n" % (len(gaps), "\n".join("- " + g for g in gaps)))
+
+
 def runtime_paths(kit):
     with open(os.path.join(kit, "install", "targets.json"), "r", encoding="utf-8") as f:
         return json.load(f)["runtime_paths"]
 
 
+def installer(kit):
+    """The kit's own install/install.py as a module: the archive holds exactly the file set the installer stages."""
+    path = os.path.join(kit, "install", "install.py")
+    if not os.path.isfile(path):
+        raise ReleaseError("the kit is incomplete: install/install.py is missing")
+    spec = importlib.util.spec_from_file_location("ub_release_installer", path)
+    mod = importlib.util.module_from_spec(spec)
+    saved = sys.dont_write_bytecode
+    sys.dont_write_bytecode = True  # never leave __pycache__ in the kit being archived
+    try:
+        spec.loader.exec_module(mod)
+    finally:
+        sys.dont_write_bytecode = saved
+    return mod
+
+
 def collect(kit):
-    """{relpath (posix): abspath} of every runtime file, with the installer's exclusions (10.4 item 1)."""
-    files = {}
-    for rp in runtime_paths(kit):
-        full = os.path.join(kit, *rp.split("/"))
-        if os.path.isfile(full):
-            files[rp] = full
-            continue
-        if not os.path.isdir(full):
-            continue
-        for dirpath, dirnames, filenames in os.walk(full):
-            dirnames[:] = sorted(d for d in dirnames if d not in EXCLUDE_ANYWHERE
-                                 and not os.path.islink(os.path.join(dirpath, d)))
-            for name in sorted(filenames):
-                if name == MARKER or name.endswith(EXCLUDE_SUFFIX):
-                    continue
-                p = os.path.join(dirpath, name)
-                if os.path.islink(p):
-                    continue
-                rel = os.path.relpath(p, kit).replace("\\", "/")
-                if rel.split("/")[0] in EXCLUDE_TOP:
-                    continue
-                files[rel] = p
-    return dict(sorted(files.items()))
+    """{relpath (posix): abspath} of every runtime file: install.py's runtime_file_map (its exclusions, 10.4 item 1)."""
+    return dict(sorted(installer(kit).runtime_file_map(kit, runtime_paths(kit)).items()))
 
 
 def needs_owner(rel):
@@ -189,7 +253,7 @@ def write_bytes(path, data):
     os.replace(tmp, path)
 
 
-def release(version, owner, out_dir, kit=KIT):
+def release(version, owner, out_dir, kit=KIT, no_acceptance=False, notes=None):
     if not re.match(r"^\d+\.\d+\.\d+([.-][0-9A-Za-z.-]+)?$", version):
         raise ReleaseError("--version must look like 2.0.0 (no leading v)", 2)
     if not re.match(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$", owner) or owner == "OWNER":
@@ -197,6 +261,11 @@ def release(version, owner, out_dir, kit=KIT):
     file_version = read_text(os.path.join(kit, "VERSION")).strip()
     if file_version != version:
         raise ReleaseError("--version %s does not match VERSION (%s)" % (version, file_version), 2)
+    gaps = acceptance_gaps(kit)
+    if gaps and not no_acceptance:
+        raise ReleaseError("%s is not filled in (%d gap(s): %s%s). Run the live checks and record them, or build with "
+                           "--no-acceptance (with --notes, the release notes then list what is unverified)"
+                           % (ACCEPTANCE, len(gaps), "; ".join(gaps[:3]), "; ..." if len(gaps) > 3 else ""), 3)
     epoch = int(os.environ.get("SOURCE_DATE_EPOCH") or 315532800)
     top = "%s-%s" % (NAME, version)
     files = collect(kit)
@@ -228,9 +297,13 @@ def release(version, owner, out_dir, kit=KIT):
             "install.ps1": sha256_bytes(ps)}
     lines = "".join("%s  %s\n" % (sums[n], n) for n in sorted(sums))
     write_bytes(os.path.join(out_dir, "SHA256SUMS"), lines.encode("ascii"))
+    if notes:
+        with open(notes, "a", encoding="utf-8", newline="\n") as f:
+            f.write(acceptance_notes(gaps))
     return {"version": version, "owner": owner, "out": out_dir.replace("\\", "/"), "files": len(entries),
             "assets": {n: {"sha256": sums[n], "bytes": os.path.getsize(os.path.join(out_dir, n))} for n in sorted(sums)},
-            "owner_filled": sorted(rel for rel in files if needs_owner(rel))}
+            "owner_filled": sorted(rel for rel in files if needs_owner(rel)),
+            "acceptance": {"complete": not gaps, "gaps": gaps}}
 
 
 def main(argv=None):
@@ -238,13 +311,16 @@ def main(argv=None):
     p.add_argument("--version", required=True)
     p.add_argument("--owner", default=DEFAULT_OWNER)
     p.add_argument("--out", default="dist")
+    p.add_argument("--notes", metavar="FILE", help="append the live acceptance state to this release-notes file")
+    p.add_argument("--no-acceptance", dest="no_acceptance", action="store_true",
+                   help="build although docs/ACCEPTANCE.md is incomplete (say so in the release notes: --notes)")
     p.add_argument("--json", action="store_true")
     try:
         args = p.parse_args(argv)
     except SystemExit as exc:
         return exc.code if isinstance(exc.code, int) else 2
     try:
-        result = release(args.version, args.owner, args.out)
+        result = release(args.version, args.owner, args.out, no_acceptance=args.no_acceptance, notes=args.notes)
     except ReleaseError as exc:
         sys.stderr.write("release.py: %s\n" % exc)
         return exc.code
@@ -258,6 +334,9 @@ def main(argv=None):
                          % (result["version"], result["out"], result["files"]))
         for n, a in result["assets"].items():
             sys.stdout.write("  %s  %s (%d bytes)\n" % (a["sha256"], n, a["bytes"]))
+    if result["acceptance"]["gaps"]:
+        sys.stderr.write("release.py: built with --no-acceptance: %d check(s) in %s have no live result\n"
+                         % (len(result["acceptance"]["gaps"]), ACCEPTANCE))
     return 0
 
 

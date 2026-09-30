@@ -62,10 +62,6 @@ def kit_root():
     return os.path.dirname(os.path.dirname(HERE))
 
 
-def _scripts_dir():
-    return os.path.join(kit_root(), "skills", "ultimate-brainstorm", "scripts")
-
-
 def _sha(data):
     if isinstance(data, str):
         data = data.encode("utf-8")
@@ -325,8 +321,8 @@ def _stub_text(tool, args, stdin_bytes):
         prompt = stdin_bytes.decode("utf-8", "replace")
     if not job:
         return "PONG. Stub output from the fake %s CLI without a job file." % tool, {}
-    sys.path.insert(0, _scripts_dir())
-    from ublib import stubs  # noqa: E402 (path set at runtime)
+    sys.path.insert(0, os.path.join(kit_root(), "tests", "harness"))
+    import stubs  # noqa: E402 (path set at runtime; stubs puts the kit's scripts folder on sys.path)
     return stubs.respond(job, prompt), job
 
 

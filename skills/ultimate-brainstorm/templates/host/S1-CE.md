@@ -2,7 +2,7 @@
 # HOST TASK: strategy S1 with Compound Engineering ce-ideate (Stage 4)
 
 Run it in the MAIN conversation, never in a sub-agent: ce-ideate is interactive, dispatches its own sub-agents and ends
-with a menu. Card fields used below: run, runner, task.skill, task.argument_file, task.writes, task.done_cmd.
+with a menu. Card fields used below: run, runner, task.skill, task.argument_file, task.done_cmd.
 
 1. Read task.argument_file: it is the focus text for ce-ideate.
 2. Tell the user, before starting: "ce-ideate may print its ranked survivors and ends with a menu. I will answer the
@@ -17,9 +17,7 @@ with a menu. Card fields used below: run, runner, task.skill, task.argument_file
    commit offer that follows inside a git repo.
 5. Run: <runner> attach-s1 "<run>" --doc "<ideation document path>" --raw "<raw-candidates.md path>"
    (runner and run are the card fields). The engine copies both into pool/ and records the raw-candidates path.
-6. If task.writes names a file ending in s1_seen.json, write {"human_saw_s1_ranking": true} when the ranked list was
-   shown in the conversation, otherwise false.
-7. Run task.done_cmd.
+6. Run task.done_cmd.
 If ce-ideate is missing or fails, do not improvise ideas yourself: run task.done_cmd; the engine falls back to S1F.
 
 ## Argument

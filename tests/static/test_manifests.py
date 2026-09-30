@@ -86,7 +86,6 @@ class ValidatorSelfTest(unittest.TestCase):
             put(".agents/plugins/marketplace.json", {"plugins": [{}]})
             put(".kimi-plugin/plugin.json", {"name": "Bad Name"})
             put(".kimi-plugin/marketplace.json", {"version": 2})
-            put("bundles/stack/.claude-plugin/plugin.json", {"name": "b"})
             os.makedirs(os.path.join(kit, "hooks"))
             problems = " | ".join(vk.check_manifests(kit) + vk.check_tree(kit))
             for needle in ("missing name", "owner.name", "./nope does not exist", "backslash", "more than 3",
@@ -94,21 +93,21 @@ class ValidatorSelfTest(unittest.TestCase):
                 self.assertIn(needle, problems)
 
     def test_drift_detector(self):
-        targets = {"agents": {
-            "claude-code": {"copy": {"user": "{claude_home}/skills", "project": "{project}/.claude/skills"}},
-            "codex": {"copy": {"user": "~/.agents/skills", "project": "{project}/.agents/skills"}},
-            "kimi": {"copy": {"user": "{kimi_home}/skills", "project": "{project}/.kimi-code/skills"}},
-            "zcode": {"copy": {"user": "~/.zcode/skills", "project": "{project}/.zcode/skills"}}}}
-        ts = ("export const agents = {\n"
+        # the drift.yml path: tools/validate_kit.py --drift-agents-ts, on an agents.ts shaped like upstream's
+        # (tests/static/test_wp7_drift.py covers the multi-line upstream form)
+        ts = ("const home = homedir();\n"
+              "const claudeHome = process.env.CLAUDE_CONFIG_DIR?.trim() || join(home, '.claude');\n"
+              "const codexHome = process.env.CODEX_HOME?.trim() || join(home, '.codex');\n"
+              "export const agents = {\n"
               "  'claude-code': { name: 'claude-code', skillsDir: '.claude/skills',"
-              " globalSkillsDir: join(home, '.claude/skills') },\n"
-              "  codex: { name: 'codex', skillsDir: '.agents/skills', globalSkillsDir: join(home, '.agents/skills') },\n"
-              "  'kimi-code-cli': { name: 'kimi-code-cli', skillsDir: '.kimi-code/skills',"
-              " globalSkillsDir: join(home, '.kimi-code/skills') },\n"
+              " globalSkillsDir: join(claudeHome, 'skills') },\n"
+              "  codex: { name: 'codex', skillsDir: '.agents/skills', globalSkillsDir: join(codexHome, 'skills') },\n"
+              "  'kimi-code-cli': { name: 'kimi-code-cli', skillsDir: '.agents/skills',"
+              " globalSkillsDir: join(home, '.agents/skills') },\n"
               "  zcode: { name: 'zcode', skillsDir: '.zcode/skills', globalSkillsDir: join(home, '.zcode/skills') },\n"
               "};\n")
-        self.assertEqual(vk.drift(ts, targets), [])
-        self.assertTrue(vk.drift(ts.replace(".zcode/skills", ".zcode/agent-skills"), targets))
+        self.assertEqual(vk.drift(ts), [])
+        self.assertTrue(vk.drift(ts.replace(".zcode/skills", ".zcode/agent-skills")))
 
     def test_ci_summary_parser(self):
         ci = kitcheck.load_ci()

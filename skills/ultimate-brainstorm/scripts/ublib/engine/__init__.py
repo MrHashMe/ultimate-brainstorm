@@ -68,11 +68,12 @@ DEFAULT_TIMEOUTS_S = {"ping": 60, "frame": 420, "generator": 420, "curator": 480
 
 
 def vendor_of(label):
-    """Vendor of a family label (claude, gpt-alt, host, ...). Unknown labels are their own vendor (5.7)."""
+    """Vendor of a family label (claude, gpt-alt, host, ...). Unknown labels are their own vendor (5.7). The one
+    vendor map is ublib.families.vendor_of (C11); this delegates to it."""
     if not label:
         return None
-    base = base_family(label)
-    return VENDORS.get(base, base)
+    from .. import families  # lazy, like every B2 runtime module (module note)
+    return families.vendor_of(label)
 
 
 def base_family(label):

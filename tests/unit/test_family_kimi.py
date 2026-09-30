@@ -148,8 +148,9 @@ class StreamParseTests(KimiBase):
         for i in range(5):
             job = self.make_job(family="kimi", job_id="k%d" % i)
             self.run_job(job, [tl.PR(0, tl.fixture_bytes("kimi", "tool_noise.jsonl"))])
-        d = os.path.join(self.home, "tmp", "kimi-samples")
-        self.assertEqual(len([n for n in os.listdir(d) if n.endswith(".jsonl")]), 3)
+        d = os.path.join(self.run_dir, "logs", "kimi-samples")  # inside the run folder, never in UB_HOME
+        self.assertEqual(sorted(os.listdir(d)), ["sample-1.jsonl", "sample-2.jsonl", "sample-3.jsonl"])
+        self.assertFalse(os.path.exists(os.path.join(self.home, "tmp", "kimi-samples")))
 
 
 if __name__ == "__main__":

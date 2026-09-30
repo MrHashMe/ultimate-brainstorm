@@ -62,7 +62,7 @@ class Secrets(TmpCase):
 
     def test_stale_call_folders_are_swept(self):
         dead = subprocess.Popen([sys.executable, "-c", "pass"])
-        dead.wait()
+        dead.wait(timeout=300)
         tmp = os.path.join(self.tmp, "tmp")
         stale = os.path.join(tmp, "call-%d-job-abc" % dead.pid)
         live = os.path.join(tmp, "call-%d-job-def" % os.getpid())
@@ -136,7 +136,7 @@ class Writes(TmpCase):
     def test_split_writes_nothing_when_one_target_is_a_folder(self):
         os.makedirs(os.path.join(self.tmp, "b.md"))
         with self.assertRaises(filesproto.PathError):
-            filesproto.write_file_blocks({"a.md": "A\n", "b.md": "B\n"}, self.tmp, None)
+            filesproto.write_file_blocks({"a.md": "A\n", "b.md": "B\n"}, self.tmp, ["*.md"])
         self.assertFalse(os.path.exists(os.path.join(self.tmp, "a.md")))
 
     def test_reserved_names_with_trailing_space(self):
@@ -151,7 +151,7 @@ class Writes(TmpCase):
                 "'pad': 'x' * 2000}))\n" % _SCRIPTS)
         ps = [subprocess.Popen([sys.executable, "-c", code, path, str(k)]) for k in range(6)]
         for p in ps:
-            p.wait()
+            p.wait(timeout=300)  # a regression is a test error with a traceback, never a runner-level kill
         good = 0
         with open(path, encoding="utf-8") as f:
             for line in f:
@@ -164,25 +164,26 @@ class DriverLock(TmpCase):
     def test_only_one_process_acquires(self):
         run = os.path.join(self.tmp, "run")
         os.makedirs(run)
-        code = ("import sys, time; sys.path.insert(0, %r)\nfrom ublib.engine import state as st\n"
-                "l = st.Lock(sys.argv[1]); t = float(sys.argv[2])\n"
-                "while time.time() < t: pass\n"
-                "print('1' if l.acquire() else '0'); sys.stdout.flush(); time.sleep(2)\n" % _SCRIPTS)
-        import time
-        start = time.time() + 1.5
-        ps = [subprocess.Popen([sys.executable, "-c", code, run, repr(start)], stdout=subprocess.PIPE)
-              for _ in range(4)]
-        outs = [p.communicate()[0].decode().strip() for p in ps]
+        go = os.path.join(self.tmp, "go")
+        # each process reports its attempt, then waits for the test to say `go` (a barrier file), so all four attempts
+        # overlap while the winner still holds the lock
+        code = ("import os, sys, time; sys.path.insert(0, %r)\nfrom ublib.engine import state as st\n"
+                "l = st.DriverLock(sys.argv[1])\nprint('1' if l.acquire() else '0'); sys.stdout.flush()\n"
+                "while not os.path.exists(sys.argv[2]): time.sleep(0.02)\n" % _SCRIPTS)
+        ps = [subprocess.Popen([sys.executable, "-c", code, run, go], stdout=subprocess.PIPE) for _ in range(4)]
+        outs = [p.stdout.readline().decode().strip() for p in ps]
+        open(go, "w").close()
+        for p in ps:
+            p.communicate(timeout=300)
         self.assertEqual(outs.count("1"), 1, outs)
 
-    def test_stale_lock_is_taken_over(self):
+    def test_a_dead_drivers_record_never_blocks(self):
         run = os.path.join(self.tmp, "run")
         os.makedirs(os.path.join(run, ".ub"))
         textio.write_json_atomic(os.path.join(run, ".ub", "lock.json"),
-                                 {"pid": 999999, "host": "x", "heartbeat_ts": 0})
-        lock = st.Lock(run)
-        self.assertTrue(lock.acquire())
-        self.assertTrue(lock.still_ours())
+                                 {"pid": os.getpid(), "host": "x", "heartbeat_ts": 0})
+        lock = st.DriverLock(run)
+        self.assertTrue(lock.acquire())  # lock.json is a display record; only the OS lock decides
         lock.release()
 
 

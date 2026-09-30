@@ -4,20 +4,27 @@ single-file HTML pack (Markdown subset -> index.html), the zip and the pandoc ex
 Scripts: proposal_packs (13.1), proposal_assemble (13.4 and 13.4b), proposal_render (13.7).
 """
 
-import glob
 import html
 import os
 import re
 import shutil
 import zipfile
 
-from .. import textio
+from .. import filesproto, textio
 from . import EngineError
 from . import registry
 
 PROP = "11_PROPOSAL"
-# [U-26] one constant; offline, the mermaid source stays visible.
-MERMAID_CDN = "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs"
+ARCH = "10_ARCHITECTURE"
+# [U-26] Mermaid: one exact version, the single-file build (an ESM entry imports chunks no integrity check covers),
+# loaded with Subresource Integrity. MERMAID_SRI is the sha384 of that file; templates/docs/index.html.tpl carries it in
+# the script tag, and build_index_html refuses a template whose hash differs. To bump: fetch the new file, compute
+# `sha384-` + base64(sha384(bytes)), check it against the npm tarball, change both. Offline, blocked or with a hash
+# that does not match, the mermaid source stays visible.
+# [U-60] mermaid's single-file build renders under the page's Content-Security-Policy (no eval; inline styles only);
+# if it did not, the diagram source would stay visible.
+MERMAID_CDN = "https://cdn.jsdelivr.net/npm/mermaid@11.17.2/dist/mermaid.min.js"
+MERMAID_SRI = "sha384-EOXBFmc3gx5mb+vn0vPvvGqACToJD24hhacX5Yx+8NUUQrHIle/Qi5Bg9o3zKwW2"
 APPENDICES = ["## Appendix A. ADR Index", "## Appendix B. Assumptions Index", "## Appendix C. Candidate Comparison",
               "## Appendix D. Idea Selection Record", "## Appendix E. Glossary", "## Appendix F. Sources"]
 
@@ -26,9 +33,17 @@ def _p(rel):
     return "%s/%s" % (PROP, rel)
 
 
+def _recover(ctx, *roots):
+    """Finish the FILE-protocol commits a crash interrupted in these split roots, so a reader sees whole packages."""
+    for root in roots:
+        filesproto.recover(ctx.path(root))
+
+
 # ================================================================ 13.1 packs
 
 def proposal_packs(ctx, step):
+    from . import render_arch
+    _recover(ctx, ARCH)
     try:
         registry.bs(ctx, "sources", ctx.run_dir)
     except EngineError:
@@ -43,7 +58,7 @@ def proposal_packs(ctx, step):
     blocks = [b for lang, b in textio.fenced_blocks(containers) if lang == "mermaid"]
     if blocks:
         mblock = "```mermaid\n%s```" % blocks[-1] if blocks[-1].endswith("\n") else "```mermaid\n%s\n```" % blocks[-1]
-    adrs = sorted(glob.glob(ctx.path("10_ARCHITECTURE", "adr", "*.md")))[:5]
+    adrs = sorted(textio.glob_in(ctx.run_dir, "10_ARCHITECTURE", "adr", "*.md"))[:5]
     matrix = ctx.read_json(arch + "matrix.json", {}) or {}
     pack_a = ["# PACK A (problem, evidence, prior art, decision)", "", "## FRAME", fr, "",
               "## CONTEXT A (facts)", registry.context_section(ctx, "A"), "",
@@ -56,7 +71,7 @@ def proposal_packs(ctx, step):
     else:
         arch_part = ["## Architecture README", ctx.read(arch + "README.md"), "", "## Container view", mblock, "",
                      "## Top ADRs"] + [textio.read_text(p) for p in adrs] + [
-            "", "## Matrix summary", "leader %s (%s)" % (matrix.get("leader"), matrix.get("leader_status")),
+            "", "## Matrix summary", "leader " + render_arch.leader_text(matrix),
             "", "## Deferred", ctx.read(arch + "chosen/deferred.md"), "", "## Drivers",
             ctx.read(arch + "goals-constraints.md")]
     pack_b = ["# PACK B (architecture, scope, roadmap)", ""] + arch_part + ["", "## Probe (Milestone 0)",
@@ -64,7 +79,8 @@ def proposal_packs(ctx, step):
     oq = registry.frame_questions(ctx)
     pack_c = ["# PACK C (cost, risks, success)", "", "## Cost model", ctx.read(arch + "chosen/cost-model.md"), "",
               "## Risks", ctx.read(arch + "risks.md"), "", "## Pre-mortem", ctx.read(arch + "premortem.md"), "",
-              "## Red-team kill-assumptions", "\n".join(re.findall(r"(Fails if[^\n]*)", ctx.read("07_REDTEAM.md")))
+              "## Red-team kill-assumptions", "\n".join(re.findall(r"(Fails if[^\n]*)",
+                                                                 registry._unfenced(ctx.read("07_REDTEAM.md"))))
               or "(none)", "", "## FRAME success", registry.section(fr, "Success looks like") or "NOT VERIFIED", "",
               "## Open questions", "\n".join("- %s (default: %s)" % (q["text"], q.get("default") or "none")
                                              for q in oq) or "(none)"]
@@ -75,9 +91,24 @@ def proposal_packs(ctx, step):
 
 # ================================================================ 13.4 assembly
 
+KILLED_BANNER = "KILLED (K6): the chosen idea's pre-registered probe missed; no runner-up is left"
+
+
+def k6_dead(state):
+    """True when the chosen idea's own probe missed and no runner-up was left (gates.probe_result): K6 killed it (a
+    decision_log line) and run.json probe records its MISSED. A switch to another finalist ends this state."""
+    idea = (state.get("choice") or {}).get("idea")
+    probe = state.get("probe") or {}
+    return bool(idea) and idea in registry.k6_killed(state) and probe.get("idea") == idea and \
+        probe.get("result") == "MISSED"
+
+
 def status_banner(ctx):
-    """DRAFT, APPROVED, AUTOPILOT DRAFT or PENDING MILESTONE 0 (8.2 13.4)."""
+    """DRAFT, APPROVED, AUTOPILOT DRAFT or PENDING MILESTONE 0 (8.2 13.4); KILLED (K6) before any of them once the
+    chosen idea's probe missed with no runner-up left (k6_dead)."""
     s = ctx.state
+    if k6_dead(s):
+        return KILLED_BANNER
     passed = "RESULT: PASSED" in ctx.read("09_PROBE.md")
     if s.get("autopilot") == "full-auto":
         return "AUTOPILOT DRAFT: no human decisions were made"
@@ -97,10 +128,9 @@ def section_text(ctx, num, heading):
     if re.match(r"^##\s*%d\." % int(num), first):
         # the canonical heading (lint P1; section 6 is "Approach" for the approach build type)
         return "\n".join([heading] + lines[1:])
-    if not re.match(r"^##\s*%d\." % int(num), first):
-        text = heading + "\n\n" + re.sub(r"^#{1,3}\s*[^\n]*\n", "", text, count=1) if first.startswith("#") \
-            else heading + "\n\n" + text
-    return text
+    if first.startswith("#"):
+        return heading + "\n\n" + re.sub(r"^#{1,3}\s*[^\n]*\n", "", text, count=1)
+    return heading + "\n\n" + text
 
 
 def appendix_a(ctx):
@@ -113,25 +143,29 @@ def appendix_a(ctx):
 
 
 def appendix_c(ctx):
+    """PROPOSAL.md Appendix C: the candidate matrix and its leader as the README names it (render_arch.leader_text);
+    a candidate vetoes EXCLUDED has no rank ('-')."""
+    from . import render_arch
     m = ctx.read_json("10_ARCHITECTURE/matrix.json", {}) or {}
     cmap = ctx.read_json("10_ARCHITECTURE/candidates/map.json", {}) or {}
     rows = []
     for c in m.get("candidates") or []:
         if isinstance(c, dict):
             lab = c.get("label")
-            rows.append("| %s | %s | %s | %s | %s | %s |" % (lab, c.get("score"), c.get("rank"), registry.fmt_range(c.get("range")),
-                                                            c.get("veto"), (cmap.get(lab) or {}).get("family", "?")))
+            rows.append("| %s | %s | %s | %s | %s | %s |" % (lab, c.get("score"), c.get("rank") or "-",
+                                                            registry.fmt_range(c.get("range")), c.get("veto"),
+                                                            (cmap.get(lab) or {}).get("family", "?")))
     if not rows:
         return "No candidate comparison (%s)." % ("approach build type" if ctx.state.get("build_type") ==
                                                   "approach" else "matrix missing")
     return ("| candidate | weighted score | rank | range | veto | author |\n|---|---|---|---|---|---|\n" +
-            "\n".join(rows) + "\n\nLeader: %s (%s)." % (m.get("leader"), m.get("leader_status")))
+            "\n".join(rows) + "\n\nLeader: %s." % render_arch.leader_text(m))
 
 
 def appendix_d(ctx):
-    """Idea selection record: finalists and judges, the gut pick, debiased standings, contested pairs, audit flags,
-    red-team verdicts, the decision in the user's words and PROVISIONAL badges (from 06_TOURNAMENT, 07_REDTEAM and
-    08_DECISION)."""
+    """Idea selection record: finalists and judges, the gut pick, debiased standings (score %, scored pairs and the
+    ranking method), the Condorcet winner and majority cycles, contested pairs, audit flags, red-team verdicts, the
+    decision in the user's words and PROVISIONAL badges (from 06_TOURNAMENT, 07_REDTEAM and 08_DECISION)."""
     s = ctx.state
     info = registry.idea_lines(ctx)
     parts = []
@@ -145,10 +179,19 @@ def appendix_d(ctx):
     res = registry.tournament_result(ctx)
     deb = [d for d in res.get("debiased") or [] if isinstance(d, dict)]
     if deb:
-        rows = ["| rank | idea | debiased % | verdicts |", "|---|---|---|---|"]
-        rows += ["| %d | %s %s | %s | %s |" % (n, d.get("id"), registry.clean(info.get(d.get("id"), {}).get(
-            "title", "")), d.get("pct"), d.get("n")) for n, d in enumerate(deb, 1)]
-        parts.append("Debiased tournament standings:\n\n" + "\n".join(rows))
+        # result.json rows: a pair-level Bradley-Terry win share (or raw points) and the number of scored pairs
+        rows = ["| rank | idea | score % | pairs |", "|---|---|---|---|"]
+        rows += ["| %s | %s %s | %s | %s |" % (d.get("rank") or n, d.get("id"), registry.clean(info.get(
+            d.get("id"), {}).get("title", "")), d.get("pct"), d.get("n")) for n, d in enumerate(deb, 1)]
+        rk = res.get("ranking") if isinstance(res.get("ranking"), dict) else {}
+        method = rk.get("method") or "not recorded"
+        if method == "raw-fallback" and rk.get("reason"):
+            method += " (%s)" % registry.clean(rk["reason"])
+        parts.append("Debiased tournament standings (ranking method: %s):\n\n%s" % (method, "\n".join(rows)))
+        cw = res.get("condorcet") if isinstance(res.get("condorcet"), dict) else {}
+        cycles = [", ".join(str(c) for c in g) for g in cw.get("cycles") or [] if isinstance(g, list)]
+        parts.append("Condorcet winner (beats every other finalist by pairwise majority): %s. Majority cycles: %s."
+                     % (cw.get("winner") or "none", "; ".join(cycles) or "none"))
     contested = ["%s vs %s" % (c[0], c[1]) for c in res.get("contested") or [] if isinstance(c, (list, tuple))
                  and len(c) >= 2]
     parts.append("Contested pairs: %s." % ("; ".join(contested) or "none"))
@@ -172,9 +215,14 @@ def appendix_d(ctx):
 
 
 def appendix_e(ctx):
+    """The FRAME's Domain language, then the A2 terms under their own line (privacy.GLOSSARY_A2: another vendor's copy
+    of PROPOSAL.md keeps only the A2 terms FACTS would keep, privacy.filter_glossary)."""
+    from . import privacy
     fr = registry.frame_text(ctx)
     dl = registry.section(fr, "Domain language")
     a2 = registry.context_section(ctx, "A2")
+    if a2:
+        a2 = "%s\n%s" % (privacy.GLOSSARY_A2, a2)
     out = "\n\n".join(x for x in (dl, a2) if x)
     return out or "No domain terms were resolved in this run."
 
@@ -229,6 +277,7 @@ def assemble(ctx):
 
 
 def proposal_assemble(ctx, step):
+    _recover(ctx, PROP)  # the section drafts, registers and one-pager are FILE-protocol outputs
     try:
         registry.bs(ctx, "assumptions", ctx.run_dir)
     except EngineError:
@@ -283,35 +332,68 @@ def write_readme(ctx):
 
 # ================================================================ Markdown subset -> HTML
 
+# A link target kept as it is: http(s) (any letter case), an in-page anchor, or a relative path that starts with a
+# letter, digit, "_", "." or "-" (so never "/", "//host" or "\\host"); anything else becomes "#".
+_SAFE_HREF_RE = re.compile(r"^(?:[Hh][Tt][Tt][Pp][Ss]?://|#|[A-Za-z0-9_.-][A-Za-z0-9_./#-]*$)")
+_KEPT_RE = re.compile("\x00(\\d+)\x00")
+# [label](target): neither part holds a bracket, so a failed attempt stops at the next '[' and the scan stays linear
+# (label and target runs that could reach the end of the text cost quadratic time on text like "[a](b[a](b...")
+_LINK_RE = re.compile(r"\[([^\[\]]+)\]\(([^)\s\[\]]+)\)")
+
+
 def _inline(text):
-    t = html.escape(text, quote=False)
-    t = re.sub(r"`([^`]+)`", lambda m: "<code>%s</code>" % m.group(1), t)
-    t = re.sub(r"\*\*([^*]+)\*\*", r"<strong>\1</strong>", t)
-    t = re.sub(r"(?<![\w*])\*([^*\n]+)\*(?![\w*])", r"<em>\1</em>", t)
-    t = re.sub(r"(?<![\w_])_([^_\n]+)_(?![\w_])", r"<em>\1</em>", t)
+    """Inline Markdown -> HTML. Code spans are taken out first (their text stays literal), then links, whose target is
+    checked and escaped once, on the raw text; the rest is escaped and gets emphasis (which may span a link)."""
+    kept = []
+
+    def keep(fragment):
+        kept.append(fragment)
+        return "\x00%d\x00" % (len(kept) - 1)
+
+    def restore(t):
+        return _KEPT_RE.sub(lambda m: kept[int(m.group(1))], t)
+
+    def emphasis(t):
+        t = html.escape(t, quote=False)
+        t = re.sub(r"\*\*([^*]+)\*\*", r"<strong>\1</strong>", t)
+        t = re.sub(r"(?<![\w*])\*([^*\n]+)\*(?![\w*])", r"<em>\1</em>", t)
+        return re.sub(r"(?<![\w_])_([^_\n]+)_(?![\w_])", r"<em>\1</em>", t)
 
     def link(m):
-        href = m.group(2)
-        if not re.match(r"^(https?://|#|[A-Za-z0-9_./-]+$)", href):
-            href = "#"
-        return '<a href="%s">%s</a>' % (html.escape(href, quote=True), m.group(1))
-    t = re.sub(r"\[([^\]]+)\]\(([^)\s]+)\)", link, t)
-    return t
+        href = m.group(2) if _SAFE_HREF_RE.match(m.group(2)) else "#"
+        return keep('<a href="%s">%s</a>' % (html.escape(href, quote=True), restore(emphasis(m.group(1)))))
+    t = re.sub(r"`([^`]+)`", lambda m: keep("<code>%s</code>" % html.escape(m.group(1), quote=False)),
+               text.replace("\x00", "\N{REPLACEMENT CHARACTER}"))
+    t = _LINK_RE.sub(link, t)
+    return restore(emphasis(t))
+
+
+class Anchors(set):
+    """The ids used in one page, with the next free number per base, so the Nth heading of one name costs O(1)
+    instead of probing base-2 ... base-N again (10k identical headings took 12 s)."""
+
+    def __init__(self, *args):
+        set.__init__(self, *args)
+        self.next = {}
 
 
 def anchor(text, used):
     base = re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-") or "section"
-    a, n = base, 2
-    while a in used:
+    counters = getattr(used, "next", {})  # a plain set works too (without the shortcut)
+    a, n = base, counters.get(base, 2)
+    if a in used:
         a = "%s-%d" % (base, n)
-        n += 1
+        while a in used:
+            n += 1
+            a = "%s-%d" % (base, n)
+        counters[base] = n + 1
     used.add(a)
     return a
 
 
 def md_to_html(md, used=None, toc=None, shift=0):
     """Headings, paragraphs, lists, GFM tables, fenced code (mermaid -> pre.mermaid), emphasis, links, blockquotes."""
-    used = used if used is not None else set()
+    used = used if used is not None else Anchors()
     lines = textio.normalize_newlines(md or "").split("\n")
     out = []
     i = 0
@@ -323,13 +405,13 @@ def md_to_html(md, used=None, toc=None, shift=0):
             del para[:]
     while i < len(lines):
         ln = lines[i]
-        fm = re.match(r"^\s*(`{3,}|~{3,})\s*([A-Za-z0-9_+-]*)", ln)
-        if fm:
+        fence = textio.fence_open(ln)
+        if fence:
             flush()
-            fence, lang = fm.group(1), fm.group(2).lower()
+            lang = fence[2]
             body = []
             i += 1
-            while i < len(lines) and not lines[i].strip().startswith(fence):
+            while i < len(lines) and not textio.fence_closes(lines[i], fence):
                 body.append(lines[i])
                 i += 1
             i += 1
@@ -339,11 +421,11 @@ def md_to_html(md, used=None, toc=None, shift=0):
             else:
                 out.append('<pre><code class="language-%s">%s</code></pre>' % (lang or "text", code))
             continue
-        hm = re.match(r"^(#{1,6})\s+(.*?)\s*#*\s*$", ln)
+        hm = textio.parse_heading(ln)
         if hm:
             flush()
-            level = min(6, len(hm.group(1)) + shift)
-            text = hm.group(2)
+            level = min(6, hm[0] + shift)
+            text = hm[1]
             a = anchor(text, used)
             if toc is not None and level == 2:
                 toc.append((a, text))
@@ -405,37 +487,14 @@ def md_to_html(md, used=None, toc=None, shift=0):
     return "\n".join(out)
 
 
-CSS = """
-:root{--fg:#1d1d1f;--bg:#fff;--muted:#6b6b70;--line:#d9d9de;--card:#f6f6f8;--accent:#2d5bd7}
-@media (prefers-color-scheme: dark){:root{--fg:#ececef;--bg:#141416;--muted:#a0a0a8;--line:#34343a;--card:#1d1d21;
---accent:#8fb0ff}}
-*{box-sizing:border-box}body{margin:0;font:16px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,
-"Helvetica Neue",Arial,sans-serif;color:var(--fg);background:var(--bg)}
-.wrap{display:grid;grid-template-columns:260px 1fr;gap:32px;max-width:1200px;margin:0 auto;padding:24px}
-nav.toc{position:sticky;top:16px;align-self:start;max-height:92vh;overflow:auto;font-size:14px}
-nav.toc a{display:block;color:var(--muted);text-decoration:none;padding:2px 0}nav.toc a:hover{color:var(--accent)}
-.cover{border-bottom:1px solid var(--line);padding:24px 0 16px}.badge{display:inline-block;padding:2px 10px;
-border-radius:12px;background:var(--card);border:1px solid var(--line);font-size:13px;font-weight:600}
-.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:16px 20px;margin:16px 0}
-table{border-collapse:collapse;width:100%;margin:12px 0;font-size:14px}th,td{border:1px solid var(--line);
-padding:6px 8px;text-align:left;vertical-align:top}pre{background:var(--card);padding:12px;overflow:auto;
-border-radius:8px}code{font-family:Consolas,Menlo,monospace;font-size:13px}blockquote{border-left:3px solid
-var(--line);margin:0;padding-left:12px;color:var(--muted)}a{color:var(--accent)}
-@media (max-width:800px){.wrap{grid-template-columns:1fr}nav.toc{position:static;max-height:none}}
-nav.toc ul{list-style:none;padding-left:0}
-@media print{nav.toc{display:none}.wrap{display:block}#sections>h2,#architecture>h2,#appendices>h2{
-page-break-before:always}.cover h1{margin-top:0}}
-"""
-
-
 def build_index_html(ctx):
     """11_PROPOSAL/index.html from templates/docs/index.html.tpl: cover, one-pager card, table of contents,
     sections 1-13 (ids sec-1..sec-13), architecture (diagrams, ADR cards, risk table), appendices (ids
     appendix-a..appendix-f). Mermaid blocks become <pre class="mermaid">."""
-    from . import KIT_VERSION
     from . import builders
+    _recover(ctx, PROP, ARCH)
     s = ctx.state
-    used = set(["cover", "toc", "one-pager", "sections", "architecture", "appendices", "status-badge"])
+    used = Anchors(["cover", "toc", "one-pager", "sections", "architecture", "appendices", "status-badge"])
     proposal = ctx.read(_p("PROPOSAL.md"))
     one = ctx.read(_p("ONE-PAGER.md"))
     m = re.search(r"^# (.*)$", proposal, re.M)
@@ -444,7 +503,7 @@ def build_index_html(ctx):
     pitch = registry.idea_lines(ctx).get(registry.chosen_idea(ctx) or "", {}).get("pitch") or s.get("topic", "")
     sections, appendices, toc_sec, toc_app = [], [], [], []
     for head, body in split_h2(proposal):
-        ms = re.match(r"^(\d+)\.\s*(.*)$", head)
+        ms = re.match(r"^(\d{1,9})\.\s*(.*)$", head)  # int() refuses a 4301-digit heading number
         ma = re.match(r"^Appendix\s+([A-F])\.\s*(.*)$", head, re.I)
         if ms:
             hid = "sec-%d" % int(ms.group(1))
@@ -463,7 +522,7 @@ def build_index_html(ctx):
     if approach and s.get("build_type") == "approach":
         arch.append(md_to_html(re.sub(r"^# .*\n", "", approach, count=1), used, None, 1))
     cards = []
-    for p in sorted(glob.glob(ctx.path("10_ARCHITECTURE", "adr", "*.md"))):
+    for p in sorted(textio.glob_in(ctx.run_dir, "10_ARCHITECTURE", "adr", "*.md")):
         t = re.sub(r"(?s)^---.*?---\s*", "", textio.read_text(p))
         cards.append('<div class="card adr">%s</div>' % md_to_html(t, used, None, 2))
     if cards:
@@ -480,45 +539,39 @@ def build_index_html(ctx):
     toc.append('</ul>')
     one_html = ('<h2 id="one-pager-title">One-pager</h2>\n' +
                 md_to_html(re.sub(r"^# .*\n", "", one, count=1), used, None, 1)) if one else "<p>No one-pager.</p>"
-    mapping = {"LANG": html.escape(s.get("lang") or "en"), "KIT_VERSION": KIT_VERSION, "PACK_TITLE": html.escape(title),
-               "PITCH": html.escape(pitch), "STATUS_BADGE": html.escape(badge), "DATE": textio.now_iso()[:10],
-               "RUN_NAME": html.escape(s.get("run", "")), "TOC_HTML": "\n".join(toc), "ONE_PAGER_HTML": one_html,
-               "SECTIONS_HTML": "\n".join(sections), "ARCHITECTURE_HTML": "\n".join(arch),
-               "APPENDICES_HTML": "\n".join(appendices), "MERMAID_CDN": MERMAID_CDN}
-    # the names of the first engine version's mapping (templates may use either set)
-    mapping.update({"TITLE": mapping["PACK_TITLE"], "CSS": CSS, "TOC": mapping["TOC_HTML"],
-                    "BADGE": mapping["STATUS_BADGE"], "ONE_PAGER": one_html,
-                    "BODY": "\n".join(['<section id="sections">'] + sections + ['</section>',
-                                                                          '<section id="architecture">'] + arch +
-                                      ['</section>', '<section id="appendices">'] + appendices + ['</section>'])})
+    body = (['<section id="sections">'] + sections + ['</section>', '<section id="architecture">'] + arch +
+            ['</section>', '<section id="appendices">'] + appendices + ['</section>'])
+    mapping = {"LANG": html.escape(s.get("lang") or "en"), "TITLE": html.escape(title), "PITCH": html.escape(pitch),
+               "BADGE": html.escape(badge), "DATE": textio.now_iso()[:10], "TOC": "\n".join(toc),
+               "ONE_PAGER": one_html, "BODY": "\n".join(body), "MERMAID_CDN": MERMAID_CDN}
+    tpl = registry.load_template("INDEX-HTML", "docs", raw=True)
+    bad = EngineError("templates/docs/index.html.tpl is missing, uses a placeholder the engine does not fill, or "
+                      "loads another Mermaid build than %s" % MERMAID_CDN,
+                      fix=["reinstall the kit (templates and engine versions differ): install.py update"])
+    if not tpl or 'integrity="%s"' % MERMAID_SRI not in tpl:
+        raise bad
+    if (s.get("privacy") or {}).get("web") is False:
+        tpl = offline_template(tpl)
+    doc = builders.fill_doc(tpl, mapping)
+    if not doc:
+        raise bad
+    return doc.rstrip("\n") + "\n"
 
-    def builtin():
-        return """<!DOCTYPE html>
-<html lang="%(LANG)s">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>%(PACK_TITLE)s</title>
-<style>%(CSS)s</style>
-</head>
-<body>
-<header class="cover" id="cover"><h1>%(PACK_TITLE)s</h1><p class="pitch">%(PITCH)s</p>
-<p><span class="badge" id="status-badge">%(STATUS_BADGE)s</span> %(DATE)s %(RUN_NAME)s</p></header>
-<div class="wrap"><nav class="toc" id="toc" aria-label="Contents">%(TOC_HTML)s</nav><main>
-<section class="card" id="one-pager">%(ONE_PAGER_HTML)s</section>
-<section id="sections">%(SECTIONS_HTML)s</section>
-<section id="architecture">%(ARCHITECTURE_HTML)s</section>
-<section id="appendices">%(APPENDICES_HTML)s</section>
-</main></div>
-<script type="module">
-import mermaid from "%(MERMAID_CDN)s";
-mermaid.initialize({startOnLoad: false, securityLevel: "strict"});
-mermaid.run({querySelector: "pre.mermaid"}).catch(function () {});
-</script>
-</body>
-</html>
-""" % dict(mapping, CSS=CSS)
-    return builders.render_doc("INDEX-HTML", mapping, fallback=builtin)
+
+def offline_template(tpl):
+    """The page template for a run without web access (privacy web = no, as `private` sets it): no <script> at all, a
+    Content-Security-Policy with script-src 'none', and a footer that says so. Opening the page then contacts nobody
+    (the CDN would receive the reader's IP address); diagrams show their Mermaid source. Refuses a template it cannot
+    make script-free (EngineError), rather than let a private run's page load the CDN."""
+    out = re.sub(r"<script\b[^>]*>.*?</script>[ \t]*\n?", "", tpl, flags=re.S | re.I)
+    out = re.sub(r"script-src [^;\"]*", "script-src 'none'", out)
+    out = re.sub(r'<footer class="footer">.*?</footer>',
+                 '<footer class="footer">Generated by ultimate-brainstorm. This run allows no web access, so the page '
+                 'loads no script: diagrams show their Mermaid source.</footer>', out, flags=re.S)
+    if "<script" in out.lower() or "{{MERMAID_CDN}}" in out or "script-src 'none'" not in out:
+        raise EngineError("templates/docs/index.html.tpl cannot be made script-free for a run without web access",
+                          fix=["reinstall the kit (templates and engine versions differ): install.py update"])
+    return out
 
 
 def render_pack(ctx, make_zip=False):
@@ -528,6 +581,27 @@ def render_pack(ctx, make_zip=False):
     if make_zip:
         out["zip"] = textio.to_posix(write_zip(ctx))
     return out
+
+
+def page_is_current(ctx):
+    """False when 11_PROPOSAL/index.html loads a script this kit would not load: any script in a run without web
+    access, or a script without the pinned build's integrity (a page kit 2.0.x rendered imports a floating mermaid@11
+    with no SRI and no CSP). A page without a script loads nothing and counts as current."""
+    page = ctx.read(_p("index.html"))
+    if "<script" not in page.lower():
+        return True
+    if (ctx.state.get("privacy") or {}).get("web") is False:
+        return False
+    return 'integrity="%s"' % MERMAID_SRI in page
+
+
+def refresh_page(ctx):
+    """Render 11_PROPOSAL/index.html again when it exists and is not current (page_is_current), so a page an older
+    kit rendered is never published or exported as it is. Returns True when it did."""
+    if not ctx.exists(_p("index.html")) or page_is_current(ctx):
+        return False
+    render_pack(ctx)
+    return True
 
 
 def write_zip(ctx):
@@ -557,7 +631,7 @@ def export(ctx, fmt):
     """`ub export`: html = copy of index.html; docx via pandoc only when it is on PATH."""
     os.makedirs(ctx.path(PROP, "export"), exist_ok=True)
     if fmt == "html":
-        if not ctx.exists(_p("index.html")):
+        if not ctx.exists(_p("index.html")) or not page_is_current(ctx):
             render_pack(ctx)
         dst = ctx.path(PROP, "export", "PROPOSAL.html")
         shutil.copy2(ctx.path(_p("index.html")), dst)
@@ -597,19 +671,10 @@ def milestone0_section(ctx, heading):
 
 
 def split_h2(md):
-    """[(heading text, body markdown)] for every '## ' section of a Markdown text (the preamble is dropped)."""
-    out = []
-    cur = None
-    buf = []
-    for ln in textio.normalize_newlines(md or "").split("\n"):
-        m = re.match(r"^##\s+(.*?)\s*#*\s*$", ln)
-        if m and not ln.startswith("###"):
-            if cur is not None:
-                out.append((cur, "\n".join(buf)))
-            cur, buf = m.group(1), []
-            continue
-        if cur is not None:
-            buf.append(ln)
-    if cur is not None:
-        out.append((cur, "\n".join(buf)))
-    return out
+    """[(heading text, body markdown)] for every '## ' section of a Markdown text (the preamble is dropped). A '## '
+    line inside a fenced code block is code, not a section (textio.headings)."""
+    text = textio.normalize_newlines(md or "")
+    lines = text.split("\n")
+    heads = [(i, title) for i, level, title in textio.headings(text) if level == 2]
+    return [(title, "\n".join(lines[i + 1:heads[k + 1][0] if k + 1 < len(heads) else len(lines)]))
+            for k, (i, title) in enumerate(heads)]

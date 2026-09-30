@@ -1,16 +1,17 @@
 """Drive `ub.py` like a host agent does (KIT_SPEC 4.11-4.13, 11.6 E3). Owner: B4.
 
-    a = Answerer(env=th.env, cwd=th.project, choices={"G11": {"choice": "B"}})
+    a = Answerer(env=th.env, cwd=th.project, choices={"G11": {"choice": "B", "accept_recommendation": False}})
     card = a.ub("init", "--host", "claude-code", "--text", "shift-swap app for nurses", "--json")
     final = a.drive(card)          # DONE, BLOCKED, or the card for which stop_at(card) returned True
 
 Per card type:
     AUTO        run the card's `then` command (its --wait-s capped at `wait_s`)
     HUMAN       write a NEW answer file = answer_template filled from default_answer, then the scripted choice for
-                that gate (a dict, or a callable(card) -> dict); run the answer command (`answer_cmd`)
+                that gate (a dict, or a callable(card) -> dict); run the answer command (`answer_cmd`). A card
+                that reads the reply back ('I read your reply as: ...') is confirmed with only `reply` = yes
     HOST        write every path in task.writes from the fixture folder (by template name, then by basename; generic
                 content otherwise) and run task.done_cmd
-    HOST_BATCH  for each job: read jobs/<id>.json and its host prompt, call ublib.stubs.respond(job, prompt), write
+    HOST_BATCH  for each job: read jobs/<id>.json and its host prompt, call stubs.respond(job, prompt), write
                 `out`; then run `then`
     DONE        stop            BLOCKED   stop (the caller asserts)
 
@@ -68,6 +69,7 @@ def ub_args(cmd, script="ub.py"):
 
 
 IDEA_ID = re.compile(r"\b(?:I-\d{3}|E-\d{2}|Q-\d{2})\b")
+READBACK = "I read your reply as: "
 
 
 def pick_non_leader(card):
@@ -153,12 +155,16 @@ class Answerer(object):
         path = card.get("answer_file")
         if not path:
             raise DriveError("HUMAN card without answer_file: %r" % card)
-        if card.get("error"):
+        readback = (card.get("error") or card.get("show") or "").startswith(READBACK)
+        if card.get("error") and not readback:
             raise DriveError("gate %s rejected the answer: %s (answer was %r)" % (
                 card.get("gate"), card.get("error"), self.answers.get(card.get("gate"))))
-        answer = self.answer_for(card)
-        if os.path.exists(path):
-            raise DriveError("stale answer file was not deleted by the engine: %s" % path)
+        if readback:  # the engine read the reply back (KIT_SPEC 4.12): confirm it with only `reply` filled
+            answer = dict(card.get("answer_template") or {}, reply="yes")
+        else:
+            answer = self.answer_for(card)
+            if os.path.exists(path):
+                raise DriveError("stale answer file was not deleted by the engine: %s" % path)
         os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(path, "w", encoding="utf-8", newline="\n") as f:
             json.dump(answer, f, indent=1)
@@ -194,7 +200,7 @@ class Answerer(object):
         return self.ub("done", card["run"], card["step"], "--json")
 
     def on_host_batch(self, card):
-        from ublib import stubs
+        import stubs  # tests/harness/stubs.py, next to this file
         run = card["run"]
         for j in card.get("jobs") or []:
             job_path = os.path.join(run, "jobs", j["id"] + ".json")

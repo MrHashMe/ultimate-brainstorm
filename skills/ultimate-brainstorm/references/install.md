@@ -30,10 +30,12 @@ domain-modeling. Manual equivalents (without the installer):
 | Tool | Claude Code | Codex | Kimi Code / ZCode |
 |---|---|---|---|
 | Compound Engineering | `/plugin marketplace add EveryInc/compound-engineering-plugin@compound-engineering-v3.28.2` then `/plugin install compound-engineering` (Local scope in a shared repo) | `codex plugin marketplace add EveryInc/compound-engineering-plugin@compound-engineering-v3.28.2` then `codex plugin add compound-engineering@compound-engineering-plugin`, restart | Kimi: `/plugins install https://github.com/EveryInc/compound-engineering-plugin/releases/tag/compound-engineering-v3.28.2` then `/reload`; ZCode: Settings > Plugins |
-| grilling + domain-modeling | `npx -y skills@1.7.0 add mattpocock/skills --skill grilling --skill domain-modeling -g -a claude-code --copy -y` | from the home folder, without `-g`: `npx -y skills@1.7.0 add mattpocock/skills --skill grilling --skill domain-modeling -a codex -y` (lands in `~/.agents/skills`) | `... -g -a kimi-code-cli --copy -y` / `... -g -a zcode --copy -y` |
+| grilling + domain-modeling | copy `skills/productivity/grilling` and `skills/engineering/domain-modeling` from the pinned archive (below) into `~/.claude/skills/` | the same folders into `~/.agents/skills/` | Kimi: `~/.agents/skills/` (one copy serves Codex and Kimi); ZCode: `~/.zcode/skills/` |
 
-Set `DISABLE_TELEMETRY=1` for `npx skills`. Never add `-a codex -g`: it writes the deprecated `~/.codex/skills` and
-Codex would list the skill twice. Extras (pm-skills, Spec Kit, BMAD, claude-council, idea-reality) are listed in
+The installer downloads the grilling / domain-modeling archive
+`https://codeload.github.com/mattpocock/skills/tar.gz/c55ee46073ed923f86ce59a5eb3b6d895095d1b7` and checks each
+folder against the SHA-256 pins in install/components.json before it copies anything (no npx, no Node). Never copy them
+into `~/.codex/skills`: it is deprecated and Codex would list the skill twice. Extras (pm-skills, Spec Kit, BMAD, claude-council, idea-reality) are listed in
 references/components.md.
 
 ## 3. Routing block (optional, recommended)
@@ -81,7 +83,8 @@ Superpowers' bootstrap ranks CLAUDE.md and AGENTS.md instructions above skills, 
 - Kimi Code: remove or disable competing brainstorming plugins with `/plugins` if they take over; the kit never sets
   `sessionStart.skill`. Worker calls use an empty skills folder, so installed skills never load into them.
 - ZCode: manage plugins in Settings > Plugins [U-21].
-- Inside a git repo: add `brainstorm/` to `.git/info/exclude` (local; keeps run files out of commits and codebase
-  scans). The user makes this change.
+- Inside a git repo: the kit writes the `.gitignore` files (`*`) into the run folder and `brainstorm/` itself when it
+  first builds a job that reads the repository. Adding `brainstorm/` to `.git/info/exclude` (local; keeps run files out
+  of commits and codebase scans) is optional and hides them earlier; the user makes that change.
 - idea-reality MCP (if installed): keep it disabled outside prior-art checks (its tool description asks to be used
   whenever ideas are discussed).

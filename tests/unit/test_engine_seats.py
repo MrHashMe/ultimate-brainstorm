@@ -56,8 +56,11 @@ class AssignTests(unittest.TestCase):
             self.assertNotEqual(adv, crit)
         # judges
         if mode == "quick":
-            self.assertEqual(len(s["screen_judges"]), 1)
-            self.assertNotEqual(s["screen_judges"][0], host)
+            # the blind quick screen: the host and the other quick generator family, plus a third family that
+            # generated nothing (a neutral judge); one family: no quick screen
+            self.assertEqual(s["screen_judges"], [host] + others[:2] if others else [alt])
+            self.assertEqual(seats.quick_screen_ok(s), bool(others))
+            self.assertEqual(s["tournament_judges"], [others[0] if others else alt])
         elif mode == "deep":
             self.assertLessEqual(len(s["tournament_judges"]), 4)
         else:
@@ -74,11 +77,15 @@ class AssignTests(unittest.TestCase):
 
     def test_standard_four_families_claude_host(self):
         s = assign("claude", ALL)
-        self.assertEqual(s["generators"], {"S1": "claude", "S2": "claude", "S4": "claude", "S3": "gpt", "S5": "kimi"})
+        # the non-host round-robin starts at rng(run, "generators") (here 2 of gpt, kimi, glm)
+        self.assertEqual(s["rotation"], 2)
+        self.assertEqual(s["generators"], {"S1": "claude", "S2": "claude", "S4": "claude", "S3": "glm", "S5": "gpt"})
+        self.assertEqual(s["rr_next"], 4)
+        self.assertEqual(seats.gap_families(s, 2), ["kimi", "glm"])  # GAP continues the round-robin
         self.assertEqual(s["screen_judges"], ["claude", "gpt", "kimi"])
         self.assertEqual(s["researcher"], ["claude"])
         self.assertEqual(s["arch_authors"], ["gpt", "kimi", "glm"])
-        self.assertEqual(s["arch_judges"], ["claude"])
+        self.assertEqual(s["arch_judges"], ["claude", "gpt", "kimi", "glm"])  # one non-author: every family judges
         self.assertEqual(s["proposal"]["rubric"], ["gpt", "kimi"])
 
     def test_s4_goes_to_a_web_family(self):
@@ -101,6 +108,7 @@ class AssignTests(unittest.TestCase):
         s = assign("gpt", ("gpt",))
         self.assertTrue(s["single_family"])
         self.assertEqual(s["screen_judges"], ["gpt", "gpt-alt"])
+        self.assertEqual(s["rotation"], 0)
         self.assertEqual(s["proposal"]["redteam"], "gpt-alt")
         self.assertEqual(seats.redteam_pair(s, 0), ("gpt", "gpt-alt"))
         self.assertTrue(s["arch_same_family"])
@@ -156,8 +164,11 @@ class ReseatTests(unittest.TestCase):
         old = assign("claude", ALL)
         fresh = assign("claude", ("claude", "gpt", "glm"))
         new, changes = seats.reseat_minimal(old, fresh, ["claude", "gpt", "glm"], "claude")
-        self.assertEqual(new["generators"]["S3"], "gpt")
-        self.assertNotEqual(new["generators"]["S5"], "kimi")
+        for k, f in old["generators"].items():  # a seat keeps its family while that family is available
+            if f == "kimi":
+                self.assertNotEqual(new["generators"][k], "kimi")
+            else:
+                self.assertEqual(new["generators"][k], f)
         self.assertNotIn("kimi", new["screen_judges"])
         self.assertEqual(new["screen_judges"][:2], ["claude", "gpt"])
         self.assertTrue(changes)

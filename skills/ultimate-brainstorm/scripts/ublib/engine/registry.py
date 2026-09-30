@@ -2,22 +2,22 @@
 
 - PREDICATES[name](ctx, arg) -> bool          `when` entries: "name", "name:arg", "!name", "a|b"
 - FANOUTS[name](ctx, step) -> [item, ...]     one job per item (see builders.build_jobs)
-- FANOUT_COUNTS[name](ctx) -> (min, max)      call counts for `ub plan` (no file reads in simulation)
+- SIM_COUNTS[name](ctx) -> (min, max)         the simulated count of a fanout whose items come from files that earlier
+                                             steps write (fanout_count builds every other fanout's items and counts
+                                             them)
 - PLACEHOLDERS[NAME](ctx, jc) -> str          {{NAME}} in templates; jc = the job context (family, item, ...)
 - SCRIPTS[name](ctx, step) -> note|None       SCRIPT steps and `after` hooks
 
 In simulation (`ctx.sim` is a dict) predicates read facts from ctx.sim instead of files.
 """
 
-import glob
 import json
+import math
 import os
 import re
-import shutil
 
 from .. import textio
-from . import (APPROACH_VARIANTS, REPO_VARIANTS, SK_DIR, TEMPLATES_DIR, EngineError, base_family, is_alt,
-               vendor_of)
+from . import FAMILY_ORDER, REPO_VARIANTS, TEMPLATES_DIR, EngineError, base_family, is_alt, vendor_of
 from . import privacy as privacy_mod
 from . import seats as seats_mod
 from . import state as st
@@ -26,7 +26,9 @@ DEFAULT_CRITERIA = {"Value": 30, "Feasibility": 25, "Fit": 20, "Distinctiveness"
 QUICK_DEFAULT_CRITERIA = ["Value", "Feasibility", "Distinctiveness"]
 CARD_LINES = ["Title:", "Problem:", "Mechanism:", "For whom:", "First version:", "Main risk:", "Prior art:"]
 CHECK_FINAL = r"^VERDICT: (CROWDED|ADJACENT|NOT LOCATED|NOT CHECKED); DIFFERENTIATOR: .+$"
-REVIEW_FINAL = r"^VERDICT: (BACK IF .+|BACK|DON'T BACK); confidence (0(\.\d+)?|1(\.0+)?)$"
+# nothing reads a reviewer's confidence: the suffix is no longer asked for, and still accepted from older outputs
+REVIEW_FINAL = r"^VERDICT: (BACK IF .+|BACK|DON'T BACK)(; confidence (0(\.\d+)?|1(\.0+)?))?$"
+CHECK_RANK = {"NOT LOCATED": 0, "ADJACENT": 1, "NOT CHECKED": 2, "CROWDED": 3}  # E-idea finalist order (9.1)
 SYNTH_FINAL = r"^WHOLE-EFFORT: (CONTINUE|STOP)"
 PROBE_FINAL = r"^RESULT: PENDING$"
 ARCH_HEADINGS = ["## 1 Paradigm", "## 2 Container view", "## 3 Stack", "## 4 Quality mechanisms", "## 5 Data",
@@ -64,14 +66,8 @@ REVIEW_LENSES = {"L1": "web-verified tech", "L2": "divergence adversary", "L3": 
 
 def section(text, heading, level=2):
     """Body of the first '## <heading>...' section (prefix match, case-insensitive), up to the next heading of the
-    same or a higher level."""
-    if not text:
-        return ""
-    hashes = "#" * level
-    rx = re.compile(r"^" + hashes + r"\s*" + re.escape(heading) + r"[^\n]*\n(.*?)(?=^#{1,%d}\s|\Z)" % level,
-                    re.M | re.S | re.I)
-    m = rx.search(text)
-    return m.group(1).strip() if m else ""
+    same or a higher level. Headings in fenced code blocks are code (textio.section: the contract's rule, #41)."""
+    return textio.section(text, heading, level)
 
 
 def sections_by_prefix(text, prefixes, level=2):
@@ -164,13 +160,30 @@ def schema_ref(name):
 
 
 def bs(ctx, *args, **kw):
-    """Run bs.py <args> <run> as a subprocess; raise EngineError on a failing exit code unless allowed."""
+    """Run bs.py <args> <run> as a subprocess; raise EngineError on a failing exit code unless allowed. redo: the step
+    that wrote the model output the command reads; bs.py's exit 5 (invalid input, such as a curated key or id listed
+    twice or an empty field) is fixed by running that step again, so that redo is the fix instead of the doctor."""
     allowed = kw.get("allow", (0,))
     rc, out, err = ctx.deps.bs(list(args), ctx.run_dir)
     if rc not in allowed:
+        redo = kw.get("redo") if rc == 5 else None
         raise EngineError("bs.py %s failed (exit %s): %s" % (" ".join(args), rc, (err or out or "").strip()[-600:]),
-                          fix=["%s doctor --json" % (ctx.state.get("runner") or "ub")])
+                          fix=[redo_cmd(ctx, redo) if redo else "%s doctor --json" % (ctx.state.get("runner") or "ub")])
     return rc, out, err
+
+
+def redo_cmd(ctx, step_id):
+    """The command that redoes `step_id` and every later step of this run (a BLOCKED card's fix)."""
+    return '%s redo "%s" %s --yes' % (ctx.state.get("runner") or "ub", textio.to_posix(ctx.run_dir), step_id)
+
+
+def curation_before(step_id):
+    """The curation step whose output a later step reads: the closest curator step before `step_id` (5.1 for 5.2, 5.3c
+    for 5.3m, 5.4c for 5.4m, Q.3 for Q.3p and Q.4)."""
+    from . import pipeline  # lazy: pipeline imports this module
+    steps = pipeline.load_steps()
+    return next(s["id"] for s in reversed(steps[:pipeline.index_of(steps, step_id)])
+                if (s.get("job") or {}).get("kind") == "curator")
 
 
 # ---------------------------------------------------------------- frame, context, criteria
@@ -205,23 +218,28 @@ def brief_text(ctx):
     return "\n".join(parts)
 
 
+CONTEXT_HEADINGS = {"A": r"##\s*A\.?\s+FACTS", "A2": r"##\s*A2\b", "B": r"##\s*B\b", "C": r"##\s*C\.?\s+SEARCH"}
+
+
+def _h2_sections(text):
+    """[(heading line, body)] for every '## ' heading outside fenced blocks, so a '## ' line quoted inside a code block
+    never cuts a section short (a cut would also leave an unclosed fence behind). The fence rule is textio's, the one
+    the P-GROUND contract validated the file with (#41): a line that rule does not open never hides a heading."""
+    lines = textio.normalize_newlines(text or "").split("\n")
+    mask = textio.fence_mask(lines)
+    heads = [i for i, ln in enumerate(lines) if not mask[i] and re.match(r"##\s", ln)]
+    return [(lines[h], "\n".join(lines[h + 1:(heads[k + 1] if k + 1 < len(heads) else len(lines))]))
+            for k, h in enumerate(heads)]
+
+
 def context_section(ctx, letter):
-    text = ctx.read("02_CONTEXT.md")
-    if letter == "A":
-        m = re.search(r"^##\s*A\.?\s+FACTS[^\n]*\n(.*?)(?=^##\s|\Z)", text, re.M | re.S | re.I)
-        return m.group(1).strip() if m else ""
-    if letter == "A2":
-        m = re.search(r"^##\s*A2\b[^\n]*\n(.*?)(?=^##\s|\Z)", text, re.M | re.S | re.I)
-        return m.group(1).strip() if m else ""
+    rx = CONTEXT_HEADINGS.get(letter)
+    if rx is None:
+        return ""
+    hits = [(h, body) for h, body in _h2_sections(ctx.read("02_CONTEXT.md")) if re.match(rx, h, re.I)]
     if letter == "B":
-        out = []
-        for m in re.finditer(r"^##\s*B\b[^\n]*\n(.*?)(?=^##\s|\Z)", text, re.M | re.S | re.I):
-            out.append(m.group(0).strip())
-        return "\n\n".join(out)
-    if letter == "C":
-        m = re.search(r"^##\s*C\.?\s+SEARCH[^\n]*\n(.*?)(?=^##\s|\Z)", text, re.M | re.S | re.I)
-        return m.group(1).strip() if m else ""
-    return ""
+        return "\n\n".join(("%s\n%s" % (h, body)).strip() for h, body in hits)
+    return hits[0][1].strip() if hits else ""
 
 
 def facts_text(ctx, family):
@@ -268,10 +286,18 @@ def axes(ctx):
 
 
 def is_repo(ctx):
+    """True when the project folder is a git repository: a .git folder, or a git worktree or submodule (a .git file
+    'gitdir: ...'), as privacy.is_git_repo decides for the repo label too."""
     if ctx.sim is not None:
         return bool(ctx.sim.get("repo", ctx.variant in REPO_VARIANTS))
-    pd = ctx.state.get("project_dir")
-    return bool(pd) and os.path.isdir(os.path.join(pd, ".git"))
+    return privacy_mod.is_git_repo(ctx.state.get("project_dir"))
+
+
+def repo_access(ctx, fam):
+    """True when a checker, researcher, architecture author or writer of `fam` may read the repository: a software or
+    growth run in a git repository and a family of the host's vendor (the one rule for every repo-reading job; 6.8
+    also removes the repo from any other vendor's job in builders.make_job)."""
+    return ctx.variant in REPO_VARIANTS and is_repo(ctx) and vendor_of(fam) == vendor_of(ctx.host_family)
 
 
 # ---------------------------------------------------------------- ideas
@@ -296,19 +322,11 @@ def idea_lines(ctx):
 
 
 def idea_blocks(text, prefix=None):
-    """Parse '### P-NN Title' blocks with '- Label: value' lines."""
-    out = []
-    rx = re.compile(r"^###\s*(%s-\d+)[:.)]?\s+(.*?)\s*$" % (re.escape(prefix) if prefix else r"[A-Z][A-Za-z0-9]*"),
-                    re.M)
-    matches = list(rx.finditer(text or ""))
-    for i, m in enumerate(matches):
-        end = matches[i + 1].start() if i + 1 < len(matches) else len(text)
-        body = text[m.end():end]
-        fields = {}
-        for fm in re.finditer(r"^\s*[-*]\s*(?:\*\*)?([A-Za-z /]+?)(?:\*\*)?\s*:\s*(.*)$", body, re.M):
-            fields.setdefault(fm.group(1).strip().lower(), fm.group(2).strip())
-        out.append({"id": m.group(1), "title": m.group(2).strip(), "body": body.strip(), "fields": fields})
-    return out
+    """'### P-NN Title' blocks with '- Label: value' lines ({"id", "title", "body", "fields"}), exactly as the
+    idea-blocks contract parses them (validate.parse_idea_blocks): fenced examples, incomplete blocks and repeated IDs
+    are not ideas here either."""
+    from .. import validate
+    return validate.parse_idea_blocks(text or "", prefix)[0]
 
 
 def idea_text(ctx, iid):
@@ -336,12 +354,30 @@ def check_verdict(ctx, iid):
     return m.group(1).upper(), m.group(2).strip()
 
 
+def rescued_ids(text):
+    """The idea IDs on the `Rescued:` lines of 04_SHORTLIST.md (also bs.py's @checks). IDs only: an older kit wrote
+    each rescue's reason in parentheses on this line, and an ID named in a reason is not rescued (a K1 kill would come
+    back), so every balanced (...) group, nested ones included, is dropped first, in one pass over the line."""
+    ids = []
+    for ln in (text or "").split("\n"):
+        if not re.match(r"^\W*Rescued\W*:", ln, re.I):
+            continue
+        out, opened = [], []  # opened: where each '(' not closed yet sits in out
+        for ch in ln:
+            if ch == ")" and opened:
+                del out[opened.pop():]
+                ch = " "
+            elif ch == "(":
+                opened.append(len(out))
+            out.append(ch)
+        ids += re.findall(r"\b[IE]-\d+\b", "".join(out))
+    return ids
+
+
 def shortlist_ids(ctx):
     data = ctx.read_json("screen/shortlist.json", {}) or {}
     ids = [str(s.get("id")) for s in data.get("shortlist", []) if isinstance(s, dict) and s.get("id")]
-    for ln in ctx.read("04_SHORTLIST.md").split("\n"):
-        if re.match(r"^\W*Rescued\W*:", ln, re.I):
-            ids += re.findall(r"\b[IE]-\d+\b", ln)
+    ids += rescued_ids(ctx.read("04_SHORTLIST.md"))
     prim = ctx.read_json("primary.json", []) or []
     ids += [str(p) for p in prim if isinstance(p, str)]
     seen, out = set(), []
@@ -362,48 +398,77 @@ def survivors(ctx):
     return [i for i in shortlist_ids(ctx) if i not in killed and i not in parked]
 
 
+def evolved_ids(ctx):
+    """The E ideas of 05_EVOLVED.md that have a check (8.2); only those can become finalists."""
+    return [b["id"] for b in idea_blocks(ctx.read("05_EVOLVED.md"), "E") if ctx.exists("checks/%s.md" % b["id"])]
+
+
+def finalist_pool(ctx):
+    """Survivors plus the checked E ideas (9.1): what the finalist cut, the more_than_8 predicate and G6 see."""
+    surv = survivors(ctx)
+    if ctx.sim is not None:
+        return surv
+    return surv + [e for e in evolved_ids(ctx) if e not in surv]
+
+
 def screen_scores(ctx):
+    """Screen score per idea: every judged idea (screen/shortlist.json `scores`; older files: the shortlist rows).
+    An E idea inherits the mean score of the parents named on its `Parents:` line, else the lowest survivor score
+    (E ideas are written after the screen, so they have no score of their own)."""
     data = ctx.read_json("screen/shortlist.json", {}) or {}
-    return dict((str(s.get("id")), float(s.get("score") or 0)) for s in data.get("shortlist", [])
-                if isinstance(s, dict))
+    out = dict((str(s.get("id")), float(s.get("score") or 0)) for s in data.get("shortlist", [])
+               if isinstance(s, dict))
+    for k, v in (data.get("scores") or {}).items() if isinstance(data.get("scores"), dict) else ():
+        try:
+            out[str(k)] = float(v)
+        except (TypeError, ValueError):
+            pass
+    floor = min([out[i] for i in survivors(ctx) if i in out] or [0.0])
+    for b in idea_blocks(ctx.read("05_EVOLVED.md"), "E"):
+        parents = [out[p] for p in re.findall(r"\bI-\d+\b", b["fields"].get("parents", "")) if p in out]
+        out.setdefault(b["id"], sum(parents) / len(parents) if parents else floor)
+    return out
 
 
-def parse_cards(text):
-    cards, cur = {}, None
-    order = []
-    for line in (text or "").split("\n"):
-        if line.startswith("## "):
-            cur = line[3:].strip()
-            cards[cur] = []
-            order.append(cur)
-        elif cur is not None and line.strip():
-            cards[cur].append(line)
+def parse_cards(text, ids=None):
+    """(order, {id: [non-empty lines]}) of a cards file by the NORMALIZER contract's rule (validate.card_sections): a
+    heading '## I-001 - Title' is the card of I-001, and a heading that names no card ID ('## Notes') ends a card and
+    is none. ids: the card IDs to look for (default: a heading's leading ID token). A repeated ID keeps its first
+    card."""
+    from .. import validate
+    order, cards = [], {}
+    for cid, lines in validate.card_sections(text, ids):
+        if cid not in cards:
+            order.append(cid)
+            cards[cid] = [ln for ln in lines if ln.strip()]
     return order, cards
 
 
-def pin_card_titles(ctx):
-    """Overwrite each card's 'Title:' line in tournament/cards.md with the pool title, so one idea ID has one name
-    everywhere (G8a, G8b, 06_TOURNAMENT.md, 07_TOP.md, 08_DECISION.md, the proposal)."""
+def canonical_cards(ctx):
+    """Rewrite tournament/cards.md as one '## <ID>' card per finalist, in finalist order, read by the contract's rule
+    (parse_cards: a title after the heading's ID, a '## Notes' section and text outside the cards are dropped), with
+    each 'Title:' line set to the pool title, so one idea ID has one name everywhere (G8a, G8b, 06_TOURNAMENT.md,
+    07_TOP.md, 08_DECISION.md, the proposal) and bs.py prepare-tournament ranks exactly the finalists (9.3)."""
     text = ctx.read("tournament/cards.md")
-    if not text:
+    fin = [str(i) for i in ctx.state.get("finalists") or []]
+    order, cards = parse_cards(text, fin or None)
+    if not order:
         return False
     titles = idea_lines(ctx)
-    out, cur, changed = [], None, False
-    for line in text.split("\n"):
-        if line.startswith("## "):
-            cur = line[3:].strip()
-        elif cur and re.match(r"^\s*Title\s*:", line) and (titles.get(cur) or {}).get("title"):
-            new = "Title: %s" % titles[cur]["title"]
-            changed = changed or new != line
-            line = new
-        out.append(line)
-    if changed:
-        ctx.write("tournament/cards.md", "\n".join(out))
-    return changed
+    blocks = []
+    for cid in [i for i in fin if i in cards] or order:
+        title = (titles.get(cid) or {}).get("title")
+        body = [("Title: %s" % title) if title and re.match(r"^\s*Title\s*:", ln) else ln for ln in cards[cid]]
+        blocks.append("\n".join(["## %s" % cid] + body))
+    new = "\n\n".join(blocks) + "\n"
+    if new == text:
+        return False
+    ctx.write("tournament/cards.md", new)
+    return True
 
 
 def card_text(ctx, iid):
-    order, cards = parse_cards(ctx.read("tournament/cards.md"))
+    order, cards = parse_cards(ctx.read("tournament/cards.md"), [iid])
     if iid in cards:
         return "\n".join(cards[iid])
     return idea_text(ctx, iid)
@@ -414,25 +479,81 @@ def tournament_result(ctx):
     return data if isinstance(data, dict) else {}
 
 
-def debiased_pct(ctx):
+def _num(value):
+    try:
+        return None if value is None or isinstance(value, bool) else float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def ranking(ctx):
+    """The tournament ranking (5.7) from tournament/result.json: {"order": [ids, best first], "score": {id: %},
+    "method": "bradley-terry" | "raw-fallback" | "debiased (older result)" | "raw", "note": a line to show with the
+    ranking ("" when the pair-level ranking stands), "condorcet": id or None}.
+
+    Missing evidence is never read as 0: an older result (no `ranking` block) whose rows do not score every card is
+    ranked by raw points for every card (a card without a debiased % was one no neutral judge could score, not a weak
+    one, so ranking it after the scored cards would push it out of the red-team set)."""
     res = tournament_result(ctx)
-    out = {}
-    for row in res.get("debiased") or []:
-        if isinstance(row, dict) and row.get("id") is not None:
-            try:
-                out[str(row["id"])] = float(row.get("pct") or 0)
-            except (TypeError, ValueError):
-                pass
-    if not out:
-        for row in res.get("raw") or []:
-            if isinstance(row, dict) and row.get("id") is not None:
-                mx = float(row.get("max") or 1) or 1.0
-                out[str(row["id"])] = 100.0 * float(row.get("points") or 0) / mx
-    if not out:
+    rk = res.get("ranking") if isinstance(res.get("ranking"), dict) else {}
+    rows = [r for r in res.get("debiased") or [] if isinstance(r, dict) and r.get("id") is not None]
+    raw = {}
+    for r in res.get("raw") or []:
+        if isinstance(r, dict) and r.get("id") is not None and _num(r.get("points")) is not None:
+            raw[str(r["id"])] = 100.0 * _num(r["points"]) / (_num(r.get("max")) or 1.0)
+    if not raw:
         text = ctx.read("tournament/result.md")
         for m in re.finditer(r"^\d+\.\s+([IEQ]-\d+)\s+([\d.]+)", text, re.M):
-            out.setdefault(m.group(1), float(m.group(2)))
-    return out
+            raw.setdefault(m.group(1), float(m.group(2)))
+    score = dict((str(r["id"]), _num(r.get("pct"))) for r in rows if _num(r.get("pct")) is not None)
+    method, note = rk.get("method"), ""
+    if method == "raw-fallback":
+        note = "ranking fell back to raw points: %s" % (rk.get("reason") or "no bias-free comparison")
+    elif not method:
+        unscored = sorted(i for i in raw if i not in score)
+        if score and not unscored:
+            method = "debiased (older result)"
+        else:
+            why = ("%s without a debiased %% in tournament/result.json" % ", ".join(unscored) if score else
+                   "no debiased ranking in tournament/result.json")
+            method, score = "raw", dict(raw)
+            note = "ranking uses raw tournament points (an older tally: %s)" % why
+    order = [str(r["id"]) for r in rows if str(r["id"]) in score] if rk.get("method") else \
+        sorted(score, key=lambda i: (-score[i], -raw.get(i, 0.0), i))
+    rest = sorted((i for i in raw if i not in score), key=lambda i: (-raw[i], i))
+    cw = res.get("condorcet") if isinstance(res.get("condorcet"), dict) else {}
+    return {"order": order + rest, "score": score, "method": method, "note": note, "condorcet": cw.get("winner")}
+
+
+def debiased_pct(ctx):
+    """{id: tournament score in percent} for the cards the ranking scored (see ranking)."""
+    return ranking(ctx)["score"]
+
+
+def rank_finalists(ctx, ids, rk=None):
+    """ids in tournament order (best first); ids the tournament did not rank go last, by id."""
+    order = (rk or ranking(ctx))["order"]
+    pos = dict((i, n) for n, i in enumerate(order))
+    return sorted(ids, key=lambda i: (pos.get(i, len(pos)), i))
+
+
+def default_top(ctx, fin, rk=None):
+    """The default red-team set (10.1): the top 3 of the ranking, plus the Condorcet winner (beats every finalist
+    by pairwise majority) and gut pick #1 when they are outside it; with both outside, the third-ranked idea makes
+    room, so the set holds at most 4 ideas."""
+    rk = rk or ranking(ctx)
+    ranked = rank_finalists(ctx, fin, rk)
+    gut = gut_picks(ctx)
+    extra = [i for i in dict.fromkeys([rk["condorcet"], gut[0] if gut else None]) if i in fin
+             and i not in ranked[:3]]
+    return ranked[:2 if len(extra) == 2 else 3] + extra
+
+
+def suggested_top(ctx, rk=None):
+    """The red-team set G7 suggests and 10.1 takes when G7 names none: the first 3 finalists in proposal mode, else
+    default_top."""
+    fin = ctx.state.get("finalists") or []
+    return fin[:3] if ctx.mode == "proposal" else default_top(ctx, fin, rk)
 
 
 def gut_picks(ctx):
@@ -440,28 +561,42 @@ def gut_picks(ctx):
     return [str(p) for p in (ans.get("picks") or []) if p]
 
 
+# A red-team file (10.3, 10.3r): redteam/<ID>_<STANCE>_<seat family>.md is a review, the same with .rebuttal.md its
+# rebuttal. A fallback writes the original job's out, so the family is always a seat; the adapter's kept
+# <out>.failed.md (a failure record) never matches.
+REVIEW_FILE_RE = re.compile(r"^([IEQ]-\d+)_(ADVOCATE|CRITIC)_((?:%s)(?:-alt)?)(\.rebuttal)?\.md$"
+                            % "|".join(FAMILY_ORDER))
+
+
+def review_files(ctx, pattern="*_*_*.md"):
+    """[(path, match)] of the red-team reviews (never a rebuttal or a failure record) among redteam/<pattern>, sorted."""
+    out = []
+    for path in sorted(textio.glob_in(ctx.run_dir, "redteam", pattern)):
+        m = REVIEW_FILE_RE.match(os.path.basename(path))
+        if m and not m.group(4):
+            out.append((path, m))
+    return out
+
+
 def review_verdicts(ctx):
-    """{idea_id: [verdict line, ...]} from redteam/<ID>_<stance>_<family>.md files."""
+    """{idea_id: [verdict line, ...]} from the red-team reviews redteam/<ID>_<stance>_<family>.md."""
     out = {}
-    for path in sorted(glob.glob(os.path.join(ctx.run_dir, "redteam", "*_*_*.md"))):
-        name = os.path.basename(path)
-        m = re.match(r"^([IEQ]-\d+)_(ADVOCATE|CRITIC)_(.+)\.md$", name)
-        if not m:
-            continue
+    for path, m in review_files(ctx):
         line = final_line(textio.read_text(path))
         out.setdefault(m.group(1), []).append("%s %s (%s): %s" % (m.group(1), m.group(2), m.group(3), line))
     return out
 
 
 def suggestion(ctx):
-    """G8b rule default (6.2): most BACK + BACK IF verdicts, then debiased %, then gut #1."""
+    """G8b rule default (6.2): most BACK + BACK IF verdicts, then the tournament ranking, then gut #1."""
     top = ctx.state.get("top") or ctx.state.get("finalists") or []
     if ctx.mode == "proposal" and "I-001" in top:
         return "I-001", "proposal mode: the default choice is your own idea"
     if not top:
         return None, "no finalists"
     verdicts = review_verdicts(ctx)
-    pct = debiased_pct(ctx)
+    rk = ranking(ctx)
+    pos = dict((i, n) for n, i in enumerate(rk["order"]))
     gut = gut_picks(ctx)
 
     def backs(i):
@@ -472,10 +607,23 @@ def suggestion(ctx):
         return n
 
     def key(i):
-        return (-backs(i), -pct.get(i, 0.0), 0 if (gut and gut[0] == i) else 1, i)
+        return (-backs(i), pos.get(i, len(pos)), 0 if (gut and gut[0] == i) else 1, i)
 
     best = sorted(top, key=key)[0]
-    return best, "%d BACK/BACK IF verdicts, debiased %.0f%%" % (backs(best), pct.get(best, 0.0))
+    score = rk["score"].get(best)
+    rule = "%d BACK/BACK IF verdicts, tournament %s" % (
+        backs(best), ("score %.0f%% (rank %d)" % (score, pos[best] + 1)) if score is not None and best in pos
+        else "score n/a (not ranked)")
+    return best, rule + ("; " + rk["note"] if rk["note"] else "")
+
+
+def default_runner(ctx, chosen):
+    """The runner-up G8b records when the answer names none: the red-teamed idea (or finalist) other than `chosen`
+    with the best tournament score."""
+    pct = debiased_pct(ctx)
+    rest = [i for i in (ctx.state.get("top") or ctx.state.get("finalists") or []) if i != chosen]
+    rest.sort(key=lambda i: (-pct.get(i, 0.0), i))
+    return rest[0] if rest else None
 
 
 def chosen_idea(ctx):
@@ -494,11 +642,6 @@ def predicate(name):
     return deco
 
 
-@predicate("always")
-def _p_always(ctx, arg):
-    return True
-
-
 @predicate("not_quick")
 def _p_not_quick(ctx, arg):
     return ctx.mode != "quick"
@@ -512,21 +655,6 @@ def _p_deep(ctx, arg):
 @predicate("mode_is")
 def _p_mode_is(ctx, arg):
     return ctx.mode == arg
-
-
-@predicate("mode_in")
-def _p_mode_in(ctx, arg):
-    return ctx.mode in (arg or "").split(",")
-
-
-@predicate("variant_in")
-def _p_variant_in(ctx, arg):
-    return ctx.variant in (arg or "").split(",")
-
-
-@predicate("autopilot_is")
-def _p_autopilot_is(ctx, arg):
-    return ctx.autopilot == arg
 
 
 @predicate("hands_on")
@@ -564,11 +692,6 @@ def _p_build_type(ctx, arg):
     return ctx.state.get("build_type", "system") == arg
 
 
-@predicate("privacy_web")
-def _p_privacy_web(ctx, arg):
-    return bool((ctx.state.get("privacy") or {}).get("web", True))
-
-
 @predicate("step_done")
 def _p_step_done(ctx, arg):
     return st.step_state(ctx.state, arg) == "done"
@@ -589,7 +712,7 @@ def _p_no_seeds(ctx, arg):
     if ctx.sim is not None:
         return not ctx.sim.get("seeds_given", False)
     text = seeds_text(ctx)
-    if re.search(r"^\W*SKIPPED\b", text, re.M):
+    if re.search(r"^[^\w\n]*SKIPPED\b", text, re.M):
         return False
     return not (section(text, "Ideas") or section(text, "Primary idea"))
 
@@ -610,6 +733,8 @@ def _p_homog(ctx, arg):
     if done >= rounds:
         return False
     cov = ctx.read_json("coverage.json", {}) or {}
+    if "gap_needed" in cov:  # bs.py map: homogenized, or under 80% of the axis cells covered
+        return bool(cov["gap_needed"])
     if cov.get("homogenized") or cov.get("empty"):
         return True
     pool = ctx.read("03_POOL.md")
@@ -624,11 +749,6 @@ def _p_round2(ctx, arg):
     return bool(section(ctx.read("00b_HUMAN_ROUND2.md"), "Ideas"))
 
 
-@predicate("survivors_lt")
-def _p_survivors_lt(ctx, arg):
-    return len(survivors(ctx)) < int(arg)
-
-
 @predicate("evolve_needed")
 def _p_evolve(ctx, arg):
     return ctx.mode == "deep" or len(survivors(ctx)) < 6
@@ -636,7 +756,7 @@ def _p_evolve(ctx, arg):
 
 @predicate("more_than_8")
 def _p_more_than_8(ctx, arg):
-    return len(survivors(ctx)) > 8
+    return len(finalist_pool(ctx)) > 8
 
 
 @predicate("k4_candidates")
@@ -665,10 +785,10 @@ def _p_fix_requested(ctx, arg):
     return bool(ctx.state.get("user_changes"))
 
 
-@predicate("gate_asked")
-def _p_gate_asked(ctx, arg):
-    from . import gates
-    return gates.policy(ctx, arg) == "ask"
+@predicate("quick_screen")
+def _p_quick_screen(ctx, arg):
+    """A quick run that seats screen judges of two vendors: it scores its curated ideas blind (#51)."""
+    return ctx.mode == "quick" and seats_mod.quick_screen_ok(ctx.seats)
 
 
 def eval_when(ctx, when):
@@ -697,19 +817,23 @@ def _eval_entry(ctx, entry):
 # ================================================================ fanouts
 
 FANOUTS = {}
-FANOUT_COUNTS = {}
+SIM_COUNTS = {}
 
 
-def fanout(name, count=None):
+def fanout(name, sim_count=None):
+    """Register a fanout. sim_count only for a fanout whose items come from files an earlier step writes (the
+    shortlist, the tournament maps, ...): a simulation (`ub plan`, ETA) cannot build those items."""
     def deco(fn):
         FANOUTS[name] = fn
-        if count is not None:
-            FANOUT_COUNTS[name] = count
+        if sim_count is not None:
+            SIM_COUNTS[name] = sim_count
         return fn
     return deco
 
 
 def _stub_axes(ctx):
+    if ctx.sim is not None:
+        return {}  # stub facts only matter to the fake-mode responder, never in a simulation
     ax = axes(ctx)
     return ax or {"Stage": ["first use", "daily use", "renewal"], "Channel": ["app", "email", "in person"]}
 
@@ -729,19 +853,12 @@ def _gen_item(ctx, sid, template, family, out, prefix, tools="none", vars_=None,
             "checks": ["seed_leak", "pool_leak"]}
 
 
-@fanout("single", lambda ctx: (1, 1))
+@fanout("single")
 def _f_single(ctx, step):
     return [{}]
 
 
-def _strategies_count(ctx):
-    n = 4
-    if ctx.mode == "deep":
-        n += 6
-    return (n, n)
-
-
-@fanout("strategies", _strategies_count)
+@fanout("strategies")
 def _f_strategies(ctx, step):
     g = ctx.seats.get("generators") or {}
     host = ctx.host_family
@@ -786,7 +903,7 @@ def _fallbacks(ctx, family):
     return [f for f in out if f != family]
 
 
-@fanout("s1f", lambda ctx: (1, 1))
+@fanout("s1f")
 def _f_s1f(ctx, step):
     it = _gen_item(ctx, None, "S1F", ctx.seats.get("generators", {}).get("S1", ctx.host_family),
                    "pool/S1_frames.md", "S1")
@@ -794,7 +911,7 @@ def _f_s1f(ctx, step):
     return [it]
 
 
-@fanout("quick_gen", lambda ctx: (1, 2))
+@fanout("quick_gen")
 def _f_quick_gen(ctx, step):
     host = ctx.host_family
     others = ctx.seats.get("others") or []
@@ -806,13 +923,13 @@ def _f_quick_gen(ctx, step):
     return items
 
 
-@fanout("ground", lambda ctx: (1, 1))
+@fanout("ground")
 def _f_ground(ctx, step):
     fam = (ctx.seats.get("researcher") or [ctx.host_family])[0]
     return [_ground_item(ctx, None, fam, "02_CONTEXT.md")]
 
 
-@fanout("ground2", lambda ctx: (1, 1))
+@fanout("ground2")
 def _f_ground2(ctx, step):
     rs = ctx.seats.get("researcher") or []
     fam = rs[1] if len(rs) > 1 else ctx.host_family + "-alt"
@@ -822,7 +939,7 @@ def _f_ground2(ctx, step):
 def _ground_item(ctx, sid, fam, out):
     tools = _web_tools(ctx, fam)
     cwd, repo_root = "empty", None
-    if ctx.variant in REPO_VARIANTS and is_repo(ctx) and vendor_of(fam) == vendor_of(ctx.host_family):
+    if repo_access(ctx, fam):
         tools = "read+web" if tools == "web" else "read"
         cwd, repo_root = "repo", ctx.state.get("project_dir")
     c = tcontract("P-GROUND", {"type": "sections", "headings": ["## A. FACTS", "## B. LANDSCAPE",
@@ -839,10 +956,12 @@ def _ground_item(ctx, sid, fam, out):
 def pool_aliases(ctx):
     """Alias IDs present in the pool and seeds (the curator stub facts)."""
     aliases = []
-    for path in sorted(glob.glob(os.path.join(ctx.run_dir, "pool", "*.md"))):
+    if ctx.sim is not None:
+        return aliases, []
+    for path in sorted(textio.glob_in(ctx.run_dir, "pool", "*.md")):
         for b in idea_blocks(textio.read_text(path)):
             aliases.append(b["id"])
-    for path in sorted(glob.glob(os.path.join(ctx.run_dir, "pool", "L*.json"))):
+    for path in sorted(textio.glob_in(ctx.run_dir, "pool", "L*.json")):
         lid = os.path.splitext(os.path.basename(path))[0]
         data = ctx.read_json("pool/" + os.path.basename(path), {}) or {}
         n = 0
@@ -850,7 +969,7 @@ def pool_aliases(ctx):
             for _ in (tier or {}).get("responses") or []:
                 n += 1
                 aliases.append("%s-%02d" % (lid, n))
-    for path in sorted(glob.glob(os.path.join(ctx.run_dir, "pool", "IMPORT_*.md"))):
+    for path in sorted(textio.glob_in(ctx.run_dir, "pool", "IMPORT_*.md")):
         for n, b in enumerate(idea_blocks(textio.read_text(path)), 1):
             aliases.append("IMP-%02d" % n)
     seeds = seeds_text(ctx)
@@ -878,7 +997,7 @@ def seeds_bundle(ctx):
     """Every human seed file inlined under a '--- FILE: <name> ---' line (the curator is the only job that sees
     them). A skipped seeds file is reported as such."""
     parts = []
-    paths = sorted(glob.glob(os.path.join(ctx.run_dir, "00_HUMAN_SEEDS*.md")))
+    paths = sorted(textio.glob_in(ctx.run_dir, "00_HUMAN_SEEDS*.md"))
     if os.path.exists(ctx.path("00b_HUMAN_ROUND2.md")):
         paths.append(ctx.path("00b_HUMAN_ROUND2.md"))
     for path in paths:
@@ -891,7 +1010,7 @@ def seeds_bundle(ctx):
 def pool_bundle(ctx):
     """Every pool file inlined under a '--- FILE: pool/<name> ---' line (curator jobs only)."""
     parts = []
-    for path in sorted(glob.glob(os.path.join(ctx.run_dir, "pool", "*"))):
+    for path in sorted(textio.glob_in(ctx.run_dir, "pool", "*")):
         name = os.path.basename(path)
         if name.startswith("_") or not os.path.isfile(path) or name.endswith((".meta.json", ".failed.md")):
             continue
@@ -909,12 +1028,9 @@ def _curator_item(ctx, sid, out, extra_vars=None):
             "vars": dict(extra_vars or {}), "fallback": _fallbacks(ctx, ctx.host_family)}
 
 
-@fanout("curator", lambda ctx: (1, 1))
+@fanout("curator")
 def _f_curator(ctx, step):
-    extra = {}
-    if step.get("id") == "5.2d":
-        extra["DUP_PAIRS"] = ctx.read("screen/dupcheck.txt") or "(none)"
-    return [_curator_item(ctx, None, "merges.raw.%s.json" % step["id"], extra)]
+    return [_curator_item(ctx, None, "merges.raw.%s.json" % step["id"])]
 
 
 def gap_cells(ctx, limit=6):
@@ -941,7 +1057,6 @@ def gap_cells(ctx, limit=6):
 
 @fanout("gap_cells", lambda ctx: (2, 8) if ctx.mode == "deep" else (2, 7))
 def _f_gap(ctx, step):
-    rnd = int((ctx.state.get("counters") or {}).get("gap_rounds", 0)) + 1
     cells = gap_cells(ctx)
     start = int((ctx.state.get("counters") or {}).get("gap_prefix", 0))
     fams = seats_mod.gap_families(ctx.seats, len(cells) + start)[start:]
@@ -964,23 +1079,37 @@ def _f_gap(ctx, step):
     return items
 
 
-def _judges_count(ctx):
-    n = len(ctx.seats.get("screen_judges") or [ctx.host_family])
-    return (n, n)
+def _judge_fallbacks(ctx, family, seated):
+    """Fallbacks for a judge seat: <family>-alt, then the families that hold no judge seat in this step, then the
+    host. A family that already judges comes last: bs.py counts its answer as that family's one vote (5.7)."""
+    taken = set(base_family(f) for f in seated)
+    out = [] if is_alt(family) else [base_family(family) + "-alt"]
+    out += [f for f in ctx.seats.get("families") or [] if base_family(f) not in taken]
+    if base_family(family) != ctx.host_family:
+        out.append(ctx.host_family)
+    return [f for f in dict.fromkeys(out) if f != family]
 
 
-@fanout("screen_judges", _judges_count)
+@fanout("screen_judges")
 def _f_screen(ctx, step):
     ids = [ln.split("|")[0].strip() for ln in ctx.read("screen/ideas.md").split("\n") if ln.strip()]
     items = []
-    for fam in ctx.seats.get("screen_judges") or [ctx.host_family]:
+    seated = ctx.seats.get("screen_judges") or [ctx.host_family]
+    for fam in seated:
         items.append({"id": fam, "template": None, "prompt_file": "screen/%s.prompt.md" % fam, "kind": "judge",
                       "family": fam, "tools": "none", "cwd": "empty", "out": "screen/%s.out.json" % fam,
                       "contract": {"type": "json", "schema": "screen/screen.schema.json",
                                    "cover": {"array": "scores", "key": "id", "ids": ids}},
                       "schema": "screen/screen.schema.json", "checks": ["origin_label"],
-                      "fallback": _fallbacks(ctx, fam)})
+                      "fallback": _judge_fallbacks(ctx, fam, seated)})
     return items
+
+
+# CHECK section 5 (software and growth): asked, and required by the contract, only of a checker whose prompts may carry
+# code, so another vendor with privacy code = no is never asked to cite the repository (#63)
+CODEBASE_FIT = ("## 5. Codebase fit\n"
+                "Does the product already do this (cite file:line)? Does it conflict with the current architecture, "
+                "CONCEPTS.md, feature flags or analytics? Which files would change?")
 
 
 def _check_item(ctx, iid, out=None):
@@ -992,15 +1121,19 @@ def _check_item(ctx, iid, out=None):
     c = tcontract("CHECK", {"type": "sections", "headings": ["## 1", "## 2", "## 3", "## 4"],
                             "final_line": CHECK_FINAL})
     heads = list(c.get("headings") or [])
-    if ctx.variant in REPO_VARIANTS:
+    # section 5 only where the code is known: a git repository (in a folder without one no job reads code, so the
+    # checker could cite no file:line) and a checker whose prompts may carry code (6.8)
+    fit = ctx.variant in REPO_VARIANTS and is_repo(ctx) and not privacy_mod.needs_code_strip(ctx.state, fam)
+    if fit:
         heads.append("## 5. Codebase fit")
-        if is_repo(ctx) and vendor_of(fam) == vendor_of(ctx.host_family):
-            tools = "read+web" if tools == "web" else "read"
-            cwd, repo_root = "repo", ctx.state.get("project_dir")
+    if repo_access(ctx, fam):
+        tools = "read+web" if tools == "web" else "read"
+        cwd, repo_root = "repo", ctx.state.get("project_dir")
     return {"id": iid, "template": "CHECK", "kind": "checker", "family": fam, "tools": tools, "cwd": cwd,
             "repo_root": repo_root, "out": out or "checks/%s.md" % iid,
             "contract": dict(c, headings=heads),
-            "stub": {"idea_id": iid}, "vars": {"IDEA_ID": iid, "WEB": "yes" if "web" in tools else "no"},
+            "stub": {"idea_id": iid}, "vars": {"IDEA_ID": iid, "WEB": "yes" if "web" in tools else "no",
+                                               "CODEBASE_FIT": CODEBASE_FIT if fit else ""},
             "fallback": _fallbacks(ctx, fam)}
 
 
@@ -1028,7 +1161,7 @@ def _tp_count(ctx):
 @fanout("tournament_prompts", _tp_count)
 def _f_tournament(ctx, step):
     items = []
-    for mp in sorted(glob.glob(os.path.join(ctx.run_dir, "tournament", "*.map.json"))):
+    for mp in sorted(textio.glob_in(ctx.run_dir, "tournament", "*.map.json")):
         base = os.path.basename(mp)[:-len(".map.json")]
         meta = ctx.read_json("tournament/%s.map.json" % base, {}) or {}
         fam = meta.get("family") or base.split("_")[0]
@@ -1038,7 +1171,7 @@ def _f_tournament(ctx, step):
                       "contract": {"type": "json", "schema": "tournament/verdicts.schema.json",
                                    "cover": {"array": "verdicts", "key": "pair_id", "ids": pairs}},
                       "schema": "tournament/verdicts.schema.json", "checks": ["origin_label"],
-                      "fallback": _fallbacks(ctx, fam)})
+                      "fallback": _judge_fallbacks(ctx, fam, ctx.seats.get("tournament_judges") or [fam])})
     return items
 
 
@@ -1067,13 +1200,10 @@ def other_review_text(text):
 @fanout("rebuttals", lambda ctx: (6, 8))
 def _f_rebuttal(ctx, step):
     items = []
-    for path in sorted(glob.glob(os.path.join(ctx.run_dir, "redteam", "*_*_*.md"))):
-        m = re.match(r"^([IEQ]-\d+)_(ADVOCATE|CRITIC)_(.+)\.md$", os.path.basename(path))
-        if not m:
-            continue
-        iid, stance, fam = m.groups()
+    for _path, m in review_files(ctx):
+        iid, stance, fam = m.group(1), m.group(2), m.group(3)
         other = "CRITIC" if stance == "ADVOCATE" else "ADVOCATE"
-        others = glob.glob(os.path.join(ctx.run_dir, "redteam", "%s_%s_*.md" % (iid, other)))
+        others = [p for p, _m in review_files(ctx, "%s_%s_*.md" % (iid, other))]
         if not others:
             continue
         items.append({"id": "%s_%s" % (iid, stance), "template": "REBUTTAL", "kind": "reviewer", "family": fam,
@@ -1083,11 +1213,6 @@ def _f_rebuttal(ctx, step):
                                "OTHER_REVIEW": other_review_text(textio.read_text(others[0]))},
                       "fallback": _fallbacks(ctx, fam)})
     return items
-
-
-def _arch_count(ctx):
-    k = seats_mod.ARCH_K.get(ctx.mode, 3)
-    return (k, k + 1)
 
 
 def archetype_text(ctx, letter, all_letters):
@@ -1139,7 +1264,7 @@ def drivers(ctx):
     return data if isinstance(data, dict) else {}
 
 
-@fanout("arch_authors", _arch_count)
+@fanout("arch_authors")
 def _f_arch_authors(ctx, step):
     authors = ctx.seats.get("arch_authors") or [ctx.host_family]
     arche = ctx.seats.get("arch_archetypes") or {}
@@ -1177,14 +1302,7 @@ def arch_criteria(ctx):
     return qg + [c for c, _ in FIXED_ARCH_CRITERIA]
 
 
-def _arch_judges_count(ctx):
-    """Exact seat count; the upper bound allows one judge per family (a re-seat or fallback can add judges), so the
-    plan's maximum never shrinks when a family is added."""
-    n = len(ctx.seats.get("arch_judges") or [1])
-    return (n, max(n, min(4, len(ctx.seats.get("families") or [1]))))
-
-
-@fanout("arch_judges", _arch_judges_count)
+@fanout("arch_judges")
 def _f_arch_judges(ctx, step):
     labels = arch_labels(ctx)
     items = []
@@ -1192,7 +1310,9 @@ def _f_arch_judges(ctx, step):
         items.append({"id": fam, "template": "ARCH-JUDGE", "kind": "arch-judge", "family": fam, "tools": "none",
                       "cwd": "empty", "out": "10_ARCHITECTURE/review/judge_%s.out.json" % fam,
                       "contract": tcontract("ARCH-JUDGE", {"type": "json", "schema": schema_ref("arch-judge")},
-                                            cover={"array": "candidates", "key": "label", "ids": labels}),
+                                            cover={"array": "candidates", "key": "label", "ids": labels,
+                                                   "each": {"array": "scores", "key": "criterion",
+                                                            "ids": arch_criteria(ctx), "loose": True}}),
                       "schema": schema_ref("arch-judge"),
                       "stub": {"labels": labels, "criteria": arch_criteria(ctx)},
                       "checks": ["origin_label"], "fallback": _fallbacks(ctx, fam)})
@@ -1215,6 +1335,8 @@ def chosen_candidate_json(ctx):
 
 
 def _pkg_stub(ctx):
+    if ctx.sim is not None:
+        return {}
     cand = chosen_candidate_json(ctx)
     d = drivers(ctx)
     containers = [c for c in cand.get("containers") or [] if isinstance(c, dict)]
@@ -1231,19 +1353,26 @@ def risk_ids(ctx):
 
 
 def _writer_tools(ctx, fam):
-    if ctx.variant in REPO_VARIANTS and is_repo(ctx) and vendor_of(fam) == vendor_of(ctx.host_family):
+    if repo_access(ctx, fam):
         return "read", "repo", ctx.state.get("project_dir")
     return "none", "empty", None
 
 
 def _files_item(ctx, sid, template, kind, fam, root, allowed, required, per_file=None, status=True, stub=None,
-                vars_=None, raw_name=None):
-    tools, cwd, repo_root = _writer_tools(ctx, fam) if kind in ("writer", "fixer") else ("none", "empty", None)
+                vars_=None, raw_name=None, repo_ok=True, exact=False, rules=None):
+    """A FILE-protocol job. Writers and fixers read the repo where repo_access allows it, unless repo_ok is False
+    (proposal writers work from their evidence packs only). exact: `allowed` replaces the manifest's allowed list
+    (the fixers' exact file names). rules: per-file rules that replace the manifest's (the fixers' writer_rules)."""
+    repo = repo_ok and kind in ("writer", "fixer")
+    tools, cwd, repo_root = _writer_tools(ctx, fam) if repo else ("none", "empty", None)
     raw = raw_name or sid or template
     default = {"type": "files", "allowed": allowed, "required": required, "status_trailer": bool(status)}
     if per_file:
         default["per_file"] = per_file
-    contract = tcontract(template, default)
+    override = {"allowed": list(allowed)} if exact else {}
+    if rules:
+        override["per_file"] = rules
+    contract = tcontract(template, default, **override)
     allowed = list(contract.get("allowed") or allowed)
     root = split_root(template, root)
     status_out = "%s/_raw/%s.status.json" % (root, raw) if root != "." else "frame/_raw/%s.status.json" % raw
@@ -1258,9 +1387,9 @@ def _files_item(ctx, sid, template, kind, fam, root, allowed, required, per_file
 FRAME_HEADINGS = ["## Job statement", "## Problem", "## Criteria", "## Axes"]
 
 
-@fanout("frame_files", lambda ctx: (1, 1))
+@fanout("frame_files")
 def _f_frame_files(ctx, step):
-    tpl = "FRAME-DRAFT" if step.get("id") == "2.1f" else "FRAME-FINAL"
+    tpl = (step.get("job") or {}).get("template") or "FRAME-FINAL"  # 2.1f drafts (FRAME-DRAFT)
     it = _files_item(ctx, None, tpl, "frame", ctx.host_family, ".", ["01_FRAME.md", "criteria.json"],
                      ["01_FRAME.md", "criteria.json"], per_file={"01_FRAME.md": {"headings": FRAME_HEADINGS}},
                      status=True, raw_name=step["id"])
@@ -1276,7 +1405,7 @@ def _f_frame_files(ctx, step):
     return [it]
 
 
-@fanout("arch_structure", lambda ctx: (1, 1))
+@fanout("arch_structure")
 def _f_arch_structure(ctx, step):
     fam = arch_writer(ctx)
     allowed = ["chosen/containers.md", "chosen/runtime.md", "chosen/data-model.md", "chosen/api.md",
@@ -1287,10 +1416,10 @@ def _f_arch_structure(ctx, step):
            "chosen/data-model.md": {"headings": ["## Entities"], "mermaid": ["erDiagram"]}}
     return [_files_item(ctx, None, "ARCH-PACKAGE-STRUCTURE", "writer", fam, "10_ARCHITECTURE", allowed,
                         ["chosen/containers.md", "chosen/runtime.md", "chosen/data-model.md", "chosen/api.md"],
-                        per_file=per, stub=_pkg_stub(ctx), raw_name="12.10")]
+                        per_file=per, stub=_pkg_stub(ctx), raw_name=step["id"])]
 
 
-@fanout("arch_package_lite", lambda ctx: (1, 1))
+@fanout("arch_package_lite")
 def _f_arch_lite(ctx, step):
     fam = arch_writer(ctx)
     allowed = ["chosen/containers.md", "chosen/data-model.md", "decisions.json"]
@@ -1298,16 +1427,16 @@ def _f_arch_lite(ctx, step):
                                     "mermaid": ["flowchart"]},
            "chosen/data-model.md": {"headings": ["## Entities"], "mermaid": ["erDiagram"]}}
     return [_files_item(ctx, None, "ARCH-PACKAGE-LITE", "writer", fam, "10_ARCHITECTURE", allowed, allowed,
-                        per_file=per, stub=_pkg_stub(ctx), raw_name="12.10l")]
+                        per_file=per, stub=_pkg_stub(ctx), raw_name=step["id"])]
 
 
-@fanout("arch_parallel", lambda ctx: (3, 3))
+@fanout("arch_parallel")
 def _f_arch_parallel(ctx, step):
     fam = arch_writer(ctx)
     allowed = ["chosen/deployment.md", "chosen/security-privacy.md", "chosen/cost-model.md", "chosen/deferred.md"]
     per = {"chosen/cost-model.md": {"headings": ["## Assumptions", "## Sensitivity"]}}
     crosscut = _files_item(ctx, "crosscut", "ARCH-PACKAGE-CROSSCUT", "writer", fam, "10_ARCHITECTURE", allowed,
-                           allowed, per_file=per, stub=_pkg_stub(ctx), raw_name="12.11")
+                           allowed, per_file=per, stub=_pkg_stub(ctx), raw_name=step["id"])
     dec = {"id": "decisions", "template": "ARCH-DECISIONS", "kind": "writer", "family": fam, "tools": "none",
            "cwd": "empty", "out": "10_ARCHITECTURE/decisions.json",
            "contract": {"type": "json", "schema": schema_ref("arch-decisions")},
@@ -1326,7 +1455,7 @@ def review_lenses(ctx):
     return ["L1", "L2", "L3", "L4"] if ctx.mode == "deep" else ["L1", "L2"]
 
 
-@fanout("review_lenses", lambda ctx: (4, 4) if ctx.mode == "deep" else (2, 2))
+@fanout("review_lenses")
 def _f_review(ctx, step):
     writer = arch_writer(ctx)
     lenses = review_lenses(ctx)
@@ -1343,23 +1472,49 @@ def _f_review(ctx, step):
     return items
 
 
-@fanout("arch_fix", lambda ctx: (1, 1))
+# The templates that write what ARCH-FIX / PROPOSAL-FIX rewrite: a fixer prints a file whole, so the file keeps its
+# writer's per-file rules (headings, diagram types) and a quoted FILE block without them is refused (#40).
+ARCH_WRITERS = ("ARCH-PACKAGE-STRUCTURE", "ARCH-PACKAGE-LITE", "ARCH-PACKAGE-CROSSCUT")
+PROPOSAL_WRITERS = ("PROPOSAL-A", "PROPOSAL-B", "PROPOSAL-C", "PROPOSAL-LITE", "EXEC-ONEPAGER", "PRFAQ")
+
+
+def writer_rules(templates, files):
+    """{file: per-file rules} for `files` from the manifest contracts of the templates that write them (the first
+    template that names a file wins)."""
+    out = {}
+    for t in templates:
+        for rel, rules in (tcontract(t).get("per_file") or {}).items():
+            if rel in files and rel not in out and isinstance(rules, dict):
+                out[rel] = rules
+    return out
+
+
+# The files a fixer may rewrite, exactly (#40): a wildcard would let a quoted '=== FILE: sections/99.md ===' after a
+# quoted END FILE write a stray file; with exact names that path fails the allowed check and gets a repair call.
+ARCH_FIX_FILES = ["chosen/containers.md", "chosen/runtime.md", "chosen/data-model.md", "chosen/api.md",
+                  "chosen/api/openapi.yaml", "chosen/api/cli.md", "chosen/deployment.md", "chosen/security-privacy.md",
+                  "chosen/cost-model.md", "chosen/deferred.md", "decisions.json", "review/resolution.md"]
+
+
+@fanout("arch_fix")
 def _f_arch_fix(ctx, step):
     fam = arch_writer(ctx)
-    allowed = ["chosen/*.md", "chosen/api/*.yaml", "chosen/api/*.md", "decisions.json", "review/resolution.md"]
-    return [_files_item(ctx, None, "ARCH-FIX", "fixer", fam, "10_ARCHITECTURE", allowed, ["review/resolution.md"],
-                        stub=_pkg_stub(ctx), raw_name=step["id"])]
+    return [_files_item(ctx, None, "ARCH-FIX", "fixer", fam, "10_ARCHITECTURE", list(ARCH_FIX_FILES),
+                        ["review/resolution.md"], stub=_pkg_stub(ctx), raw_name=step["id"], exact=True,
+                        rules=writer_rules(ARCH_WRITERS, ARCH_FIX_FILES))]
 
 
-@fanout("approach", lambda ctx: (1, 1))
+@fanout("approach")
 def _f_approach(ctx, step):
     return [_files_item(ctx, None, "APPROACH", "writer", ctx.host_family, "10_ARCHITECTURE", ["approach.md"],
-                        ["approach.md"], raw_name="12.a")]
+                        ["approach.md"], raw_name=step["id"])]
 
 
 def _proposal_stub(ctx, secs):
+    if ctx.sim is not None:
+        return {}
     heads = dict(PROPOSAL_SECTIONS)
-    adrs = [os.path.basename(p)[:4] for p in glob.glob(os.path.join(ctx.run_dir, "10_ARCHITECTURE", "adr", "*.md"))]
+    adrs = [os.path.basename(p)[:4] for p in textio.glob_in(ctx.run_dir, "10_ARCHITECTURE", "adr", "*.md")]
     src = ctx.read_json("sources.json", {}) or {}
     return {"sections": [heads[s] for s in secs if s in heads], "adr_numbers": sorted(adrs), "r_ids": risk_ids(ctx),
             "source_ids": sorted(src.keys()) if isinstance(src, dict) else []}
@@ -1369,7 +1524,7 @@ def _section_files(secs):
     return ["sections/%s.md" % s for s in secs]
 
 
-@fanout("proposal_parts", lambda ctx: (3, 3))
+@fanout("proposal_parts")
 def _f_proposal_parts(ctx, step):
     fam = (ctx.seats.get("proposal") or {}).get("drafter") or ctx.host_family
     heads = dict(PROPOSAL_SECTIONS)
@@ -1379,10 +1534,9 @@ def _f_proposal_parts(ctx, step):
         files = _section_files(secs)
         per = dict((f, {"headings": [_section_heading(ctx, s, heads)]}) for f, s in zip(files, secs))
         items.append(_files_item(ctx, part, "PROPOSAL-%s" % part, "writer", fam, "11_PROPOSAL", files, files,
-                                 per_file=per, stub=_proposal_stub(ctx, secs), raw_name="13.2-%s" % part,
-                                 vars_={"PACK": "PACK_%s" % part}))
-    for it in items:
-        it["tools"], it["cwd"], it["repo_root"] = "none", "empty", None
+                                 per_file=per, stub=_proposal_stub(ctx, secs),
+                                 raw_name="%s-%s" % (step["id"], part),
+                                 vars_={"PACK": "PACK_%s" % part}, repo_ok=False))
     return items
 
 
@@ -1392,7 +1546,7 @@ def _section_heading(ctx, s, heads):
     return heads[s]
 
 
-@fanout("proposal_lite", lambda ctx: (1, 1))
+@fanout("proposal_lite")
 def _f_proposal_lite(ctx, step):
     fam = (ctx.seats.get("proposal") or {}).get("drafter") or ctx.host_family
     heads = dict(PROPOSAL_SECTIONS)
@@ -1400,29 +1554,25 @@ def _f_proposal_lite(ctx, step):
     per = dict(("sections/%s.md" % s, {"headings": [_section_heading(ctx, s, heads)]}) for s in LITE_SECTIONS)
     per["ONE-PAGER.md"] = {"headings": ONEPAGER_HEADINGS}
     it = _files_item(ctx, None, "PROPOSAL-LITE", "writer", fam, "11_PROPOSAL", files, files, per_file=per,
-                     stub=_proposal_stub(ctx, LITE_SECTIONS), raw_name="13.2l")
-    it["tools"], it["cwd"], it["repo_root"] = "none", "empty", None
+                     stub=_proposal_stub(ctx, LITE_SECTIONS), raw_name=step["id"], repo_ok=False)
     return [it]
 
 
-@fanout("onepager", lambda ctx: (2, 2) if ctx.mode == "deep" else (1, 1))
+@fanout("onepager")
 def _f_onepager(ctx, step):
     fam = (ctx.seats.get("proposal") or {}).get("drafter") or ctx.host_family
     files = ["sections/01.md", "ONE-PAGER.md"]
     per = {"sections/01.md": {"headings": ["## 1. Executive Summary"]},
            "ONE-PAGER.md": {"headings": ONEPAGER_HEADINGS, "mermaid": ["flowchart"]}}
     items = [_files_item(ctx, "onepager", "EXEC-ONEPAGER", "writer", fam, "11_PROPOSAL", files, files,
-                         per_file=per, stub=_proposal_stub(ctx, ["01"]), raw_name="13.3")]
+                         per_file=per, stub=_proposal_stub(ctx, ["01"]), raw_name=step["id"], repo_ok=False)]
     if ctx.mode == "deep":
         items.append(_files_item(ctx, "prfaq", "PRFAQ", "writer", fam, "11_PROPOSAL", ["PRFAQ.md"], ["PRFAQ.md"],
-                                 raw_name="13.3-prfaq"))
-    for it in items:
-        it["tools"], it["cwd"], it["repo_root"] = "none", "empty", None
+                                 raw_name="%s-prfaq" % step["id"], repo_ok=False))
     return items
 
 
-@fanout("proposal_review", lambda ctx: (len((ctx.seats.get("proposal") or {}).get("rubric") or [1]) +
-                                        (0 if ctx.mode == "quick" else 1),) * 2)
+@fanout("proposal_review")
 def _f_proposal_review(ctx, step):
     prop = ctx.seats.get("proposal") or {}
     items = []
@@ -1440,14 +1590,22 @@ def _f_proposal_review(ctx, step):
     return items
 
 
-@fanout("proposal_fix", lambda ctx: (1, 1))
+def proposal_fix_files(ctx):
+    """The files PROPOSAL-FIX may rewrite, exactly (#40): the run's sections (quick: the lite ones), ONE-PAGER.md,
+    PRFAQ.md (deep, which writes one) and review/resolution.md."""
+    secs = LITE_SECTIONS if ctx.mode == "quick" else [s for s, _ in PROPOSAL_SECTIONS]
+    return (["sections/%s.md" % s for s in secs] + ["ONE-PAGER.md"] + (["PRFAQ.md"] if ctx.mode == "deep" else []) +
+            ["review/resolution.md"])
+
+
+@fanout("proposal_fix")
 def _f_proposal_fix(ctx, step):
     fam = (ctx.seats.get("proposal") or {}).get("drafter") or ctx.host_family
-    allowed = ["sections/*.md", "ONE-PAGER.md", "review/resolution.md"]
-    it = _files_item(ctx, None, "PROPOSAL-FIX", "fixer", fam, "11_PROPOSAL", allowed, ["review/resolution.md"],
+    it = _files_item(ctx, None, "PROPOSAL-FIX", "fixer", fam, "11_PROPOSAL", proposal_fix_files(ctx),
+                     ["review/resolution.md"], rules=writer_rules(PROPOSAL_WRITERS, proposal_fix_files(ctx)),
                      stub=_proposal_stub(ctx, [s for s, _ in PROPOSAL_SECTIONS]),
-                     raw_name="13.6-%d" % int((ctx.state.get("counters") or {}).get("g13_loops", 0)))
-    it["tools"], it["cwd"], it["repo_root"] = "none", "empty", None
+                     raw_name="%s-%d" % (step["id"], int((ctx.state.get("counters") or {}).get("g13_loops", 0))),
+                     repo_ok=False, exact=True)
     return [it]
 
 
@@ -1472,7 +1630,6 @@ def _single_job(template, kind, out, contract, family_fn=None, vars_=None, schem
 FANOUTS["frame_questions"] = _single_job("FRAME-QUESTIONS", "frame", "frame/questions.json",
                                          {"type": "json", "schema": schema_ref("frame-questions")},
                                          schema=schema_ref("frame-questions"), checks=["seed_leak"])
-FANOUTS["curator_single"] = _f_curator
 FANOUTS["evolve"] = _single_job("EVOLVE", "generator", "05_EVOLVED.md",
                                 tcontract("EVOLVE", {"type": "idea-blocks", "prefix": "E", "min": 4}),
                                 vars_=lambda ctx: {"EVOLVE_COUNT": "5" if ctx.mode == "deep" else "4"},
@@ -1495,7 +1652,8 @@ FANOUTS["probe"] = _single_job("PROBE", "writer", "09_PROBE.md",
 FANOUTS["quick_curate"] = lambda ctx, step: [{
     "id": None, "template": "QUICK-CURATE", "kind": "curator", "family": ctx.host_family, "tools": "none",
     "cwd": "empty", "out": "quick/curated.json",
-    "contract": {"type": "json", "schema": schema_ref("quick-curated")}, "schema": schema_ref("quick-curated"),
+    "contract": tcontract("QUICK-CURATE", {"type": "json", "schema": schema_ref("quick-curated")}),
+    "schema": schema_ref("quick-curated"),
     "stub": {"aliases": pool_aliases(ctx)[0], "axes": _stub_axes(ctx), "primary_aliases": pool_aliases(ctx)[1]},
     "fallback": _fallbacks(ctx, ctx.host_family)}]
 FANOUTS["quick_probe"] = _single_job("QUICK-PROBE", "writer", "quick/probe.json",
@@ -1507,8 +1665,10 @@ FANOUTS["arch_drivers"] = _single_job("ARCH-DRIVERS", "writer", "10_ARCHITECTURE
 
 
 def _premortem(ctx, step):
+    from . import gates
     matrix = ctx.read_json("10_ARCHITECTURE/matrix.json", {}) or {}
-    leader = matrix.get("leader")
+    # no leader (every candidate EXCLUDED): the candidate the G11 default takes, never simply the first label
+    leader = matrix.get("leader") or gates.g11_recommendation(ctx)[0]
     m = ctx.read_json("10_ARCHITECTURE/candidates/map.json", {}) or {}
     author = (m.get(leader) or {}).get("family") or ctx.host_family
     fam = seats_mod.premortem_family(ctx.seats, author)
@@ -1520,21 +1680,33 @@ def _premortem(ctx, step):
 
 FANOUTS["premortem"] = _premortem
 
-for _name in ("frame_questions", "curator_single", "evolve", "evolve_contrast", "normalizer", "precommit",
-              "synthesis", "probe", "quick_curate", "quick_probe", "arch_drivers", "premortem", "curator"):
-    FANOUT_COUNTS.setdefault(_name, lambda ctx: (1, 1))
 
-
-def fanout_count(ctx, name):
-    fn = FANOUT_COUNTS.get(name)
-    if fn is None:
-        return (1, 1)
-    return fn(ctx)
+def fanout_count(ctx, name, step=None):
+    """(min, max) jobs of a fanout in a simulation: SIM_COUNTS for a fanout whose items come from files earlier steps
+    write; otherwise the fanout builds its items from the state (seats, mode, variant) and they are counted, so `ub
+    plan`, the ETA and the real dispatch never disagree (#15)."""
+    fn = SIM_COUNTS.get(name)
+    if fn is not None:
+        return fn(ctx)
+    n = len(FANOUTS[name](ctx, step or {"id": ""}) or [])
+    return (n, n)
 
 
 # ================================================================ placeholders
 
 PLACEHOLDERS = {}
+
+# Values quoted from run files that models wrote (checks, landscape, cards, reviews, packs, architecture files, ...),
+# much of it from web pages: builders.resolver puts each in a DATA block its content cannot forge, and every template
+# that uses one says the text inside is quoted data, never instructions (#94). The frame-derived brief (BRIEF, HMW,
+# AUDIENCE, HARD_CONSTRAINTS, AXES, CRITERIA_*, FRAME_FULL) and the user's own words stay plain: they are the task.
+DATA_PLACEHOLDERS = frozenset((
+    "FACTS", "LANDSCAPE", "IDEA", "CARD", "CHECKS", "TOP_CARDS", "TOP_CHECKS", "SURVIVORS", "FINALISTS",
+    "FINALIST_IDEAS", "KILL_ASSUMPTIONS", "REVIEWS", "OTHER_REVIEW", "PRECOMMIT_NOTE", "POOL_BUNDLE", "PROBE",
+    "ARCH_BRIEF", "DRIVERS_JSON", "QAS_TABLE", "CANDIDATE_SHEETS", "CHOSEN_CANDIDATE", "STACK_ROWS", "STRUCTURE_FILES",
+    "PREMORTEM", "FINDINGS", "LINT_REPORT", "PACK", "PACK_A", "PACK_B", "PACK_C", "SOURCES_TABLE", "SECTIONS_ALL",
+    "RUBRIC_FIXES", "REDTEAM_ITEMS", "ADR_CANDIDATES", "LEDGER_TITLES", "CLUSTER_NAMES", "DECISION", "ARCH_CRITERIA",
+    "STEAL_NOTES"))
 
 
 def placeholder(*names):
@@ -1725,7 +1897,7 @@ def _ph_other_arche(ctx, jc):
 @placeholder("CANDIDATE_SHEETS")
 def _ph_sheets(ctx, jc):
     parts = []
-    for p in sorted(glob.glob(os.path.join(ctx.run_dir, "10_ARCHITECTURE", "review", "sheet_*.md"))):
+    for p in sorted(textio.glob_in(ctx.run_dir, "10_ARCHITECTURE", "review", "sheet_*.md")):
         parts.append(textio.read_text(p).strip())
     return "\n\n".join(parts)
 
@@ -1742,7 +1914,8 @@ def _ph_chosen(ctx, jc):
 
 @placeholder("DRIVERS_JSON")
 def _ph_drivers(ctx, jc):
-    return json.dumps(drivers(ctx), indent=1)
+    # one line: an indented JSON block reads as code to privacy.strip_code (6.8), which a prompt must not carry
+    return json.dumps(drivers(ctx), separators=(", ", ": "), ensure_ascii=True)
 
 
 @placeholder("STRUCTURE_FILES")
@@ -1751,7 +1924,8 @@ def _ph_structure(ctx, jc):
     rels = ["chosen/containers.md", "chosen/runtime.md", "chosen/data-model.md", "chosen/api.md",
             "chosen/api/openapi.yaml", "chosen/api/cli.md", "chosen/deployment.md", "chosen/security-privacy.md",
             "chosen/cost-model.md", "chosen/deferred.md", "chosen/stack.md", "decisions.json", "risks.md"]
-    rels += ["adr/" + os.path.basename(p) for p in sorted(glob.glob(ctx.path("10_ARCHITECTURE", "adr", "*.md")))]
+    rels += ["adr/" + os.path.basename(p) for p in sorted(textio.glob_in(ctx.run_dir, "10_ARCHITECTURE", "adr",
+                                                                          "*.md"))]
     for rel in rels:
         t = ctx.read("10_ARCHITECTURE/" + rel)
         if t.strip():
@@ -1767,7 +1941,7 @@ def _ph_premortem(ctx, jc):
 @placeholder("FINDINGS")
 def _ph_findings(ctx, jc):
     out = []
-    for p in sorted(glob.glob(os.path.join(ctx.run_dir, "10_ARCHITECTURE", "review", "L*_*.json"))):
+    for p in sorted(textio.glob_in(ctx.run_dir, "10_ARCHITECTURE", "review", "L*_*.json")):
         if p.endswith(".meta.json"):
             continue
         try:
@@ -1811,15 +1985,19 @@ def _ph_sources(ctx, jc):
 
 @placeholder("SECTIONS_ALL")
 def _ph_sections(ctx, jc):
-    return ctx.read("11_PROPOSAL/PROPOSAL.md") or "\n\n".join(
-        textio.read_text(p) for p in sorted(glob.glob(os.path.join(ctx.run_dir, "11_PROPOSAL", "sections",
-                                                                   "*.md"))))
+    """PROPOSAL.md (or the section drafts before it exists); for another vendor its Appendix E keeps only the A2 terms
+    FACTS would keep (privacy.filter_glossary), the one place PROPOSAL.md text reaches a prompt."""
+    text = ctx.read("11_PROPOSAL/PROPOSAL.md") or "\n\n".join(
+        textio.read_text(p) for p in sorted(textio.glob_in(ctx.run_dir, "11_PROPOSAL", "sections", "*.md")))
+    if privacy_mod.needs_code_strip(ctx.state, _fam(jc) or ctx.host_family):
+        text = privacy_mod.filter_glossary(text)
+    return text
 
 
 @placeholder("RUBRIC_FIXES")
 def _ph_rubric_fixes(ctx, jc):
     out = []
-    for p in sorted(glob.glob(os.path.join(ctx.run_dir, "11_PROPOSAL", "review", "rubric_*.json"))):
+    for p in sorted(textio.glob_in(ctx.run_dir, "11_PROPOSAL", "review", "rubric_*.json")):
         if p.endswith(".meta.json"):
             continue
         try:
@@ -1903,7 +2081,7 @@ def _ph_schema(ctx, jc):
         schema = validate.load_schema(ref, ctx.run_dir)
     except ValueError:
         return "(schema %s not found)" % ref
-    return json.dumps(schema, indent=1, ensure_ascii=True)
+    return json.dumps(schema, separators=(", ", ": "), ensure_ascii=True)  # one line, as DRIVERS_JSON
 
 
 @placeholder("ALLOWED_FILES")
@@ -2000,13 +2178,14 @@ def _ph_top_checks(ctx, jc):
 
 @placeholder("REVIEWS")
 def _ph_reviews(ctx, jc):
-    """Every red-team review and rebuttal, family names removed, under '--- REVIEW <ID> <STANCE> ---' lines."""
+    """Every red-team review and rebuttal (never a failure record), family names removed, under '--- REVIEW <ID>
+    <STANCE> ---' lines."""
     parts = []
-    for p in sorted(glob.glob(os.path.join(ctx.run_dir, "redteam", "*.md"))):
-        m = re.match(r"^([IEQ]-\d+)_(ADVOCATE|CRITIC)_.+?(\.rebuttal)?\.md$", os.path.basename(p))
+    for p in sorted(textio.glob_in(ctx.run_dir, "redteam", "*.md")):
+        m = REVIEW_FILE_RE.match(os.path.basename(p))
         if not m:
             continue
-        label = "%s %s%s" % (m.group(1), m.group(2), " REBUTTAL" if m.group(3) else "")
+        label = "%s %s%s" % (m.group(1), m.group(2), " REBUTTAL" if m.group(4) else "")
         parts.append("--- REVIEW %s ---\n%s" % (label, textio.read_text(p).strip()))
     return "\n\n".join(parts) or "(no reviews)"
 
@@ -2038,18 +2217,13 @@ def _ph_finalists(ctx, jc):
 
 
 def _top_kill_assumption(check_text):
-    m = re.search(r"(Fails if[^\n|]*)", check_text or "")
+    m = re.search(r"(Fails if[^\n|]*)", _unfenced(check_text or ""))  # a fenced example is not the risk
     return m.group(1).strip() if m else ""
 
 
 @placeholder("EVOLVE_COUNT")
 def _ph_evolve_count(ctx, jc):
     return str(((jc or {}).get("vars") or {}).get("EVOLVE_COUNT") or "4")
-
-
-@placeholder("DUP_PAIRS")
-def _ph_dup(ctx, jc):
-    return str(((jc or {}).get("vars") or {}).get("DUP_PAIRS") or ctx.read("screen/dupcheck.txt") or "(none)")
 
 
 @placeholder("WEB")
@@ -2072,6 +2246,12 @@ def _ph_leader(ctx, jc):
 @placeholder("SOFTWARE_OP")
 def _ph_software_op(ctx, jc):
     return str(((jc or {}).get("vars") or {}).get("SOFTWARE_OP") or "no")
+
+
+@placeholder("CODEBASE_FIT")
+def _ph_codebase_fit(ctx, jc):
+    """CHECK section 5 as _check_item set it (CODEBASE_FIT, or empty: the line goes)."""
+    return str(((jc or {}).get("vars") or {}).get("CODEBASE_FIT") or "")
 
 
 @placeholder("QUICK_CRITERIA")
@@ -2116,6 +2296,28 @@ def _ph_privacy_note(ctx, jc):
     return "Web search is NOT allowed for this job (%s). %s" % (reason, tail)
 
 
+@placeholder("REPO_SCOPE")
+def _ph_repo_scope(ctx, jc):
+    """For a job that reads the repository (cwd repo) only, so no other prompt changes: the run folders are not part
+    of the codebase (#97), and code is cited, never pasted (C8)."""
+    root = (jc or {}).get("repo_root")
+    if (jc or {}).get("cwd") != "repo" or not root or not ctx.run_dir:
+        return ""
+    try:
+        rel = os.path.relpath(os.path.dirname(os.path.abspath(ctx.run_dir)), os.path.abspath(root))
+        if rel == os.curdir:  # runs directly in the project folder: name this run's folder
+            rel = os.path.relpath(os.path.abspath(ctx.run_dir), os.path.abspath(root))
+    except ValueError:  # another drive: outside the repository
+        rel = os.pardir
+    never = "" if rel.startswith(os.pardir) else (
+        "Never open %s/ or anything under it: those are this kit's run folders (ideas, checks, candidates, earlier "
+        "runs), not part of the codebase. " % rel.replace("\\", "/"))
+    return "%s %sCite code as path:line; never paste source lines or code blocks." % (REPO_SCOPE_START, never)
+
+
+REPO_SCOPE_START = "You may read the repository; your working folder is its root."  # a copy drops this line
+
+
 def privacy_line(state):
     priv = state.get("privacy") or {}
     return "(a) web + other vendors: %s; (b) code facts / repo files to other vendors: %s; web search: %s" % (
@@ -2139,12 +2341,6 @@ def _ph_family_map(ctx, jc):
     if not isinstance(fm, dict) or not fm:
         fm = pool_families(ctx)
     return "\n".join("%s = %s" % (k, fm[k]) for k in sorted(fm, key=st._strategy_sort_key)) or "(empty)"
-
-
-@placeholder("DUPCHECK_PAIRS")
-def _ph_dupcheck(ctx, jc):
-    v = ((jc or {}).get("vars") or {}).get("DUP_PAIRS")
-    return str(v) if v else "none"
 
 
 @placeholder("LENS_TEXT")
@@ -2182,6 +2378,15 @@ def _ph_arch_labels(ctx, jc):
     return ", ".join(arch_labels(ctx)) or "A, B"
 
 
+_NEXT_IDEA = re.compile(r"^[-*#]*[ \t]*[IEQ]-\d+")
+
+
+def _unfenced(text):
+    """`text` without its fenced code blocks (the fence lines included)."""
+    lines = textio.normalize_newlines(text).split("\n")
+    return "\n".join(ln for ln, fenced in zip(lines, textio.fence_mask(lines)) if not fenced)
+
+
 @placeholder("KILL_ASSUMPTIONS")
 def _ph_kill_assumptions(ctx, jc):
     iid = chosen_idea(ctx)
@@ -2192,12 +2397,16 @@ def _ph_kill_assumptions(ctx, jc):
             out.append("From the reality check of %s:\n%s" % (iid, ka))
     red = ctx.read("07_REDTEAM.md")
     if red:
-        kills = re.findall(r"(Fails if[^\n]*)", red)
-        per = section(red, "1") or ""
+        kills = re.findall(r"(Fails if[^\n]*)", _unfenced(red))
+        per = _unfenced(section(red, "1") or "")
         if iid and iid in per:
-            m = re.search(r"%s(.*?)(?=\n[-*#]*\s*[IEQ]-\d+|\Z)" % re.escape(iid), per, re.S)
-            if m:
-                kills = re.findall(r"(Fails if[^\n]*)", m.group(1)) or kills
+            # the chosen idea's block runs to the next idea line; fenced examples were dropped above, so a quoted
+            # '### I-002' cannot end it early (#41). Line by line, so a flood of blank lines stays linear (#34)
+            lines = per.split("\n")
+            start = next(i for i, ln in enumerate(lines) if iid in ln)
+            end = next((j for j in range(start + 1, len(lines)) if _NEXT_IDEA.match(lines[j])), len(lines))
+            block = "\n".join([lines[start].split(iid, 1)[1]] + lines[start + 1:end])
+            kills = re.findall(r"(Fails if[^\n]*)", block) or kills
         if kills:
             out.append("From the red-team:\n" + "\n".join("- %s" % k for k in kills[:6]))
     return "\n\n".join(out) or "(none recorded; derive them from the decision and the brief)"
@@ -2251,7 +2460,7 @@ def _ph_adr_candidates(ctx, jc):
     for ln in section(frame_text(ctx), "Decision ledger").split("\n"):
         if "ADR-CANDIDATE" in ln:
             out.append("- " + clean(ln.strip().strip("|")))
-    for p in sorted(glob.glob(ctx.path("10_ARCHITECTURE", "adr", "*.md"))):
+    for p in sorted(textio.glob_in(ctx.run_dir, "10_ARCHITECTURE", "adr", "*.md")):
         t = textio.read_text(p)
         m = re.search(r"^# (ADR-\d{4}: .*)$", t, re.M)
         if m:
@@ -2279,9 +2488,6 @@ def frame_questions(ctx):
     return out
 
 
-PLACEHOLDER_NAMES = frozenset(PLACEHOLDERS.keys())
-
-
 # ================================================================ scripts
 
 SCRIPTS = {}
@@ -2307,34 +2513,138 @@ def _s_apply_kickoff(ctx, step):
     write_seeds(ctx, ans)
     reseat(ctx)
     if ctx.autopilot == "full-auto" and ((ctx.state.get("gates") or {}).get("G0") or {}).get("by") == "human":
-        if st.config_get("privacy_defaults") is None:
+        if gates.new_vendors(ctx) != []:  # none saved, saved without the vendor set, or a vendor it never listed
             try:
                 p = ctx.state.get("privacy") or {}
                 st.config_set("privacy_defaults", {"web": p.get("web"), "vendors": p.get("vendors"),
-                                                   "code": p.get("code")})
+                                                   "code": p.get("code"), "vendor_set": gates.vendor_set(ctx)})
             except OSError:
                 pass
     return gates.kickoff_note(ctx)
 
 
+SEED_HEADINGS = (("Problem", "Problem"), ("Primary idea", "Primary idea (to pressure-test)"), ("Ideas", "Ideas"),
+                 ("Obvious", "Obvious"), ("Off-limits", "Off-limits"))
+SEEDS_KICKOFF = ".ub/seeds_kickoff.json"  # {"before": the seeds file 0.3 merged into, "sha256": of the file it left}
+
+
 def write_seeds(ctx, ans):
+    """0.3: the G0 reply's seeds go into 00_HUMAN_SEEDS.md (v1 format). A file that holds the user's own seeds (a
+    --seeds-file, or the file the G0 card names, written while G0 waited) is kept as written: the reply's Ideas,
+    Obvious and Off-limits items are added to its sections, its Problem is filled only when empty, and its Primary
+    idea is the reply's `primary:`, else its own, else (proposal mode) the proposal idea. A file of the user's own
+    that is not in the v1 form (an idea list, free text, '###' headings) is put in that form first (_v1_seeds). A file
+    without seeds gets the reply's seeds. With no seeds at all, a SKIPPED line (hands-on leaves that to G1) replaces an
+    empty file and goes above the sections of a file with only Obvious or Off-limits items, which stay. The version 0.3
+    merged into is kept (SEEDS_KICKOFF), so 0.3 run again (a redo, a new G0 answer) merges into it, never into its own
+    earlier result; a file the user changed since is the user's version."""
     seeds = ans.get("seeds") or {}
-    text = seeds_text(ctx)
-    has_content = bool(section(text, "Ideas") or section(text, "Primary idea") or section(text, "Problem") or
-                       re.search(r"^\W*SKIPPED\b", text, re.M))
-    ideas = [s for s in (seeds.get("ideas") or []) if s]
-    primary = seeds.get("primary") or (ctx.state.get("idea_text") if ctx.mode == "proposal" else None)
-    problem = seeds.get("problem")
-    if ideas or primary or problem or seeds.get("obvious") or seeds.get("off_limits"):
-        ctx.write("00_HUMAN_SEEDS.md", st.seeds_doc(problem, primary, ideas, seeds.get("obvious"),
-                                                     seeds.get("off_limits")))
-        return
-    if has_content:
-        return
-    if ctx.autopilot == "hands-on" and not ans.get("skip_seeds"):
-        return  # G1 asks for the seeds file
-    reason = "full-auto" if ctx.autopilot == "full-auto" else "the user replied without seeds at kickoff"
-    ctx.write("00_HUMAN_SEEDS.md", "SKIPPED: %s\n" % reason)
+    cur = seeds_text(ctx)
+    rec = ctx.read_json(SEEDS_KICKOFF, None)
+    base = cur
+    if isinstance(rec, dict) and isinstance(rec.get("before"), str) and rec.get("sha256") == textio.sha256_text(cur):
+        base = rec["before"]
+    ideas, obvious, off = ([s for s in ([v] if isinstance(v, str) else v or []) if s]
+                           for v in (seeds.get("ideas"), seeds.get("obvious"), seeds.get("off_limits")))
+    primary, problem = seeds.get("primary"), seeds.get("problem")
+    proposal_idea = ctx.state.get("idea_text") if ctx.mode == "proposal" else None
+    own = any(section(base, key) for key, _heading in SEED_HEADINGS)
+    into = base
+    if not own and _own_lines(base) and not re.search(r"^[^\w\n]*SKIPPED\b", base, re.M):
+        into, own = _v1_seeds(base), True
+    if own:
+        text = _merge_seeds(into, {"Problem": ([problem] if problem else [], "if_empty"),
+                                   "Primary idea": (["- %s" % primary], "replace") if primary
+                                   else (["- %s" % proposal_idea] if proposal_idea else [], "if_empty"),
+                                   "Ideas": (["- %s" % s for s in ideas], "add"),
+                                   "Obvious": (["- %s" % s for s in obvious], "add"),
+                                   "Off-limits": (["- %s" % s for s in off], "add")})
+    elif ideas or primary or proposal_idea or problem or obvious or off:
+        text = st.seeds_doc(problem, primary or proposal_idea, ideas, obvious, off)
+    else:
+        text = base
+    seeded = (ideas or primary or problem or obvious or off or section(text, "Ideas") or
+              section(text, "Primary idea") or section(text, "Problem") or re.search(r"^[^\w\n]*SKIPPED\b", text, re.M))
+    if not seeded and not (ctx.autopilot == "hands-on" and not ans.get("skip_seeds")):  # hands-on: G1 asks for them
+        text = skipped_seeds(text, "full-auto" if ctx.autopilot == "full-auto" else
+                             "the user replied without seeds at kickoff")
+    ctx.write_json(SEEDS_KICKOFF, {"before": base, "sha256": textio.sha256_text(text)})
+    if text != cur:
+        ctx.write("00_HUMAN_SEEDS.md", text)
+
+
+def skipped_seeds(text, reason):
+    """The seeds file `text` with the line 'SKIPPED: <reason>' (0.3 without seeds, `skip` at G1): above the first
+    '## ' section (else at the top) of a file with text of the user's own (a Problem, Obvious or Off-limits item
+    stays, and the Off-limits a prompt quotes stay the user's lines alone), else the line alone replaces the file."""
+    if not _own_lines(text):
+        return "SKIPPED: %s\n" % reason
+    lines = text.split("\n")
+    at = next((i for i, lvl, _t in textio.headings(text) if lvl == 2), 0)
+    return "\n".join(lines[:at] + ["SKIPPED: %s" % reason, ""] + lines[at:])
+
+
+def _own_lines(text):
+    """The indexes of the lines of a seeds file that the user wrote: neither blank nor a heading (the empty template
+    is headings only)."""
+    heads = set(i for i, _lvl, _t in textio.headings(text))
+    return [n for n, ln in enumerate(text.split("\n")) if ln.strip() and n not in heads]
+
+
+def _v1_seeds(text):
+    """A seeds file of the user's own that is not in the v1 form (an idea list as `ub import` takes it, free text,
+    '#' or '###' headings), in that form: a heading named like a seed section becomes that '## ' section, and a file
+    that still has no seed section gets '## Ideas' above its first line of text, so its lines are the Ideas items."""
+    text = textio.normalize_newlines(text)
+    lines = text.split("\n")
+    for i, lvl, title in textio.headings(text):
+        if lvl != 2 and any(" ".join(title.split()).lower().startswith(k.lower()) for k, _h in SEED_HEADINGS):
+            lines[i] = "## " + title
+    out = "\n".join(lines)
+    if any(section(out, key) for key, _heading in SEED_HEADINGS):
+        return out
+    at = _own_lines(out)[0]
+    return "\n".join(lines[:at] + ["## Ideas"] + lines[at:])
+
+
+def _merge_seeds(text, fill):
+    """`text` with the kickoff's seed lines put into its sections in place, so everything else stays as the user wrote
+    it. fill: {section: (lines, how)}; how is `add` (the lines whose item the section does not list yet go below its
+    last line), `if_empty` (the lines only when the section is empty) or `replace`. A missing section is added at the
+    end."""
+    lines = textio.normalize_newlines(text).rstrip("\n").split("\n")
+    for key, heading in SEED_HEADINGS:
+        new, how = fill.get(key) or ([], "add")
+        if not new:
+            continue
+        heads = textio.headings("\n".join(lines))
+        k = next((n for n, (_i, lvl, title) in enumerate(heads)
+                  if lvl == 2 and " ".join(title.split()).lower().startswith(key.lower())), None)
+        if k is None:
+            lines += ["", "## " + heading] + new
+            continue
+        start = heads[k][0] + 1
+        end = next((i for i, lvl, _t in heads[k + 1:] if lvl <= 2), len(lines))
+        body = lines[start:end]
+        filled = [n for n, ln in enumerate(body) if ln.strip()]
+        if how == "replace":
+            lines[start:end] = new + ([""] if end < len(lines) else [])
+        elif how == "if_empty" and filled:
+            continue
+        else:
+            have = set(" ".join(x.split()).lower() for x in _seed_items("\n".join(body)))
+            add = [ln for ln in new if " ".join(" ".join(_seed_items(ln)).split()).lower() not in have]
+            at = start + (filled[-1] + 1 if filled else 0)
+            lines[at:at] = add
+    return "\n".join(lines) + "\n"
+
+
+def alt_distinct(ctx, host):
+    """False when families config sets <host>.alt_model to null: <host>-alt would run the same model again. Unknown
+    (no config entry): True, the spec's <host>-alt seat."""
+    cfg = (ctx.deps.families_cfg() if ctx.deps else None) or {}
+    entry = (cfg.get("families") or {}).get(host)
+    return not (isinstance(entry, dict) and "alt_model" in entry and not entry.get("alt_model"))
 
 
 def reseat(ctx):
@@ -2355,7 +2665,8 @@ def reseat(ctx):
                                            (ctx.state.get("options") or {}).get("with_ce_ideate")):
             s1 = "ce-ideate"
     old = ctx.state.get("seats") or {}
-    new = seats_mod.assign(ctx.state.get("run", ""), host, F, web, ctx.mode, ctx.variant, s1)
+    new = seats_mod.assign(ctx.state.get("run", ""), host, F, web, ctx.mode, ctx.variant, s1,
+                           alt_distinct=alt_distinct(ctx, host))
     if old.get("arch_writer"):
         new["arch_writer"] = old["arch_writer"]
     ctx.state["seats"] = new
@@ -2375,8 +2686,7 @@ def _s_context_snapshot(ctx, step):
 def footprint(project_dir):
     out = {}
     for rel in ["CONTEXT.md", "CONTEXT-MAP.md"] + [os.path.relpath(p, project_dir).replace("\\", "/")
-                                                    for p in glob.glob(os.path.join(project_dir, "docs", "adr",
-                                                                                    "*.md"))]:
+                                                    for p in textio.glob_in(project_dir, "docs", "adr", "*.md")]:
         p = os.path.join(project_dir, rel)
         if os.path.isfile(p):
             out[rel] = textio.sha256_file(p)
@@ -2423,19 +2733,31 @@ def _s_frame_check(ctx, step):
         fixed = dict(DEFAULT_CRITERIA)
         notes.append("criteria.json missing: default criteria used")
     else:
-        vals = {}
+        # the file bs.py and the judges read is validate.CRITERIA_SCHEMA's (a weight is a number, 0 to 100): a value
+        # that is not a finite number is no criterion, and a negative weight counts as 0
+        vals, bad = {}, []
         for k, v in crit.items():
             try:
-                vals[str(k)] = float(v)
-            except (TypeError, ValueError):
-                vals[str(k)] = 0.0
+                f = None if isinstance(v, bool) else float(v)
+            except (TypeError, ValueError, OverflowError):  # OverflowError: a JSON integer too large for a float
+                f = None
+            if f is None or not math.isfinite(f):
+                bad.append("%s dropped (not a number)" % k)
+            else:
+                if f < 0:
+                    bad.append("%s counted as 0 (negative)" % k)
+                vals[str(k)] = max(f, 0.0)
         total = sum(vals.values())
+        if bad:
+            notes.append("criteria.json: " + "; ".join(bad))
         if total <= 0:
             fixed = dict(DEFAULT_CRITERIA)
             notes.append("criteria weights missing: defaults used")
         elif abs(total - 100.0) > 0.5:
             fixed = dict((k, round(v * 100.0 / total, 1)) for k, v in vals.items())
             notes.append("criteria weights summed to %g: normalized to 100" % total)
+        elif vals != crit:
+            fixed = vals
     if fixed is not None:
         ctx.write_json("criteria.json", fixed)
     pd = ctx.state.get("project_dir")
@@ -2455,8 +2777,9 @@ def _s_merge_ground(ctx, step):
     second = ctx.read("ground/02_CONTEXT.second.md")
     if not second:
         return "no second researcher output"
-    m = re.search(r"^##\s*B\b[^\n]*\n(.*?)(?=^##\s*C\b|\Z)", second, re.M | re.S | re.I)
-    body = m.group(1).strip() if m else second.strip()
+    # the section the P-GROUND contract validated (textio's headings and fences: a fenced '## C' line never cuts it)
+    hits = [b for h, b in _h2_sections(second) if re.match(CONTEXT_HEADINGS["B"], h, re.I)]
+    body = "\n\n".join(b.strip() for b in hits) or second.strip()
     main = ctx.read("02_CONTEXT.md")
     if "## B (second family)" in main:
         return "already merged"
@@ -2488,10 +2811,19 @@ def _s_add_evolved(ctx, step):
         if not ctx.exists("05_EVOLVED.md"):
             ctx.write("05_EVOLVED.md", "# EVOLVED\n\nskipped (the evolve call failed)\n")
         return "no evolved ideas"
-    org = origins(ctx)
+    # a redo of 8.1 rewrites 05_EVOLVED.md with the same E ids, so the E origins of an earlier run are dropped first:
+    # they described other ideas (#51)
+    org = dict((k, v) for k, v in origins(ctx).items() if not re.match(r"^E-\d+$", k))
     cl = ctx.read_json("clusters.json", {}) or {}
+    meta = ctx.read_json("05_EVOLVED.md.meta.json", {}) or {}
+    writer = (meta.get("family") if meta.get("status") == "ok" else None) or ctx.host_family
     for b in blocks:
-        org.setdefault(b["id"], "ai-mixed")
+        # origin by lineage (as bs.py map): the family that wrote the E idea plus its AI parents' families, compared
+        # by vendor (claude and claude-alt are one); one vendor -> that family (its judges' own-vendor correction then
+        # applies), several -> ai-mixed
+        fams = set([writer]) | set(org.get(p) for p in re.findall(r"\bI-\d+\b", b["fields"].get("parents", ""))
+                                   if org.get(p) not in (None, "human", "human-mixed", "?", ""))
+        org[b["id"]] = seats_mod.lineage_origin(fams)
         cl.setdefault(b["id"], "evolved")
     ctx.write_json("origins.json", org)
     ctx.write_json("clusters.json", cl)
@@ -2516,7 +2848,7 @@ def pool_families(ctx):
     """prefix -> the family that actually produced the pool file (a substitute is recorded as its own label, e.g.
     gpt-alt); human prefixes are `human`, imports `import`."""
     fam_map, ok_map = {}, {}
-    for path in sorted(glob.glob(os.path.join(ctx.run_dir, "jobs", "*.json"))):
+    for path in sorted(textio.glob_in(ctx.run_dir, "jobs", "*.json")):
         try:
             job = textio.read_json(path)
         except (OSError, ValueError):
@@ -2542,9 +2874,9 @@ def pool_families(ctx):
         fam_map.setdefault("S1R", ctx.host_family)
     for h in ("H", "HP", "H2"):
         fam_map[h] = "human"
-    if glob.glob(os.path.join(ctx.run_dir, "pool", "IMPORT_*.md")):
+    if textio.glob_in(ctx.run_dir, "pool", "IMPORT_*.md"):
         fam_map["IMP"] = "import"
-    for path in glob.glob(os.path.join(ctx.run_dir, "00_HUMAN_SEEDS_*.md")):
+    for path in textio.glob_in(ctx.run_dir, "00_HUMAN_SEEDS_*.md"):
         name = os.path.basename(path)[len("00_HUMAN_SEEDS_"):-3]
         if re.match(r"^[A-Za-z0-9]+$", name):
             fam_map["H" + name] = "human"
@@ -2553,11 +2885,9 @@ def pool_families(ctx):
 
 @script("s1_after")
 def _s_s1_after(ctx, step):
-    """After the ce-ideate host task: record whether the human saw its ranked list (00_RUN.md line)."""
-    seen = ctx.read_json("answers/s1_seen.json", None)
-    if isinstance(seen, dict) and "human_saw_s1_ranking" in seen:
-        ctx.state["human_saw_s1"] = "yes" if seen.get("human_saw_s1_ranking") else "no"
-    elif ctx.exists("pool/S1_ce-ideate.md"):
+    """After the ce-ideate host task: record whether the human saw its ranked list (00_RUN.md line). The task never
+    writes a file that says so (4.1c writes only the pool file), so the answer is always no."""
+    if ctx.exists("pool/S1_ce-ideate.md"):
         ctx.state.setdefault("human_saw_s1", "no")
     return "ce-ideate output attached"
 
@@ -2587,9 +2917,7 @@ def _s_convert_merges(ctx, step):
         if job.get("kind") == "curator" and ctx.exists(job.get("out", "")):
             raw = ctx.read_json(job["out"], None)
     if not isinstance(raw, dict):
-        raise EngineError("the curator output is missing or not JSON",
-                          fix=["%s redo \"%s\" %s --yes" % (ctx.state.get("runner") or "ub",
-                                                            textio.to_posix(ctx.run_dir), step["id"])])
+        raise EngineError("the curator output is missing or not JSON", fix=[redo_cmd(ctx, step["id"])])
     fam_map = write_pool_families(ctx)
     ax = {}
     for a in raw.get("axes") or []:
@@ -2618,21 +2946,20 @@ def _s_convert_merges(ctx, step):
 
 @script("bs_map")
 def _s_bs_map(ctx, step):
-    bs(ctx, "map", ctx.run_dir)
-    if step.get("id") == "5.2" and ctx.mode == "deep":
-        rc, out, err = bs(ctx, "dupcheck", ctx.run_dir, allow=(0, 1, 2, 4, 5))
-        ctx.write("screen/dupcheck.txt", out or "(no output)")
+    bs(ctx, "map", ctx.run_dir, redo=curation_before(step["id"]))
     return "pool mapped"
 
 
 @script("gap_round_end")
 def _s_gap_round_end(ctx, step):
-    bs(ctx, "map", ctx.run_dir)
+    bs(ctx, "map", ctx.run_dir, redo=curation_before(step["id"]))
     c = ctx.state.setdefault("counters", {})
-    c["gap_rounds"] = int(c.get("gap_rounds", 0)) + 1
     items = c.get("gap_round_items") or []
-    c["gap_prefix"] = int(c.get("gap_prefix", 0)) + len([i for i in items if str(i).startswith("G")])
-    c["reopen_prefix"] = int(c.get("reopen_prefix", 0)) + len([i for i in items if str(i).startswith("R")])
+    if c.get("gap_counted") != items:  # a redo from 5.3c or 5.3m ends a round this step counted already: once
+        c["gap_rounds"] = int(c.get("gap_rounds", 0)) + 1
+        c["gap_prefix"] = int(c.get("gap_prefix", 0)) + len([i for i in items if str(i).startswith("G")])
+        c["reopen_prefix"] = int(c.get("reopen_prefix", 0)) + len([i for i in items if str(i).startswith("R")])
+        c["gap_counted"] = list(items)
     pool = ctx.read("03_POOL.md")
     saturated = False
     for ln in pool.split("\n"):
@@ -2640,8 +2967,8 @@ def _s_gap_round_end(ctx, step):
         if len(cells) >= 8 and re.match(r"^[GR]\d+$", cells[0]) and cells[0] in items and "SATURATED" in cells[7]:
             saturated = True
     if not saturated and _p_homog(ctx, None):
-        for sid in ("5.3", "5.3c", "5.3m"):
-            st.set_step(ctx.state, sid, "pending", note="another gap round", jobs=[])
+        from . import pipeline  # lazy: pipeline imports this module
+        pipeline.rearm_loop(ctx, pipeline.step_ref("gap_loop"), "another gap round")
         ctx.cache["rearmed"] = True
         return "gap round %d done; another round follows" % c["gap_rounds"]
     return "gap round %d done%s" % (c["gap_rounds"], " (saturated)" if saturated else "")
@@ -2654,6 +2981,41 @@ def _s_prepare_screen(ctx, step):
     ctx.write("screen/header.md", header)
     bs(ctx, "prepare-screen", ctx.run_dir)
     return "screen prompts prepared"
+
+
+QUICK_ALIAS_RE = re.compile(r"\bQ[AB]-\d+\b")  # the quick generators' idea IDs (QUICK-GEN: QA-01, QB-07)
+
+
+@script("prepare_quick_screen")
+def _s_prepare_quick_screen(ctx, step):
+    """Q.3p (#51): the curated quick ideas as the screen's neutral lines (`Q-01 | title | pitch | mechanism`, the
+    curator's neutral wording, no origin), then the screen's schema, header and one shuffled prompt per quick screen
+    judge, as 6.1 prepares the screen. A line that names a quick generator's idea ID (QA-03) would tell the judges who
+    wrote the idea: it is refused like the screen's origin-label check (6.7 rule 6)."""
+    cur = ctx.read_json("quick/curated.json", None)
+    ideas = cur.get("ideas") if isinstance(cur, dict) else None
+    redo = [redo_cmd(ctx, curation_before(step["id"]))]  # a curation an older kit left, or one its contract missed
+    if not isinstance(ideas, list) or not ideas:
+        raise EngineError("quick/curated.json has no ideas, so the quick screen has nothing to score", fix=redo)
+    rows, seen = [], set()
+    for idea in ideas:
+        iid = clean(idea.get("id")) if isinstance(idea, dict) else ""
+        if not iid or iid in seen:
+            raise EngineError("quick/curated.json: %s" % ("an idea without an id" if not iid else
+                                                           "the id %s appears twice" % iid), fix=redo)
+        seen.add(iid)
+        row = "%s | %s | %s | %s" % (iid, clean(idea.get("title")), clean(idea.get("pitch")),
+                                     clean(idea.get("mechanism")))
+        m = QUICK_ALIAS_RE.search(row)
+        if m:
+            raise privacy_mod.PolicyBlock(
+                "origin_label_check", "Debiasing rule: the quick screen line of %s contains the idea ID %s, which "
+                "reveals which model wrote it; remove it from that idea's title, pitch or mechanism in "
+                "quick/curated.json." % (iid, m.group(0)))
+        rows.append(row)
+    ctx.write("screen/ideas.md", "\n".join(rows) + "\n")
+    _s_prepare_screen(ctx, step)
+    return "quick screen prepared: %d ideas, judges %s" % (len(rows), ", ".join(ctx.seats.get("screen_judges") or []))
 
 
 def fill_partial(ctx, name):
@@ -2680,20 +3042,40 @@ def _md_table(headers, rows):
     return "\n".join(out)
 
 
+def _judge_stage(stage, key):
+    """True when a run.json.provisional stage label belongs to the screen (6.x) or tournament (9.x, Q.5) judges."""
+    s = str(stage or "").strip().lower()
+    if key == "screen_judges":
+        return "screen" in s or s.startswith("6.")
+    return "tournament" in s or s.startswith("9.") or s.startswith("q.5") or s == "quick"
+
+
 def judges_line(ctx, key):
-    prov = set(p.get("actual") for p in ctx.state.get("provisional") or [] if isinstance(p, dict))
+    """The judge seats of a stage; a seat answered by a substitute reads '<seat> (PROVISIONAL: <actual>)'."""
+    subs = {}
+    for p in ctx.state.get("provisional") or []:
+        if isinstance(p, dict) and _judge_stage(p.get("stage"), key):
+            subs.setdefault(p.get("seat"), []).append(str(p.get("actual") or "?"))
     fams = ctx.seats.get(key) or []
-    return ", ".join("%s%s" % (f, " (PROVISIONAL)" if is_alt(f) or f in prov else "") for f in fams) or "none"
+    return ", ".join("%s%s" % (f, " (PROVISIONAL: %s)" % " -> ".join(subs[f]) if f in subs else
+                               " (PROVISIONAL)" if is_alt(f) else "") for f in fams) or "none"
 
 
-def render_shortlist(ctx):
-    """04_SHORTLIST.md from templates/docs/SHORTLIST.md (the Rescued: line is what bs.py and the engine read)."""
+def render_shortlist(ctx, g4=None):
+    """04_SHORTLIST.md from templates/docs/SHORTLIST.md (the Rescued: line is what bs.py and the engine read). g4: the
+    G4 answer being applied (the recorded one otherwise). The Rescued: line holds the rescued IDs only, since every ID
+    on it is rescued; each reason follows on its own `- <ID>: <reason>` line, its line breaks collapsed."""
     from . import builders
     from . import gates
     data = ctx.read_json("screen/shortlist.json", {}) or {}
     info = idea_lines(ctx)
-    rescued = ((ctx.state.get("gates") or {}).get("G4") or {}).get("answer") or {}
-    rids = ["%s (%s)" % (r.get("id"), r.get("reason")) for r in rescued.get("rescue") or [] if isinstance(r, dict)]
+    rescued = g4 if g4 is not None else ((ctx.state.get("gates") or {}).get("G4") or {}).get("answer") or {}
+    rescues = [r for r in rescued.get("rescue") or [] if isinstance(r, dict) and r.get("id")]
+    rescued_text = "none"
+    if rescues:
+        rescued_text = "%s\n\n%s" % (", ".join(dict.fromkeys(str(r["id"]) for r in rescues)), "\n".join(
+            "- %s: %s" % (r["id"], " ".join(str(r.get("reason") or "").split()) or "rescued by the user")
+            for r in rescues))
     parked = ctx.state.get("parked") or []
     table = ctx.read("screen/table.md")
     audits = "\n\n".join(x for x in (sections_by_prefix(table, ["Judge agreement", "Own-origin gap"]),) if x)
@@ -2717,12 +3099,13 @@ def render_shortlist(ctx):
         "PARKED_TABLE": _md_table(["id", "title", "matches"], [
             [p, info.get(p, {}).get("title", ""), "CROWDED with no differentiator (checks/%s.md)" % p]
             for p in parked]) if parked else "none",
-        "SCREEN_AUDITS": audits or "none", "RESCUED": ", ".join(rids) if rids else "none"}
-    text = builders.render_doc("SHORTLIST", mapping, fallback=lambda: _shortlist_builtin(ctx, data, rids, parked))
+        "SCREEN_AUDITS": audits or "none", "RESCUED": rescued_text}
+    text = builders.render_doc("SHORTLIST", mapping,
+                               fallback=lambda: _shortlist_builtin(ctx, data, rescued_text, parked))
     ctx.write("04_SHORTLIST.md", text)
 
 
-def _shortlist_builtin(ctx, data, rids, parked):
+def _shortlist_builtin(ctx, data, rescued_text, parked):
     lines = ["# SHORTLIST", "", "Screened by %s (neutral lines, random orders)." %
              ", ".join(ctx.seats.get("screen_judges") or []), "", "## Shortlist", ""]
     for s in data.get("shortlist") or []:
@@ -2734,7 +3117,7 @@ def _shortlist_builtin(ctx, data, rids, parked):
                        ("flagged_gate", "Flagged by one judge"), ("borderline", "Borderline")):
         vals = data.get(key) or []
         lines += ["", "## %s" % title, "", ", ".join(vals) if vals else "none"]
-    lines += ["", "Rescued: %s" % (", ".join(rids) if rids else "none")]
+    lines += ["", "Rescued: %s" % rescued_text]
     if parked:
         lines += ["", "## Parked (K4 candidate)", ""] + ["- %s: CROWDED with no differentiator" % p for p in parked]
     table = ctx.read("screen/table.md")
@@ -2745,23 +3128,28 @@ def _shortlist_builtin(ctx, data, rids, parked):
 
 @script("k4")
 def _s_k4(ctx, step):
-    if ctx.variant == "growth" or (ctx.variant == "software" and is_repo(ctx)):
-        ctx.state["k4_candidates"] = []
-        return "K4 does not apply in this variant (prior art is evidence it works)"
+    # parked and killed are derived here from this step's checks and the gate answers, never accumulated over runs of
+    # the step (I10): killed = the flags confirmed at G4 (G5 adds its kills when it is answered); parked = the K4
+    # candidates (hands-on: the ones G5 neither kills nor keeps, set when G5 is answered)
+    before = (ctx.state.get("killed") or [], ctx.state.get("parked") or [])
+    g4 = ((ctx.state.get("gates") or {}).get("G4") or {}).get("answer") or {}
     cands = []
-    for iid in shortlist_ids(ctx):
-        v, d = check_verdict(ctx, iid)
-        if v == "CROWDED" and (not d or re.match(r"^(none|none found|-)\W*$", d, re.I)):
-            cands.append(iid)
+    if ctx.variant == "growth" or (ctx.variant == "software" and is_repo(ctx)):
+        note = "K4 does not apply in this variant (prior art is evidence it works)"
+    else:
+        for iid in shortlist_ids(ctx):
+            v, d = check_verdict(ctx, iid)
+            if v == "CROWDED" and (not d or re.match(r"^(none|none found|-)\W*$", d, re.I)):
+                cands.append(iid)
+        note = "K4 candidates: %s" % (", ".join(cands) or "none")
     ctx.state["k4_candidates"] = cands
-    if cands and ctx.autopilot != "hands-on":
-        parked = ctx.state.setdefault("parked", [])
-        for c in cands:
-            if c not in parked:
-                parked.append(c)
+    ctx.state["killed"] = sorted(set(i for i in g4.get("confirm_flags") or [] if i))
+    ctx.state["parked"] = list(cands) if ctx.autopilot != "hands-on" else []
+    if ctx.state["parked"]:
+        note = "K4 candidates parked (not killed): %s" % ", ".join(cands)
+    if (ctx.state["killed"], ctx.state["parked"]) != before:
         render_shortlist(ctx)
-        return "K4 candidates parked (not killed): %s" % ", ".join(cands)
-    return "K4 candidates: %s" % (", ".join(cands) or "none")
+    return note
 
 
 @script("finalists")
@@ -2770,35 +3158,37 @@ def _s_finalists(ctx, step):
         ids = ["I-001"] + [b["id"] for b in idea_blocks(ctx.read("05_EVOLVED.md"), "E")]
         ctx.state["finalists"] = ids[:3]
         return "finalists: %s" % ", ".join(ctx.state["finalists"])
-    surv = survivors(ctx)
-    evolved = [b["id"] for b in idea_blocks(ctx.read("05_EVOLVED.md"), "E") if ctx.exists("checks/%s.md" % b["id"])]
-    pool = surv + [e for e in evolved if e not in surv]
-    prim = [p for p in (ctx.read_json("primary.json", []) or []) if p in pool]
+    pool, ev = finalist_pool(ctx), set(evolved_ids(ctx))
+    evolved = [i for i in pool if i in ev]
+    surv = [i for i in pool if i not in ev]
     if len(pool) <= 8:
         fin = pool
     else:
+        # at most 8: the protected survivors (primary, tail slot, best human), then min(2, |E|) E ideas by CHECK
+        # verdict (NOT LOCATED, ADJACENT, NOT CHECKED, CROWDED) and id, then the other survivors by screen score, and
+        # further E ideas (by their parents' score) only when the survivors run out: an E idea's inherited score is a
+        # proxy (an EVOLVE variant of the top idea inherits the top score), not a measured one (#45)
         scores = screen_scores(ctx)
-        ranked = sorted(pool, key=lambda i: (-scores.get(i, 0.0), i))
-        fin = ranked[:6]
+        ranked = sorted(surv, key=lambda i: (-scores.get(i, 0.0), i))
+        protected = [p for p in (ctx.read_json("primary.json", []) or []) if p in surv]
         data = ctx.read_json("screen/shortlist.json", {}) or {}
-        for s in data.get("shortlist") or []:
-            if isinstance(s, dict) and "tail slot" in str(s.get("reason")) and s.get("id") in pool:
-                if s["id"] not in fin:
-                    fin.append(s["id"])
+        protected += [s["id"] for s in data.get("shortlist") or [] if isinstance(s, dict)
+                      and "tail slot" in str(s.get("reason")) and s.get("id") in surv]
         org = origins(ctx)
-        human = [i for i in ranked if org.get(i) in ("human", "human-mixed")]
-        if human and human[0] not in fin:
-            fin.append(human[0])
-        for p in prim:
-            if p not in fin:
-                fin.append(p)
+        protected += [i for i in ranked if org.get(i) in ("human", "human-mixed")][:1]
+        protected = list(dict.fromkeys(protected))[:8]
+        quota = sorted(evolved, key=lambda e: (CHECK_RANK.get(check_verdict(ctx, e)[0], 4), e))[:2]
+        rest = sorted((i for i in pool if i not in protected and i not in quota),
+                      key=lambda i: (i in ev, -scores.get(i, 0.0), i))
+        chosen = set((protected + quota[:8 - len(protected)] + rest)[:8])
+        fin = [i for i in pool if i in chosen]
     ctx.state["finalists"] = fin
     return "%d finalists" % len(fin)
 
 
 @script("prepare_tournament")
 def _s_prepare_tournament(ctx, step):
-    pin_card_titles(ctx)
+    canonical_cards(ctx)
     if not ctx.exists("tournament/verdicts.schema.json"):
         bs(ctx, "schemas", ctx.run_dir)  # quick and proposal modes skip 6.1
     ctx.write("tournament/header.md", fill_partial(ctx, "TOURNAMENT-HEADER"))
@@ -2823,11 +3213,15 @@ def _s_tournament_tally(ctx, step):
     res = tournament_result(ctx)
     raw = [[r.get("id"), info.get(r.get("id"), {}).get("title", ""), r.get("points"), r.get("max")]
            for r in res.get("raw") or [] if isinstance(r, dict)]
-    deb = [[n, d.get("id"), info.get(d.get("id"), {}).get("title", ""), d.get("pct"), d.get("n")]
+    deb = [[d.get("rank") or n, d.get("id"), info.get(d.get("id"), {}).get("title", ""), d.get("pct"),
+            "%s-%s" % tuple(d["ci"]) if d.get("ci") else "-",
+            "%s-%s" % tuple(d["rank_range"]) if d.get("rank_range") else "-", d.get("n")]
            for n, d in enumerate([d for d in res.get("debiased") or [] if isinstance(d, dict)], 1)]
+    ranking_text = section(result, "Debiased ranking") or section(result, "Debiased standings")
+    notes = "\n".join(ln for ln in ranking_text.split("\n") if ln.strip() and not re.match(r"^\d+\.", ln))
     contested = ["- %s vs %s: %s" % (c[0], c[1], c[2] if len(c) > 2 else "the judges disagree")
                  for c in res.get("contested") or [] if isinstance(c, (list, tuple)) and len(c) >= 2]
-    audits = sections_by_prefix(result, ["Judge position consistency", "Self-preference audit",
+    audits = sections_by_prefix(result, ["Judge position consistency", "Judge substitutions", "Self-preference audit",
                                          "Standings excluding flagged", "Warnings"])
     prov = gates.provisional_banner(ctx)
     if not prov and (ctx.seats.get("single_family") or any(is_alt(j) for j in ctx.seats.get("tournament_judges")
@@ -2836,8 +3230,9 @@ def _s_tournament_tally(ctx, step):
     mapping = {"RUN_NAME": ctx.state.get("run", ""), "JUDGES_LINE": judges_line(ctx, "tournament_judges"),
                "PROVISIONAL_BANNER": prov, "GUT_PICK": pre.strip(),
                "FINALISTS_TABLE": _md_table(["id", "title"], [[i, info.get(i, {}).get("title", "")] for i in fin]),
-               "STANDINGS": _md_table(["rank", "id", "title", "debiased %", "verdicts"], deb) if deb else
-               (section(result, "Debiased standings") or "(no debiased standings)"),
+               "STANDINGS": ((notes + "\n\n" if notes else "") + _md_table(
+                   ["rank", "id", "title", "score %", "90% CI", "rank range", "pairs"], deb)) if deb else
+               (ranking_text or "(no debiased standings)"),
                "RAW_STANDINGS": _md_table(["id", "title", "points", "max"], raw) if raw else
                (section(result, "Standings") or "(no raw standings)"),
                "CONTESTED": "\n".join(contested) or "none", "AUDITS": audits or "none"}
@@ -2856,20 +3251,15 @@ def _s_tournament_tally(ctx, step):
 @script("top")
 def _s_top(ctx, step):
     fin = ctx.state.get("finalists") or []
-    if ctx.mode == "proposal":
-        top = fin[:3]
-    else:
-        pct = debiased_pct(ctx)
-        ranked = sorted(fin, key=lambda i: (-pct.get(i, 0.0), i))
-        top = ranked[:3]
-        gut = gut_picks(ctx)
-        if gut and gut[0] in fin and gut[0] not in top:
-            top.append(gut[0])
+    rk = ranking(ctx)
+    top = suggested_top(ctx, rk)
     g7 = ((ctx.state.get("gates") or {}).get("G7") or {}).get("answer") or {}
     if g7.get("picks"):
         top = [p for p in g7["picks"] if p in fin] or top
     ctx.state["top"] = top
     parts = ["# TOP", ""]
+    if rk["note"]:
+        parts += ["Note: the %s." % rk["note"], ""]
     for i in top:
         parts += ["## %s" % i, card_text(ctx, i), "", "### Check", ctx.read("checks/%s.md" % i).strip() or "(none)",
                   ""]
@@ -2883,7 +3273,25 @@ def _s_decision(ctx, step):
     return "08_DECISION.md written"
 
 
-def write_decision(ctx, switch_note=None):
+K6_LINE = re.compile(r"^Killed: (\S+) - K6\b", re.M)
+
+
+def k6_killed(state):
+    """The ideas their own probe killed (the `Killed: <ID> - K6` lines of run.json decision_log; a run an older kit
+    started gets them from 08_DECISION.md when it loads, migrate.upgrade_decisions): never the runner-up or the chosen
+    idea again."""
+    return set(K6_LINE.findall("\n".join(str(x) for x in state.get("decision_log") or [])))
+
+
+def with_decision_log(text, lines):
+    """08_DECISION.md text with decision lines (a switch, a K6 kill) after it, one paragraph each."""
+    lines = [str(x).strip() for x in lines or [] if str(x).strip()]
+    return text.rstrip() + "".join("\n\n" + x for x in lines) + "\n" if lines else text
+
+
+def write_decision(ctx):
+    """08_DECISION.md from the G8b answer and the choice, then the run's decision_log (the switches and K6 kills
+    recorded since the decision): 10.6 and quick Q.8 rewrite the file, and the log survives every rewrite (6.10)."""
     g = (ctx.state.get("gates") or {}).get("G8b") or {}
     ans = g.get("answer") or {}
     choice = ctx.state.get("choice") or {}
@@ -2892,6 +3300,8 @@ def write_decision(ctx, switch_note=None):
     auto = g.get("by") == "auto"
     why = ans.get("why") or _why_from_reply(ans.get("reply") or "", chosen)
     fin = ctx.state.get("finalists") or []
+    log = ctx.state.get("decision_log") or []
+    k6 = k6_killed(ctx.state)  # killed by their probe, not unchosen
     lines = ["# DECISION: %s" % ctx.state.get("run", "")]
     if auto:
         lines.append("AUTO-DECISION: no human decision was made (full-auto); rule: %s" % (ans.get("rule") or
@@ -2912,13 +3322,11 @@ def write_decision(ctx, switch_note=None):
         if i == chosen:
             dissent += [v for v in vs if "DON'T BACK" in v]
     lines.append("Dissent recorded: %s" % ("; ".join(dissent) or "none"))
-    not_doing = [i for i in fin if i not in (chosen, choice.get("runner_up"))]
+    not_doing = [i for i in fin if i not in (chosen, choice.get("runner_up")) and i not in k6]
     lines.append("Not doing (and why): %s" % ("; ".join("%s %s (not chosen at the decision)" %
                                                         (i, info.get(i, {}).get("title", "")) for i in not_doing[:5])
                                              or "none listed"))
     lines.append("Pre-registered test: see 09_PROBE.md (written at Stage 11 before running)")
-    if switch_note:
-        lines.append(switch_note)
     date = textio.now_iso()[:10]
     run = ctx.state.get("run", "")
     rows = []
@@ -2964,9 +3372,7 @@ def write_decision(ctx, switch_note=None):
         ("\n\n" + tail[0] + "\n\n" + "\n".join(tail[1:])) if tail else "")
     mapping["DATE"] = date
     body = builders.render_doc("DECISION", mapping, fallback=mapping["DECISION_BODY"] + "\n")
-    if switch_note:
-        body = body.rstrip("\n") + "\n" + switch_note + "\n"
-    ctx.write("08_DECISION.md", body)
+    ctx.write("08_DECISION.md", with_decision_log(body, log))
     if not ctx.state.get("ledger_written"):
         append_ledger(ctx, rows)
         ctx.state["ledger_written"] = True
@@ -3011,9 +3417,19 @@ def _s_synthesis_check(ctx, step):
     return "WHOLE-EFFORT: STOP (the whole effort is in question)" if stop else "WHOLE-EFFORT: CONTINUE"
 
 
+QUICK_CURATOR_NOTE = ("quick mode: the curator's own scores picked the finalists (no blind quick screen: it needs "
+                      "screen judges of two model vendors)")
+
+
 @script("quick_pick")
 def _s_quick_pick(ctx, step):
-    bs(ctx, "quick-pick", ctx.run_dir)
+    """Q.4: bs.py quick-pick on the blind quick screen's scores when Q.3s ran (#51); a run without it (one model
+    family, or seated by an older kit) keeps the curator's scores, flagged in finalists.json and in a run note."""
+    from . import pipeline  # lazy: pipeline imports this module
+    blind = st.step_state(ctx.state, pipeline.step_ref("quick_screen")) == "done"
+    bs(ctx, "quick-pick", ctx.run_dir, "--scores", "blind" if blind else "curator", redo=curation_before(step["id"]))
+    if not blind:
+        st.add_note(ctx.state, QUICK_CURATOR_NOTE)
     fin = ctx.read_json("quick/finalists.json", None)
     ids = []
     if isinstance(fin, dict):
@@ -3061,7 +3477,8 @@ def _s_quick_decision(ctx, step):
         test = "%s (%s)" % (test, "; ".join(extra))
     runner = choice.get("runner_up")
     mapping = {"RUN_NAME": ctx.state.get("run", ""),
-               "DECISION_STAMP": "AUTO-DECISION: chosen by rule; no human decision was made." if auto else "",
+               "DECISION_STAMP": "AUTO-DECISION: chosen by rule (%s); no human decision was made." % (
+                   ans.get("rule") or "suggested by rule") if auto else "",
                "CHOSEN": "%s %s" % (chosen, info.get("title", "")),
                "WHY": ('"%s"' % " ".join(why.split())) if why else "(accepted the suggestion by rule)",
                "RUNNER_UP": ("%s %s" % (runner, idea_lines(ctx).get(runner, {}).get("title", ""))) if runner
@@ -3127,12 +3544,3 @@ def run_script(ctx, name, step):
     if fn is None:
         raise EngineError("pipeline.json names an unknown script: %s" % name)
     return fn(ctx, step)
-
-
-def copy_file(src, dst):
-    os.makedirs(os.path.dirname(dst), exist_ok=True)
-    shutil.copy2(src, dst)
-
-
-SK = SK_DIR
-APPROACH = APPROACH_VARIANTS

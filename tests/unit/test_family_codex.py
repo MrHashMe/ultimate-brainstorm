@@ -49,15 +49,20 @@ class ArgvTests(CodexBase):
         argv = call["argv"]
         cwd = argv[argv.index("-C") + 1]
         last = argv[argv.index("-o") + 1]
+        features = ["apps", "plugins", "multi_agent", "hooks", "memories", "browser_use", "computer_use",
+                    "image_generation", "unbounded_connection_retries", "shell_tool", "js_repl", "view_image"]
         self.assertEqual(argv[1:], ["exec", "--skip-git-repo-check", "--ephemeral", "-s", "read-only", "-C", cwd,
-                                    "-o", last, "--json", "-"])
+                                    "-o", last, "--json", "-c", "notify=[]"]
+                         + [x for f in features for x in ("-c", "features.%s=false" % f)]
+                         + ["-c", "web_search=disabled", "-"])
+        self.assertNotIn("mcp_servers={}", argv, "an empty table is merged, not replaced: it would do nothing")
         self.assertEqual(os.path.abspath(call["cwd"]), os.path.abspath(cwd))
         self.assertEqual(call["cwd_listing"], [])
         self.assertEqual(os.path.basename(last), "last.txt")
         self.assertEqual(call["stdin"], textio.read_text(os.path.join(self.run_dir, job["prompt_file"])).encode())
         for bad in ("--full-auto", "--yolo", "--dangerously-bypass-approvals-and-sandbox"):
             self.assertNotIn(bad, argv)
-        self.assertNotIn("-c", argv)
+        self.assertNotIn("web_search=live", argv)
         self.assertNotIn("--output-schema", argv)
 
     def test_web_flag_only_for_web_jobs(self):
@@ -71,11 +76,19 @@ class ArgvTests(CodexBase):
         textio.write_json_atomic(os.path.join(self.run_dir, "tournament", "verdicts.schema.json"), schema)
         contract = {"type": "json", "schema": "tournament/verdicts.schema.json"}
         job = self.make_job(family="gpt", schema_file="tournament/verdicts.schema.json", contract=contract)
-        _m, fake = self.run_job(job, [writes_last('{"v": "A"}')])
+        seen = {}
+
+        def respond(call):
+            argv = call["argv"]
+            seen["schema"] = textio.read_json(argv[argv.index("--output-schema") + 1])
+            return writes_last('{"v": "A"}')(call)
+        _m, fake = self.run_job(job, [respond])
         argv = fake.calls[0]["argv"]
         i = argv.index("--output-schema")
-        self.assertEqual(os.path.abspath(argv[i + 1]),
-                         os.path.abspath(os.path.join(self.run_dir, "tournament", "verdicts.schema.json")))
+        # [U-85] a per-call copy (deleted with the call folder) in place of the run's schema file
+        self.assertEqual(os.path.dirname(argv[i + 1]), os.path.dirname(argv[argv.index("-o") + 1]))
+        self.assertEqual(seen["schema"], schema)
+        self.assertFalse(os.path.exists(argv[i + 1]))
         # provider variant: native_schema false -> no --output-schema
         os.environ["ZAI_API_KEY"] = ZAI
         os.makedirs(os.path.join(self.home, "codex-homes", "glm"))

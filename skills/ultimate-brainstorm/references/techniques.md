@@ -109,8 +109,8 @@ preprints or items checked only through summaries.
 
 ## 14. Mechanism-key dedup and yield
 - Stage 5. Key = "<actor> | <verb + object> | <outcome>". Merge only exact key matches; same mechanism for another actor
-  is a sibling. Track unique share and "only here" per strategy. Optional embedding check at cosine >= 0.8 with
-  all-MiniLM-L6-v2 (`bs.py dupcheck`).
+  is a sibling. Track unique share and "only here" per strategy. Near-duplicates are merged by the curator's mechanism
+  keys only (there is no embedding pass).
 - Evidence: only about 5% of 4,000 LLM ideas were unique even with "avoid repeats" in the prompt (Si et al. 2024). The
   counting is done by `bs.py map`, not by the LLM curator.
 

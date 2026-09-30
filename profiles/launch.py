@@ -9,7 +9,11 @@ Run by the launchers that install.py writes into UB_HOME/bin (claude-glm, claude
 
 - claude: writes a 0600 settings file UB_HOME/tmp/launch-<pid>-<rand>.json holding {"env": provider env + token},
   sets UB_HOST_FAMILY, runs `claude --settings <file> <args>`, waits, deletes the file in `finally` and returns
-  claude's exit code. The token never appears in argv, logs or output.
+  claude's exit code. The token never appears in argv, logs or output. The file also goes when the launcher ends
+  abnormally (SIGTERM/SIGHUP on POSIX; console close, logoff or shutdown on Windows; atexit), and every claude
+  launch first deletes the files of launchers that died without any cleanup (a kill): sweep_stale_secret_files. A
+  `<file>.id` next to each file records which process wrote it (proc.process_identity), so a live launcher's file is
+  never taken for a dead one's, whatever the clock did meanwhile.
 - codex: sets CODEX_HOME=UB_HOME/codex-homes/<provider> and UB_HOST_FAMILY, then runs `codex <args>`.
 - ub: runs `<this python> <kit>/skills/ultimate-brainstorm/scripts/ub.py <args>` (terminal mode and the other ub
   commands).
@@ -17,21 +21,27 @@ Run by the launchers that install.py writes into UB_HOME/bin (claude-glm, claude
 The user's ~/.claude/settings.json and ~/.codex/config.toml are never read or written.
 
 The module also exposes the renderers install.py uses to write launchers and Codex homes (see the "Rendering API"
-section below). By design it does not import ublib (4.16): it carries its own small config merge.
+section below). It carries its own small config merge, and takes the security-critical process helpers (executable
+lookup that never searches the current folder, the .cmd argument check, System32 tools, process liveness) from
+ublib.proc, the kit's single copy of them, and a provider's endpoint and models from the worker's
+ublib.families.provider_settings_env, so a launcher and a claude-cli@<provider> call agree (4.16).
 
 Exit codes: the child's exit code; 2 usage or missing key/config; 1 other failure (tool not installed, bad file).
 """
 
+import atexit
 import json
 import os
 import re
 import secrets
+import signal
 import stat
 import subprocess
 import sys
+import threading
 from pathlib import Path
 
-KIT_VERSION = "2.0.3"
+KIT_VERSION = "2.1.0"
 IS_WINDOWS = os.name == "nt"
 
 PROFILES_DIR = Path(__file__).resolve().parent
@@ -40,9 +50,21 @@ SK_DIR = KIT_DIR / "skills" / "ultimate-brainstorm"
 FAMILIES_DEFAULT = SK_DIR / "scripts" / "families.default.json"
 UB_PY = SK_DIR / "scripts" / "ub.py"
 
-# Characters cmd.exe interprets even inside quotes; an argument holding one cannot pass safely through a .cmd/.bat
-# shim (KIT_SPEC 3.1).
-CMD_UNSAFE_CHARS = set('"&|<>^%!\r\n')
+if str(SK_DIR / "scripts") not in sys.path:
+    sys.path.insert(0, str(SK_DIR / "scripts"))
+from ublib import families, proc  # noqa: E402  (provider_settings_env; which, check_cmd_args, system_tool, ...)
+
+# launch-<pid>-<hex12>.json / zai-mcp-<pid>-<hex12>.json in UB_HOME/tmp (write_secret_file names; group 1, pid group
+# 2), each with a <name>.id file holding the writer's process identity (group 3 = ".id")
+SECRET_FILE_RE = re.compile(r"^((?:launch|zai-mcp)-(\d+)-[0-9a-f]{12}\.json)(\.id)?$")
+IDENT_SUFFIX = ".id"
+_SECRET_FILES = []  # the secret files this process wrote; a path leaves the list only once its file is gone
+# Taken by every removal: the Windows console handler (its own thread) then waits for a removal in progress on the main
+# thread instead of letting the process end while a file is still on disk. Re-entrant: a POSIX signal handler runs on
+# the main thread, possibly inside a removal.
+_SECRET_LOCK = threading.RLock()
+_CLOSING = []  # set by the console handler: the process ends as soon as it returns, so no new secret file is written
+_CONSOLE_HANDLER = []  # keeps the Windows console handler callback alive
 
 # Which family a provider serves (sets UB_HOST_FAMILY for the launched host).
 PROVIDER_FAMILY = {"glm": "glm", "kimi": "kimi", "kimi-code": "kimi"}
@@ -130,36 +152,53 @@ def load_config(home=None, defaults_path=None):
         except (ValueError, UnicodeDecodeError) as exc:
             raise LaunchError("%s is not valid JSON (%s). Fix or remove it, then try again."
                               % (user_file.as_posix(), exc), 2)
+        bad = _shape_error(cfg)
+        if bad:
+            raise LaunchError("%s: %s must be %s. Fix or remove it, then try again."
+                              % (user_file.as_posix(), bad[0], bad[1]), 2)
     return cfg
 
 
+def _shape_error(cfg):
+    """(key, what it must be) for the first value the launcher reads that a hand-edited families.json turned into
+    something else, else None. A missing or empty value counts as absent, as every reader treats it; base_url may also
+    be one URL (a string)."""
+    obj, text = "a JSON object", "a string"
+    if not isinstance(cfg, dict):
+        return "the top level", obj
+    if not isinstance(cfg.get("region") or "", str):
+        return "region", text
+    for sect in ("providers", "backends"):
+        entries = cfg.get(sect) or {}
+        if not isinstance(entries, dict):
+            return sect, obj
+        for name, entry in entries.items():
+            entry = entry or {}
+            if not isinstance(entry, dict):
+                return "%s.%s" % (sect, name), obj
+            for key, want, types in (("base_url", "a JSON object or a URL", (dict, str)), ("models", obj, (dict,)),
+                                     ("env", obj, (dict,)), ("token_env", text, (str,)), ("token_var", text, (str,))):
+                if not isinstance(entry.get(key) or types[0](), types):
+                    return "%s.%s.%s" % (sect, name, key), want
+    return None
+
+
 def provider_settings_env(cfg, provider, tier="default", region=None):
-    """The env block for a provider, WITHOUT the token (same rules as ublib.families.provider_settings_env, 4.9)."""
+    """The env block for a provider, WITHOUT the token: ublib.families.provider_settings_env, the worker's rule (4.9).
+
+    region is an explicit --region: one the provider has no endpoint for is refused, never guessed. A families.json
+    region the provider lacks falls back to global, as for the worker's claude-cli@<provider> calls. # [U-22]"""
     providers = cfg.get("providers") or {}
-    if provider not in providers:
+    p = providers.get(provider)
+    if not isinstance(p, dict):
         raise LaunchError("Unknown provider %r. Known: %s" % (provider, ", ".join(sorted(providers)) or "none"), 2)
-    p = providers[provider]
-    region = region or cfg.get("region") or "global"
     base_urls = p.get("base_url") or {}
-    if region not in base_urls:
-        # No documented endpoint for this region; never guess one. # [U-22]
+    if region and isinstance(base_urls, dict) and region not in base_urls:
         raise LaunchError("Provider %s has no %s endpoint. Use --region %s."
                           % (provider, region, " or --region ".join(sorted(base_urls)) or "global"), 2)
-    models = p.get("models") or {}
-    if tier not in models:
-        raise LaunchError("Provider %s has no %r model tier." % (provider, tier), 2)
-    env = {
-        "ANTHROPIC_BASE_URL": base_urls[region],
-        "ANTHROPIC_MODEL": models[tier],
-        "ANTHROPIC_DEFAULT_OPUS_MODEL": models.get("default"),
-        "ANTHROPIC_DEFAULT_SONNET_MODEL": models.get("default"),
-        "ANTHROPIC_DEFAULT_FABLE_MODEL": models.get("default"),
-        "ANTHROPIC_DEFAULT_HAIKU_MODEL": models.get("fast"),
-        "CLAUDE_CODE_SUBAGENT_MODEL": models.get("default"),
-    }
-    env = dict((k, v) for k, v in env.items() if v is not None)
-    for k, v in (p.get("env") or {}).items():
-        env[str(k)] = str(v)
+    env = families.provider_settings_env(cfg, provider, tier, region)
+    if not env.get("ANTHROPIC_BASE_URL"):  # never start claude with a provider token and Anthropic's own endpoint
+        raise LaunchError("Provider %s has no global base_url in families config." % provider, 2)
     return env
 
 
@@ -192,16 +231,9 @@ def ensure_private_dir(path):
     return path
 
 
-def _system_tool(name):
-    """%SystemRoot%\\System32\\<name>.exe, never a PATH lookup (a planted icacls.exe must not run)."""
-    sysroot = os.environ.get("SystemRoot") or os.environ.get("SYSTEMROOT") or r"C:\Windows"
-    candidate = os.path.join(sysroot, "System32", name + ".exe")
-    return candidate if os.path.isfile(candidate) else None
-
-
 def _user_principal():
     """'*<SID>' of the current user (whoami /user), else DOMAIN\\USER, else USER; None when unknown."""
-    who = _system_tool("whoami")
+    who = proc.system_tool("whoami")  # System32 only, never a PATH lookup (a planted whoami.exe must not run)
     if who:
         try:
             res = subprocess.run([who, "/user", "/fo", "csv", "/nh"], stdin=subprocess.DEVNULL,
@@ -221,7 +253,7 @@ def _user_principal():
 def _restrict_windows_acl(path):
     """icacls <f> /inheritance:r /grant:r "<user SID>:F" (3.1). Returns True on success."""
     user = _user_principal()
-    icacls = _system_tool("icacls")
+    icacls = proc.system_tool("icacls")
     if not user or not icacls:
         return False
     try:
@@ -249,19 +281,38 @@ def write_secret_file(directory, prefix, text, suffix=".json"):
         break
     else:
         raise LaunchError("Could not create a temporary file in %s" % directory.as_posix(), 1)
-    try:
-        if IS_WINDOWS:
-            if not _restrict_windows_acl(path):
-                # 3.1 item 9: a secret goes only into an owner-only file; never write it with inherited ACLs
-                raise LaunchError("could not restrict %s with icacls; not writing the key" % path.name, 1)
-        else:
-            os.chmod(str(path), 0o600)
-        with open(str(path), "w", encoding="utf-8", newline="\n") as f:
-            f.write(text)
-    except BaseException:
-        remove_quietly(path)
-        raise
+    with _SECRET_LOCK:  # a console close waits until the file is complete, then deletes it
+        _SECRET_FILES.append(path)
+        try:
+            if _CLOSING:
+                raise LaunchError("the console is closing; not writing the key", 1)
+            _write_identity(path)
+            if IS_WINDOWS:
+                if not _restrict_windows_acl(path):
+                    # 3.1 item 9: a secret goes only into an owner-only file; never write it with inherited ACLs
+                    raise LaunchError("could not restrict %s with icacls; not writing the key" % path.name, 1)
+            else:
+                os.chmod(str(path), 0o600)
+            with open(str(path), "w", encoding="utf-8", newline="\n") as f:
+                f.write(text)
+        except BaseException:
+            remove_secret_files()
+            raise
     return path
+
+
+def _write_identity(path):
+    """Record in <path>.id which process wrote the secret file (proc.process_identity: Windows creation time, Linux boot
+    id + start ticks). The sweep compares it with the process that holds the pid now; no clock step changes either.
+    Not a secret; best effort (without it the sweep keeps the file while its pid runs)."""
+    ident = proc.process_identity(os.getpid())
+    if not ident:
+        return
+    try:
+        with open(str(path) + IDENT_SUFFIX, "w", encoding="utf-8", newline="\n") as f:
+            f.write(ident + "\n")
+    except OSError:
+        pass
 
 
 def remove_quietly(path, attempts=10):
@@ -282,59 +333,152 @@ def remove_quietly(path, attempts=10):
             time.sleep(0.2)
 
 
+def remove_secret_files():
+    """Delete every secret file this process wrote, then its .id file (finally, atexit, signal and console handlers).
+    Idempotent: a path stays listed until its file is gone, and a caller that finds another removal in progress waits
+    for it (_SECRET_LOCK) and then removes what is left. Never raises."""
+    with _SECRET_LOCK:
+        for path in list(_SECRET_FILES):
+            remove_quietly(path)
+            if os.path.lexists(str(path)):
+                continue
+            remove_quietly(str(path) + IDENT_SUFFIX)
+            if path in _SECRET_FILES:
+                _SECRET_FILES.remove(path)
+
+
+def _launcher_gone(pid, secret_path, mtime):
+    """True when the launcher that wrote secret_path (at mtime) no longer runs: its pid is free, or the process that
+    holds the pid now is not the one recorded in secret_path.id (a reused pid). Only identities of the same kind are
+    compared (Windows, Linux and macOS `ps` identities do not change with a clock step, and ps runs in UTC). A file
+    without an .id (an older launcher) is judged by the Windows creation time, which no clock step moves; elsewhere it
+    is kept while its pid runs. An unknown identity keeps the file."""
+    if not proc.pid_alive(pid):
+        return True
+    now = proc.process_identity(pid)
+    if not now:
+        return False
+    try:
+        with open(secret_path + IDENT_SUFFIX, "r", encoding="utf-8") as f:
+            recorded = f.read().strip()
+    except (OSError, ValueError):  # an undecodable .id counts as no record (UnicodeDecodeError is a ValueError)
+        recorded = ""
+    kind = now.split(":", 1)[0]
+    if recorded:
+        return recorded != now and recorded.split(":", 1)[0] == kind
+    if kind == "win":
+        started = proc.process_start_time(pid)
+        return started is not None and started > mtime + 1.0
+    return False
+
+
+def sweep_stale_secret_files(tmp_dir):
+    """Delete UB_HOME/tmp/launch-<pid>-*.json and zai-mcp-<pid>-*.json (with their .id files) left by launchers that
+    ended without any cleanup (TerminateProcess, SIGKILL, a crash): see _launcher_gone. A file of a live launcher is
+    always kept: no age rule, since an interactive session can last longer than any limit. Returns the number of
+    secret files removed."""
+    removed = 0
+    try:
+        names = os.listdir(str(tmp_dir))
+    except OSError:
+        return 0
+    for name in names:
+        m = SECRET_FILE_RE.match(name)
+        if not m or int(m.group(2)) == os.getpid():
+            continue
+        secret = os.path.join(str(tmp_dir), m.group(1))
+        if m.group(3) and os.path.lexists(secret):
+            continue  # an .id file goes with its secret file
+        path = os.path.join(str(tmp_dir), name)
+        try:
+            mtime = os.path.getmtime(path)
+        except OSError:
+            continue
+        if not _launcher_gone(int(m.group(2)), secret, mtime):
+            continue
+        remove_quietly(path, attempts=3)
+        if not m.group(3) and not os.path.exists(path):
+            removed += 1
+            remove_quietly(secret + IDENT_SUFFIX, attempts=3)
+    return removed
+
+
+def _on_signal(signum, _frame):
+    """SIGTERM / SIGHUP (terminal closed) on POSIX: ignore further ones (bash forwards SIGHUP and the session end sends
+    another, which must not interrupt the cleanup), pass it on to the child, delete the secret files, then unwind so
+    the launcher exits with 128 + signum."""
+    for name in ("SIGTERM", "SIGHUP"):
+        sig = getattr(signal, name, None)
+        if sig is not None:
+            try:
+                signal.signal(sig, signal.SIG_IGN)
+            except (OSError, ValueError):
+                pass
+    for child in list(_CHILD):
+        try:
+            child.send_signal(signum)
+        except OSError:
+            pass
+    remove_secret_files()
+    raise SystemExit(128 + signum)
+
+
+def _on_console_event(event):
+    """Windows console control handler (SetConsoleCtrlHandler). The system ends the process right after a handler for
+    CTRL_CLOSE_EVENT (2), CTRL_LOGOFF_EVENT (5) or CTRL_SHUTDOWN_EVENT (6) returns, without unwinding, so the secret
+    files go here; when the main thread is removing them at that moment, remove_secret_files waits for it, so this
+    never returns while a file it wrote is still on disk. CTRL_BREAK_EVENT (1) reaches the child too; like Ctrl+C the
+    launcher keeps waiting for it (TRUE), and `finally` cleans up. CTRL_C_EVENT (0) is left to Python's own handler
+    (FALSE)."""
+    if event in (2, 5, 6):
+        with _SECRET_LOCK:
+            _CLOSING.append(event)
+            remove_secret_files()
+        return True
+    return event == 1
+
+
+def guard_secret_files():
+    """Install the exit paths `finally` cannot see: atexit, SIGTERM/SIGHUP (POSIX), console events (Windows)."""
+    atexit.register(remove_secret_files)
+    if IS_WINDOWS:
+        try:
+            import ctypes
+            from ctypes import wintypes
+            routine = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.DWORD)(_on_console_event)
+            if ctypes.WinDLL("kernel32").SetConsoleCtrlHandler(routine, True):
+                _CONSOLE_HANDLER.append(routine)
+        except (AttributeError, OSError, ValueError):
+            pass
+        return
+    for name in ("SIGTERM", "SIGHUP"):
+        sig = getattr(signal, name, None)
+        if sig is not None:
+            try:
+                signal.signal(sig, _on_signal)
+            except (OSError, ValueError):  # not the main thread
+                pass
+
+
 # ---------------------------------------------------------------------------------------------------------------
 # Process helpers
 # ---------------------------------------------------------------------------------------------------------------
 
+_CHILD = []  # the running child (run_child), for the signal handler
+
+
 def resolve_tool(name, environ=None):
-    """Full path of name on the PATH of environ, never the current folder (Python 3.9-3.11 on Windows search the
-    current folder first with shutil.which, so a claude.cmd planted in a repository would receive --settings)."""
-    env = os.environ if environ is None else environ
-    path = _env_get(env, "PATH") if IS_WINDOWS else env.get("PATH")
-    if path is None:
-        path = os.defpath
-    dirs = []
-    for d in str(path).split(os.pathsep):
-        d = os.path.expanduser(d.strip().strip('"'))
-        if d and os.path.isabs(d):
-            dirs.append(d)
-    if IS_WINDOWS:
-        pathext = [e.lower() for e in (os.environ.get("PATHEXT") or ".COM;.EXE;.BAT;.CMD").split(os.pathsep) if e]
-        cands = [name] if os.path.splitext(name)[1].lower() in pathext else [name + e for e in pathext]
-    else:
-        cands = [name]
-    for d in dirs:
-        for c in cands:
-            p = os.path.join(d, c)
-            if os.path.isfile(p) and (IS_WINDOWS or os.access(p, os.X_OK)):
-                return os.path.abspath(p)
-    return None
-
-
-def _env_get(env, name):
-    up = name.upper()
-    for k, v in env.items():
-        if k.upper() == up:
-            return v
-    return None
+    """Full path of name on the PATH of environ, never the current folder (ublib.proc.resolve_exe: a claude.cmd planted
+    in a repository must not receive --settings)."""
+    return proc.resolve_exe(name, os.environ if environ is None else environ)
 
 
 def check_cmd_args(exe_path, args):
-    """Refuse arguments that cannot pass safely through a .cmd/.bat shim (3.1)."""
-    if not str(exe_path).lower().endswith((".cmd", ".bat")):
-        return
-    bad = sorted(set(ch for ch in str(exe_path) if ch in CMD_UNSAFE_CHARS))
-    if bad:
-        raise LaunchError("The path of %s contains %s, which cmd.exe re-parses; install the CLI under a folder "
-                          "without these characters." % (os.path.basename(str(exe_path)), ", ".join(bad)), 1)
-    for i, arg in enumerate(args):
-        bad = sorted(set(ch for ch in str(arg) if ch in CMD_UNSAFE_CHARS))
-        if bad:
-            shown = ", ".join("CR" if c == "\r" else "LF" if c == "\n" else c for c in bad)
-            raise LaunchError(
-                "Argument %d contains %s, which cannot pass safely through %s (a Windows .cmd shim). "
-                "Leave that character out, or type it inside the session instead."
-                % (i + 1, shown, os.path.basename(str(exe_path))), 2)
+    """Refuse arguments that cannot pass safely through a .cmd/.bat shim (3.1; ublib.proc.check_cmd_args)."""
+    try:
+        proc.check_cmd_args(exe_path, args)
+    except proc.UnsafeArgument as exc:
+        raise LaunchError("%s. Leave that character out, or type it inside the session instead." % exc, 2)
 
 
 def run_child(argv, env):
@@ -343,14 +487,18 @@ def run_child(argv, env):
     Ctrl+C reaches the child directly (same console); the launcher keeps waiting so the child decides how to exit,
     and cleanup still runs afterwards."""
     try:
-        proc = subprocess.Popen(argv, env=env)
+        child = subprocess.Popen(argv, env=env)
     except OSError as exc:
         raise LaunchError("Could not start %s: %s" % (argv[0], exc), 1)
-    while True:
-        try:
-            return proc.wait()
-        except KeyboardInterrupt:
-            continue
+    _CHILD.append(child)
+    try:
+        while True:
+            try:
+                return child.wait()
+            except KeyboardInterrupt:
+                continue
+    finally:
+        _CHILD.remove(child)
 
 
 def _scrubbed(env, names):
@@ -372,11 +520,11 @@ def launch_claude(opts, args, environ=None):
     home = ub_home(environ)
     cfg = load_config(home)
     token_var_name = token_env_for(cfg, "claude", provider)
-    token = environ.get(token_var_name)
+    token = proc._env_get(environ, token_var_name)  # in any letter case on Windows, as detection reads it
     if not token:
         raise LaunchError("Set %s first (see docs/FAMILIES.md)" % token_var_name, 2)
-    region = opts.get("region") or cfg.get("region") or "global"
-    settings_env = provider_settings_env(cfg, provider, opts.get("tier") or "default", region)
+    settings_env = provider_settings_env(cfg, provider, opts.get("tier") or "default", opts.get("region"))
+    region = opts.get("region") or cfg.get("region") or "global"  # of the Z.ai MCP endpoint (--zai-mcp)
     token_var = ((cfg.get("providers") or {}).get(provider) or {}).get("token_var") or "ANTHROPIC_AUTH_TOKEN"
     exe = resolve_tool("claude", environ)
     if not exe:
@@ -391,8 +539,8 @@ def launch_claude(opts, args, environ=None):
     child_env = _scrubbed(child_env, ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"])
 
     tmp_dir = home / "tmp"
-    settings_file = None
-    mcp_file = None
+    sweep_stale_secret_files(tmp_dir)
+    guard_secret_files()
     try:
         payload = dict(settings_env)
         payload[token_var] = token
@@ -405,8 +553,7 @@ def launch_claude(opts, args, environ=None):
         check_cmd_args(exe, argv[1:])
         return run_child(argv, child_env)
     finally:
-        remove_quietly(mcp_file)
-        remove_quietly(settings_file)
+        remove_secret_files()
 
 
 def launch_codex(opts, args, environ=None):
@@ -419,7 +566,7 @@ def launch_codex(opts, args, environ=None):
     home = ub_home(environ)
     cfg = load_config(home)
     token_var_name = token_env_for(cfg, "codex", provider)
-    if not environ.get(token_var_name):
+    if not proc._env_get(environ, token_var_name):  # in any letter case on Windows, as detection reads it
         raise LaunchError("Set %s first (see docs/FAMILIES.md)" % token_var_name, 2)
     codex_home = home / "codex-homes" / provider
     if not (codex_home / "config.toml").is_file():
@@ -432,10 +579,10 @@ def launch_codex(opts, args, environ=None):
     child_env = dict(environ)
     # The user's own Codex home, so the kit's native gpt backend inside this session still uses ~/.codex (or the
     # user's CODEX_HOME) and never this provider home.
-    own = _env_get(environ, "CODEX_HOME") or ""
+    own = proc._env_get(environ, "CODEX_HOME") or ""
     try:
         if own and Path(own).expanduser().resolve().is_relative_to(home / "codex-homes"):
-            own = _env_get(environ, "UB_USER_CODEX_HOME") or ""
+            own = proc._env_get(environ, "UB_USER_CODEX_HOME") or ""
     except (AttributeError, OSError, ValueError):
         pass
     child_env = _scrubbed(child_env, ["CODEX_HOME", "UB_USER_CODEX_HOME"])
@@ -600,7 +747,9 @@ def main(argv=None):
 #   {{UB_HOME_SH}} {{PY_SH}}    POSIX paths, escaped for single quotes
 #   {{UB_HOME_WIN}} {{PY_WIN}}  Windows paths (backslashes) for cmd.exe double quotes
 #   {{UB_HOME_PS}} {{PY_PS}}    Windows paths escaped for PowerShell single quotes
-# Output files: <bin>/<name> (LF, mode 0755), <bin>/<name>.cmd (CRLF), <bin>/<name>.ps1 (CRLF).
+#   {{UTF8}}         1 when UB_HOME or the Python path is not ASCII (the .cmd then switches to code page 65001), else 0
+# Output files: <bin>/<name> (LF, mode 0755), <bin>/<name>.cmd (CRLF), <bin>/<name>.ps1 (CRLF), all UTF-8; a .ps1
+# holding a non-ASCII path starts with a BOM (launcher_bytes).
 # Codex home templates use {{BASE_URL}} and {{REGION}} only; zai-mcp.json.tpl uses {{ZAI_MCP_BASE}} and
 # {{ZAI_API_KEY}} (filled only at launch time, into a 0600 temp file).
 
@@ -687,6 +836,8 @@ def render_launchers(name, launch_args, ub_home_dir=None, python_exe=None):
         "PY_WIN": str(py).replace("/", "\\"),
         "UB_HOME_PS": _sq_ps(str(home).replace("/", "\\") if IS_WINDOWS else home.as_posix()),
         "PY_PS": _sq_ps(str(py).replace("/", "\\") if IS_WINDOWS else py.as_posix()),
+        # the .cmd reads its path lines as UTF-8 (code page 65001) when a path is not ASCII (launcher.cmd.tpl)
+        "UTF8": "0" if (str(home) + str(py)).isascii() else "1",
     }
     out = {}
     for suffix, template, newline in LAUNCHER_KINDS:
@@ -695,12 +846,21 @@ def render_launchers(name, launch_args, ub_home_dir=None, python_exe=None):
     return out
 
 
-def _write_atomic(path, text, mode=None):
+def launcher_bytes(fname, text):
+    """A rendered launcher as the bytes install.py writes too: UTF-8, and a .ps1 that holds a non-ASCII path starts
+    with a BOM (Windows PowerShell 5.1 reads a .ps1 without one in the ANSI code page)."""
+    data = text.encode("utf-8")
+    if fname.endswith(".ps1") and not text.isascii():
+        data = b"\xef\xbb\xbf" + data
+    return data
+
+
+def _write_atomic(path, data, mode=None):
     path = Path(path)
     tmp = path.with_name(".%s.tmp-%s" % (path.name, secrets.token_hex(4)))
     try:
-        with open(str(tmp), "w", encoding="ascii", newline="") as f:
-            f.write(text)
+        with open(str(tmp), "wb") as f:
+            f.write(data)
         if mode is not None and not IS_WINDOWS:
             os.chmod(str(tmp), mode)
         os.replace(str(tmp), str(path))
@@ -718,7 +878,7 @@ def write_launchers(bin_dir, name, launch_args, ub_home_dir=None, python_exe=Non
     for fname, text in render_launchers(name, launch_args, ub_home_dir, python_exe).items():
         is_sh = not fname.endswith((".cmd", ".ps1"))
         mode = (stat.S_IRWXU | stat.S_IRGRP | stat.S_IXGRP | stat.S_IROTH | stat.S_IXOTH) if is_sh else None
-        written.append(_write_atomic(bin_dir / fname, text, mode))
+        written.append(_write_atomic(bin_dir / fname, launcher_bytes(fname, text), mode))
     return written
 
 
@@ -727,10 +887,9 @@ def render_codex_home(provider, region="global"):
     if provider not in CODEX_HOME_BASE_URL:
         raise LaunchError("no Codex home template for provider %r" % provider, 2)
     urls = dict(CODEX_HOME_BASE_URL[provider])
-    try:  # [U-33] families.json providers.<p>.codex_base_url (a URL, or {region: URL}) overrides the built-in URL
-        over = ((load_config().get("providers") or {}).get(provider) or {}).get("codex_base_url")
-    except Exception:  # noqa: BLE001 - no readable config: the built-in URLs
-        over = None
+    # [U-33] families.json providers.<p>.codex_base_url (a URL, or {region: URL}) overrides the built-in URL; a
+    # families.json that cannot be read raises, so the Codex home is never silently rendered without the override
+    over = ((load_config().get("providers") or {}).get(provider) or {}).get("codex_base_url")
     if isinstance(over, str) and over.strip():
         urls[region] = over.strip()
     elif isinstance(over, dict):
@@ -746,7 +905,7 @@ def write_codex_home(home_dir, provider, region="global"):
     """Write <home_dir>/config.toml (creating home_dir); return its path."""
     home_dir = Path(home_dir)
     home_dir.mkdir(parents=True, exist_ok=True)
-    return _write_atomic(home_dir / "config.toml", render_codex_home(provider, region))
+    return _write_atomic(home_dir / "config.toml", render_codex_home(provider, region).encode("utf-8"))
 
 
 def render_zai_mcp(token, region="global"):

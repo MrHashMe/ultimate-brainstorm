@@ -18,7 +18,7 @@
      "pitch",
      "mechanism",
      "cluster",
-     "origin",
+     "aliases",
      "gates",
      "scores",
      "fails_if",
@@ -43,9 +43,12 @@
      "cluster": {
       "type": "string"
      },
-     "origin": {
-      "type": "string",
-      "description": "human, human-mixed, ai-mixed or the family label from the FAMILY MAP"
+     "aliases": {
+      "type": "array",
+      "description": "the source idea IDs merged into this idea, exactly as written (QA-01, QB-07, H-2, HP-1)",
+      "items": {
+       "type": "string"
+      }
      },
      "gates": {
       "type": "object",
@@ -86,6 +89,8 @@
         },
         "score": {
          "type": "integer",
+         "minimum": 1,
+         "maximum": 5,
          "description": "1-5"
         }
        }

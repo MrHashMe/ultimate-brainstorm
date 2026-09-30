@@ -17,7 +17,7 @@
      "pitch",
      "mechanism",
      "cluster",
-     "origin",
+     "aliases",
      "gates",
      "scores",
      "fails_if",
@@ -41,8 +41,11 @@
      "cluster": {
       "type": "string"
      },
-     "origin": {
-      "type": "string"
+     "aliases": {
+      "type": "array",
+      "items": {
+       "type": "string"
+      }
      },
      "gates": {
       "type": "object",

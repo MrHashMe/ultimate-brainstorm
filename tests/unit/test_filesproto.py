@@ -189,7 +189,9 @@ class WriteTests(unittest.TestCase):
         self.assertFalse(os.path.exists(self.root))
 
     def test_structural_errors(self):
-        self.assertEqual(filesproto.structural_errors(["duplicate FILE block a.md: the last copy wins"]), [])
+        self.assertEqual(filesproto.structural_errors(["duplicate STATUS block: the last copy wins"]), [])
+        dup = "duplicate FILE block a.md (ambiguous framing: the path is printed twice)"
+        self.assertEqual(filesproto.structural_errors([dup]), [dup])
         self.assertEqual(len(filesproto.structural_errors(["FILE block x.md has no END FILE marker"])), 1)
 
     def test_no_blocks(self):

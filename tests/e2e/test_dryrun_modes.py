@@ -67,7 +67,7 @@ class DryRunModes(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         paths.require(paths.UB_PY, paths.PIPELINE_JSON, owner="B3")
-        paths.require(os.path.join(paths.SCRIPTS, "ublib", "stubs.py"), paths.FAMILY_PY, owner="B2/B4")
+        paths.require(os.path.join(paths.HARNESS, "stubs.py"), paths.FAMILY_PY, owner="B2/B4")
         cls.kit_before = fsnap.snapshot(paths.SK)
         results = e2elib.parallel([lambda m=m: _run_mode(m) for m in MODES])
         cls.results = dict(zip(MODES, results))

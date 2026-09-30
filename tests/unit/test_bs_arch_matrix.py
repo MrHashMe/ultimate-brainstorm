@@ -74,21 +74,31 @@ class ArchMatrixTests(unittest.TestCase):
         self.assertEqual(c["A"]["judges"], ["claude", "kimi"])   # gpt wrote A
         self.assertEqual(c["B"]["judges"], ["claude", "gpt"])
         self.assertEqual(c["C"]["judges"], ["gpt", "kimi"])
-        self.assertEqual(c["A"]["score"], 4.0)
-        self.assertEqual(c["C"]["score"], 2.0)                  # claude's own 5s are ignored
+        # per-judge centering: claude's mean is 4, gpt's 3.33, kimi's 3.67 (panel 3.67). A = (claude 4 - 0.33 +
+        # kimi 4 + 0) / 2; C = (gpt 2 + 0.33 + kimi 2 + 0) / 2, and claude's own 5s are ignored
+        self.assertEqual(c["A"]["score"], 3.83)
+        self.assertEqual(c["C"]["score"], 2.17)
+        self.assertEqual(m["judge_offsets"], {"claude": 0.33, "gpt": -0.33, "kimi": 0.0})
         self.assertEqual(m["leader"], "A")
-        self.assertEqual(m["leader_status"], "clear")
+        # every judge favours its own family's candidate here (gpt gives its A a 5 where the others give 4); gpt
+        # judges the runner-up B but not A, so its centering tilts the A-B comparison: the lead is not clear
+        self.assertEqual(m["leader_status"], "close-call")
+        self.assertEqual(dict((g["judge"], g["flag"]) for g in m["own_candidate_gap"]),
+                         {"claude": True, "gpt": True, "kimi": True})
         self.assertEqual(c["A"]["range"], [1, 1])
         self.assertEqual([x["id"] for x in m["criteria"]], CRITERIA)
         self.assertEqual(sum(x["weight"] for x in m["criteria"]), 100)
         self.assertEqual(set(c["A"]), {"label", "score", "rank", "range", "veto", "veto_reasons", "means", "judges",
                                        "disagreements"})
-        self.assertEqual(set(m), {"criteria", "candidates", "leader", "leader_status", "steal", "warnings"})
+        self.assertEqual(set(m), {"criteria", "candidates", "leader", "leader_status", "steal", "warnings", "design",
+                                  "judge_offsets", "self_judged", "own_candidate_gap", "own_candidate_pairs"})
+        self.assertEqual(m["design"], {"confounded": False, "judges": "eligible"})  # every pair shares a judge
         self.assertEqual(m["warnings"], [])
+        self.assertEqual(m["self_judged"], [])
         # the markdown never names the authors' families
         for fam in ("claude", "gpt", "kimi"):
             self.assertNotIn(fam, md)
-        self.assertIn("Leader: A (clear", md)
+        self.assertIn("Leader: A (close-call: a judge that favours its own family's candidate", md)
         self.assertIn("| QG1 | Reliability | 30 |", md)
         self.assertIn("| time_to_mvp | Time to MVP | 10 |", md)
 
@@ -122,7 +132,8 @@ class ArchMatrixTests(unittest.TestCase):
         self.assertEqual(c["B"]["veto_reasons"], ["breaks HC-1", "no offline mode"])
         self.assertEqual(c["C"]["veto"], "flagged")             # 1 of 3 eligible
         self.assertEqual(c["C"]["veto_reasons"], ["cost"])
-        self.assertEqual(c["D"]["veto"], "none")                # kimi's own-candidate veto does not count
+        self.assertEqual(c["D"]["veto"], "flagged")             # kimi vetoes its own candidate: admission against
+        self.assertEqual(c["D"]["veto_reasons"], ["vendor lock"])  # interest, so it counts (finding 81)
         self.assertEqual(m["leader"], "C")                      # B scores higher but is excluded
         self.assertIn("- B: EXCLUDED (2 judges)", md)
         self.assertIn("- C: FLAGGED (1 judge)", md)
@@ -178,6 +189,14 @@ class ArchMatrixTests(unittest.TestCase):
         self.assertTrue(any("unknown candidate 'Z'" in w for w in m["warnings"]))
         self.assertIn("- from B: Outbox pattern (exactly-once)", md)
 
+    def test_labels_are_compared_as_the_cover_compares_them(self):
+        # a host sub-agent's file keeps the label as written; the contract accepted "B" + U+200B as candidate B
+        self.cmap({"A": "gpt", "B": "kimi"})
+        self.judge("claude", [cand("A", 4), cand("B​", 2)])
+        m, c, _md = self.matrix()
+        self.assertEqual(c["B"]["judges"], ["claude"])
+        self.assertFalse(any("unknown candidate" in w for w in m["warnings"]))
+
     def test_bad_scores_and_weights_warn(self):
         self.drivers([{"id": "QG1", "name": "R", "weight": 40}, {"id": "QG2", "name": "P", "weight": 20}])
         self.cmap({"A": "gpt", "B": "kimi"})
@@ -193,19 +212,83 @@ class ArchMatrixTests(unittest.TestCase):
         self.assertIn("unknown candidate 'X'", w)
         self.assertNotIn("QG1", c["A"]["means"])
 
+    def test_leniency_offset_is_not_a_clear_lead(self):
+        # findings 46/81: two families judge each other's candidates, so A and C (gpt) are scored only by claude and
+        # B (claude) only by gpt. Both judges rank A first on their own scale; gpt is one point more lenient. The
+        # raw means made B the leader, "clear"
+        self.cmap({"A": "gpt", "B": "claude", "C": "gpt"})
+        self.judge("claude", [cand("A", 3, overrides={"QG1": 4}), cand("B", 3), cand("C", 3)])
+        self.judge("gpt", [cand("A", 4, overrides={"QG1": 5}), cand("B", 4), cand("C", 4)])
+        m, c, md = self.matrix()
+        self.assertEqual(m["leader"], "A")
+        self.assertNotEqual(m["leader_status"], "clear")
+        self.assertEqual(m["leader_status"], "confounded")  # A and runner-up B share no eligible judge
+        self.assertEqual(m["design"], {"confounded": True, "judges": "all (balanced own-family judges)"})
+        self.assertEqual(c["B"]["score"], c["C"]["score"])  # the +1 leniency cancels
+        self.assertEqual(m["judge_offsets"], {"claude": -0.5, "gpt": 0.5})
+        self.assertTrue(any(w.startswith("confounded design: A and B") for w in m["warnings"]))
+        self.assertIn("Leader: A (confounded", md)
+
+    def test_extreme_disjoint_case(self):
+        # the audit's case: claude A=3 C=2 B=1, gpt A=5 C=5 B=4; both judges rank B last
+        self.cmap({"A": "gpt", "B": "claude", "C": "gpt"})
+        self.judge("claude", [cand("A", 3), cand("B", 1), cand("C", 2)])
+        self.judge("gpt", [cand("A", 5), cand("B", 4), cand("C", 5)])
+        m, c, _md = self.matrix()
+        self.assertEqual(c["B"]["rank"], 3)
+        self.assertEqual(m["leader"], "A")
+
+    def test_two_vetoes_exclude_with_two_families(self):
+        # finding 81: with one eligible judge per candidate, EXCLUDED could never fire; the author family's veto
+        # of its own candidate is an admission against interest and counts
+        self.cmap({"A": "gpt", "B": "claude"})
+        self.judge("claude", [cand("A", 5, True, "breaks HC-1"), cand("B", 3)])
+        self.judge("gpt", [cand("A", 5, True, "cannot meet QAS-02"), cand("B", 3)])
+        m, c, _md = self.matrix()
+        self.assertEqual(c["A"]["veto"], "excluded")
+        self.assertEqual(m["leader"], "B")
+
+    def test_exact_tie_is_a_close_call(self):
+        self.cmap({"A": "gpt", "B": "kimi"})
+        self.judge("claude", [cand("A", 4), cand("B", 4)])
+        m, c, md = self.matrix()
+        self.assertEqual(c["A"]["range"], [1, 1])
+        self.assertEqual(m["leader_status"], "close-call")
+
+    def test_missing_criterion_leaves_w_for_everyone(self):
+        self.cmap({"A": "gpt", "B": "kimi"})
+        b = cand("B", 4)
+        b["scores"] = [s for s in b["scores"] if s["criterion"] != "time_to_mvp"]
+        self.judge("claude", [cand("A", 4, overrides={"time_to_mvp": 1}), b])
+        m, c, _md = self.matrix()
+        self.assertIn("criteria without an eligible judge's score for every ranked candidate are left out of W: "
+                      "time_to_mvp", m["warnings"])
+        self.assertEqual(c["A"]["score"], c["B"]["score"])  # A's weak time_to_mvp does not count for A alone
+
+    def test_fallback_judge_counts_as_its_family(self):
+        # judge_gpt.out.json was written by a claude fallback: its score of the claude candidate is an own score
+        self.cmap({"A": "claude", "B": "kimi"})
+        self.judge("gpt", [cand("A", 5), cand("B", 3)])
+        with open(os.path.join(self.arch, "review", "judge_gpt.out.json.meta.json"), "w") as f:
+            json.dump({"family": "claude", "status": "ok"}, f)
+        self.judge("kimi", [cand("A", 3), cand("B", 4)])
+        m, c, _md = self.matrix()
+        self.assertEqual(c["A"]["judges"], ["kimi"])
+        self.assertIn("the gpt judge seat was answered by claude (fallback): scored as claude", m["warnings"])
+
     def test_cli_exit_codes(self):
         env = dict(os.environ, PYTHONIOENCODING="utf-8")
         cmd = [sys.executable, os.path.join(_SCRIPTS, "bs.py"), "arch-matrix", self.run]
-        p = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env)
+        p = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env, timeout=300)
         self.assertEqual(p.returncode, 4)  # map.json missing
         self.cmap({"A": "gpt", "B": "kimi"})
-        p = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env)
+        p = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env, timeout=300)
         self.assertEqual(p.returncode, 4)  # no judge outputs
         self.judge("claude", [cand("A", 4), cand("B", 3)])
-        p = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env)
+        p = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env, timeout=300)
         self.assertEqual(p.returncode, 0, p.stderr)
         self.drivers([])
-        p = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env)
+        p = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env, timeout=300)
         self.assertEqual(p.returncode, 5)
 
 

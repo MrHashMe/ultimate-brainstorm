@@ -111,18 +111,28 @@ setting `CODEX_HOME` yourself: a `CODEX_HOME` set in a shell stays set for every
 launchers also check the key and tell the kit which family the host is.
 
 Your normal `~/.claude/settings.json` and `~/.codex/config.toml` are never changed; the launchers pass their
-settings for that one session. Behind Z.ai or Moonshot, Claude Code's own web search may not work, so the kit gives
-the research jobs to another family. `setup-glm --zai-mcp` only adds Z.ai web tools to your interactive `claude-glm`
-session; the pipeline's research jobs never use them [U-19].
+settings for that one session. `claude-glm` and `claude-kimi` pick the endpoint and models from
+`~/.ultimate-brainstorm/families.json` by the same rule as the pipeline's calls to that provider. Behind Z.ai or
+Moonshot, Claude Code's own web search may not work, so the kit gives the research jobs to another family.
+`setup-glm --zai-mcp` only adds Z.ai web tools to your interactive `claude-glm` session; the pipeline's research jobs
+never use them [U-19].
 
 ### Terminal only
 
 `~/.ultimate-brainstorm/bin/ub run "<topic>"` (PowerShell: `& "$HOME\.ultimate-brainstorm\bin\ub.cmd" run "<topic>"`)
-runs the whole pipeline in a terminal and asks the questions there. It has no time limits, so it is the most robust
-choice for long unattended runs. Continue a stopped run with `ub run --continue`.
+runs the whole pipeline in a terminal and asks the questions there. The words after `run` are the topic; for text with
+quotes, `$` or backticks, write it to a file and use `ub run --text-file <file>`. It has no time limits, so it is the
+most robust choice for long unattended runs. Continue a stopped run with `ub run --continue`. While the terminal waits
+for your answer it does not hold the run, so you can also answer from an agent; the terminal then does not apply its
+own late answer and shows where the run is.
 
 ## Moving between hosts
 
 All state lives in `brainstorm/<run>/`. You can start in Claude Code and type `continue` in Codex later (or the other
 way round). The kit re-checks which model families are available; if one has disappeared, it gives that seat to
-another family and notes it as PROVISIONAL in the run files.
+another family and notes it as PROVISIONAL in the run files. Jobs that have not run yet are rebuilt for the new seats.
+
+One session drives a run at a time. A second session that runs a command meanwhile gets the card "another session is
+driving this run" and retries by itself; nothing it asked for is lost. A host task (an interview, a batch of
+sub-agent jobs) belongs to the session it was handed to; `continue` in another session, or `ub run --continue` in a
+terminal, takes it over.

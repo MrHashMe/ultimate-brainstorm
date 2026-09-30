@@ -126,10 +126,10 @@ class GoldenSequenceTests(tl.EngineTestCase):
 class PredicateTests(tl.EngineTestCase):
     def test_when_syntax(self):
         ctx = self.make_ctx(mode="deep", variant="growth", autopilot="hands-on")
-        self.assertTrue(registry.eval_when(ctx, ["deep", "hands_on", "variant_in:software,growth"]))
+        self.assertTrue(registry.eval_when(ctx, ["deep", "hands_on"]))
         self.assertFalse(registry.eval_when(ctx, ["!deep"]))
         self.assertTrue(registry.eval_when(ctx, ["mode_is:quick|deep"]))
-        self.assertTrue(registry.eval_when(ctx, ["autopilot_is:hands-on", "not_full_auto", "privacy_web"]))
+        self.assertTrue(registry.eval_when(ctx, ["hands_on", "not_full_auto"]))
         self.assertTrue(registry.eval_when(ctx, ["build_type:system"]))
         self.assertFalse(registry.eval_when(ctx, ["repo_variant"]))  # no .git in the project
         os.makedirs(os.path.join(self.project, ".git"))
@@ -179,8 +179,10 @@ class FanoutTests(tl.EngineTestCase):
     def test_counts_for_plan(self):
         ctx = self.make_ctx()
         self.assertEqual(registry.fanout_count(ctx, "strategies"), (4, 4))
-        self.assertEqual(registry.fanout_count(ctx, "arch_authors"), (3, 4))
+        self.assertEqual(registry.fanout_count(ctx, "arch_authors"), (3, 3))
         self.assertEqual(registry.fanout_count(ctx, "review_lenses"), (2, 2))
+        self.assertEqual(registry.fanout_count(self.make_ctx(variant="research", run_name="r"), "review_lenses"),
+                         (1, 1))  # an approach build reviews one lens (#15: the counts were 2 and 4)
 
 
 def dispatch_step(fanout="probe", min_ok=1, after=None):
@@ -268,10 +270,11 @@ class DispatchTests(tl.EngineTestCase):
     def test_budget_gate_guided_and_blocked_full_auto(self):
         ctx = self.make_ctx(deps=tl.FakeDeps(batch=tl.FakeBatch()))
         ctx.state["budget"]["max_calls"] = 1
-        ctx.state["counters"]["launched"] = 1
+        ctx.write("logs/calls.jsonl", '{"id": "0.1-ping-claude", "requests": 1}\n')
         card = pipeline.advance(ctx, [dispatch_step()], 5)
         self.assertEqual(card["type"], "HUMAN")
         self.assertEqual(card["gate"], "GB")
+        self.assertIn("Requests sent: 1 of 1", card["show"])
         card = pipeline.answer_gate(ctx, [dispatch_step()], "GB", {"reply": "raise to 50"})
         self.assertIn(card["type"], ("AUTO", "DONE"))  # answer continues with wait 0
         card = pipeline.advance(ctx, [dispatch_step()], 5)
@@ -279,10 +282,12 @@ class DispatchTests(tl.EngineTestCase):
         self.assertEqual(ctx.state["budget"]["max_calls"], 50)
         fa = self.make_ctx(autopilot="full-auto", run_name="fa", deps=tl.FakeDeps(batch=tl.FakeBatch()))
         fa.state["budget"]["max_calls"] = 1
-        fa.state["counters"]["launched"] = 1
+        fa.write("logs/calls.jsonl", '{"id": "0.1-ping-claude", "requests": 1}\n')
         card = pipeline.advance(fa, [dispatch_step()], 5)
         self.assertEqual(card["type"], "BLOCKED")
-        self.assertIn("call cap", card["say"])
+        self.assertIn("request cap", card["say"])
+        self.assertTrue(card["fix"][0].startswith('%s budget "%s" --max-calls ' % (
+            cards.runner_of(fa.state), textio.to_posix(fa.run_dir))), card["fix"])
 
     def test_host_batch_card(self):
         ctx = self.make_ctx(deps=tl.FakeDeps(batch=tl.FakeBatch()))
@@ -459,10 +464,12 @@ class InProcessRunTests(tl.EngineTestCase):
 
         def g13(card):
             seen["g13"] += 1
-            return {"reply": "changes: tighten section 7"} if seen["g13"] == 1 else {"reply": "approve"}
+            if seen["g13"] == 2:  # `changes:` starts a paid round with the user's own words: read back (4.12)
+                assert card["error"].startswith("I read your reply as: change round 1 of 2"), card["error"]
+            return {"reply": {1: "changes: tighten section 7", 2: "yes"}.get(seen["g13"], "approve")}
         card = tl.drive(ctx, answers={"G13": g13})
         self.assertEqual(card["type"], "DONE", card.get("say"))
-        self.assertEqual(seen["g13"], 2)
+        self.assertEqual(seen["g13"], 3)
         self.assertEqual(ctx.state["user_changes"], "tighten section 7")
         self.assertTrue(ctx.exists("11_PROPOSAL/review/resolution.md"))
 

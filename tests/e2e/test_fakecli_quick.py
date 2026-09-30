@@ -58,6 +58,15 @@ class FakeCliQuick(unittest.TestCase):
             self.assertTrue(len(used) >= 2, "only %s answered model calls" % sorted(used))
             ok = [c for c in e2elib.ok_calls(run) if c.get("backend") != "host"]
             self.assertTrue(ok)
+            # the blind quick screen (finding 51): both quick generator families scored the curated lines through
+            # their real backends, and quick-pick took the finalists from those scores
+            with open(os.path.join(run, "quick", "finalists.json"), encoding="utf-8") as f:
+                fin = json.load(f)
+            self.assertEqual(fin["scoring"], "blind", fin.get("notes"))
+            self.assertEqual(sorted(j["label"] for j in fin["judges"]), sorted(rj["seats"]["screen_judges"]))
+            # the two generator families, plus a third family (which generated nothing) as a neutral judge
+            self.assertEqual(rj["seats"]["screen_judges"], [rj["seats"]["host"]] + rj["seats"]["others"][:2])
+            self.assertGreaterEqual(len(rj["seats"]["screen_judges"]), 2)
 
             for e in model:
                 argv = [str(a) for a in e.get("argv") or []]

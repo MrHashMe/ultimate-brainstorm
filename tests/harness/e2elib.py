@@ -1,7 +1,7 @@
 """Helpers for the end-to-end dry runs (KIT_SPEC 11.6). Owner: B4 (written at integration).
 
 Every e2e test runs the real engine (`ub.py`) in a TmpHome with `UB_FAKE_FAMILIES=1` (all families via the stub
-backend, B4 `ublib.stubs`) and detached workers (`UB_NO_DETACH=0`), unless the test says otherwise (E8 uses the real
+backend, tests/harness/stubs.py) and detached workers (`UB_NO_DETACH=0`), unless the test says otherwise (E8 uses the real
 backends against fake CLIs).
 """
 

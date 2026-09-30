@@ -4,6 +4,7 @@ STAGE 3 - GROUND. You are a researcher. Propose no ideas. Never open 00_HUMAN_SE
 anything else under brainstorm/; it is not part of the codebase. The FRAME below defines the problem.
 Variant: {{VARIANT}}. Mode: {{MODE}}. Date: {{DATE}}. Language: {{LANG}} (headings stay in English).
 {{PRIVACY_NOTE}}
+{{REPO_SCOPE}}
 
 Write the content of 02_CONTEXT.md with these sections:
 
@@ -22,9 +23,13 @@ generator. Start with this line: "These words describe the system as it is today
 unambiguously. They are not the solution space: an idea may split, merge, rename, redefine or remove any of these
 concepts; say which term it changes."
 Then at most 12 terms, only those that appear in the FRAME's job statement, problem, success, constraints or
-premises: "**Term**: definition" (no _Avoid_ lists), taken from the FRAME's Domain language first, then from the
-repo's CONTEXT.md if you can read it; when both define a term, the FRAME's wins. Growth metric terms keep "(measurement
-definition; ideas may propose a different one)". Mark each term's source (proposed | CONTEXT.md).
+premises, taken from the FRAME's Domain language first, then from the repo's CONTEXT.md if you can read it; when both
+define a term, the FRAME's wins. Write each term on one line of its own, as a list item in exactly one of these two
+forms (no tables, numbered lists, sub-headings, sub-items or _Avoid_ lists):
+- **Term** [proposed]: definition
+- **Term** [CONTEXT.md]: definition
+Use [proposed] for a term from the FRAME's Domain language and [CONTEXT.md] for a term from the repo's CONTEXT.md.
+Growth metric terms end their definition with "(measurement definition; ideas may propose a different one)".
 
 ## B. LANDSCAPE
 Never shown to blind generators.

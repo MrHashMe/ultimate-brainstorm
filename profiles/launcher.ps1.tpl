@@ -4,5 +4,10 @@
 # No secret is stored here; API keys are read from your environment at launch time.
 if (-not $env:UB_HOME) { $env:UB_HOME = '{{UB_HOME_PS}}' }
 $ubLaunch = Join-Path $env:UB_HOME 'kit\profiles\launch.py'
-& '{{PY_PS}}' $ubLaunch {{LAUNCH_ARGS}} -- @args
+$ubPython = '{{PY_PS}}'
+if (-not (Test-Path -LiteralPath $ubPython -PathType Leaf)) {
+    [Console]::Error.WriteLine("{{NAME}}: Python not found at $ubPython; run the installer again")
+    exit 9009
+}
+& $ubPython $ubLaunch {{LAUNCH_ARGS}} -- @args
 exit $LASTEXITCODE

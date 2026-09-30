@@ -1,5 +1,7 @@
-# CI (KIT_SPEC 11.8): every suite on 3 OSes x Python {3.9 where available, 3.12, 3.14}, plus the Windows bootstrap
-# jobs in Git Bash and PowerShell 5.1, plus an optional `claude plugin validate` job [U-17].
+# CI (KIT_SPEC 11.8): every suite on 3 OSes x Python {3.9 where available, 3.12, 3.14}, plus an optional
+# `claude plugin validate` job [U-17]. The Windows rows also run the bootstrap tests in Git Bash and Windows PowerShell 5.1
+# (tests/integration/test_bootstrap.py finds both shells itself). release.yml calls this workflow on the tagged commit
+# before it builds anything (workflow_call). Every action is pinned to a full commit SHA; the tag is in the comment.
 name: ci
 
 on:
@@ -7,14 +9,17 @@ on:
     branches: ["main"]
   pull_request:
   workflow_dispatch:
+  workflow_call:
 
-permissions:
-  contents: read
+permissions: {}
 
 jobs:
   test:
     name: tests (${{ matrix.os }}, py ${{ matrix.python }})
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    permissions:
+      contents: read
     strategy:
       fail-fast: false
       matrix:
@@ -29,59 +34,35 @@ jobs:
       PYTHONIOENCODING: utf-8
     steps:
       - name: Check out
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: ${{ matrix.python }}
           allow-prereleases: true
 
       - name: Run every suite
-        run: python tools/ci.py all
-
-  windows-git-bash:
-    name: bootstrap install.sh (Windows, Git Bash)
-    runs-on: windows-latest
-    env:
-      UB_CI_STRICT: "1"
-    defaults:
-      run:
-        shell: bash
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-      - name: install.sh bootstrap test
-        run: python tools/ci.py integration --pattern test_bootstrap.py
-
-  windows-powershell:
-    name: bootstrap install.ps1 (Windows PowerShell 5.1)
-    runs-on: windows-latest
-    env:
-      UB_CI_STRICT: "1"
-    defaults:
-      run:
-        shell: powershell
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-      - name: install.ps1 bootstrap test
-        run: python tools/ci.py integration --pattern test_bootstrap.py
+        # --timeout bounds each suite (a silent hang is killed with its process tree); timeout-minutes bounds the job
+        run: python tools/ci.py all --timeout 1500
 
   claude-plugin-validate:
     name: claude plugin validate (optional) [U-17]
     runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
     continue-on-error: true
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: "22"
-      - name: Install Claude Code
-        run: npm install -g @anthropic-ai/claude-code
+      - name: Install Claude Code (the version install/targets.json was verified with)
+        run: npm install -g @anthropic-ai/claude-code@2.1.280
       - name: Validate the plugin
         run: claude plugin validate . --strict
