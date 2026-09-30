@@ -24,6 +24,8 @@ DRIVER_LOCK = "_driver"     # C1: .ub/jobs/_driver.lock, the kernel byte lock of
 LEGACY_STALE_S = 120        # proc.LEGACY_DRIVER_STALE_S: a live 2.0.x driver with an older beat waits at a gate
 LEGACY_BEAT_S = 30          # this kit's holder record: its 2.0.3 heartbeat is refreshed this often (#79)
 CLAIM_WAIT_S = 2.5          # a claim retries a lock.json record it cannot move aside (held open) for this long
+ABSENT_RECHECK_S = 0.05     # a record of this process found missing is looked for once more after this long: a 2.0.3
+                            # driver that only checked it (its _move_stale) moves it aside and puts it back at once
 STOP_FILE = "STOP"          # C3: <run>/.ub/STOP, written by `ub stop`
 MOVE_ATTEMPTS = 8           # a move that meets a sharing violation is retried for about 2.5 s
 # Windows without long paths (#98): a file path may have 259 characters, a folder 247. Past the run folder, a run
@@ -736,7 +738,13 @@ class DriverLock(object):
                 return False
             aside = "%s.beat-%s" % (self.info_path, os.urandom(4).hex())
             try:
-                textio._replace_with_retry(self.info_path, aside)
+                try:
+                    textio._replace_with_retry(self.info_path, aside)
+                except FileNotFoundError:
+                    if not self._owned:
+                        raise
+                    time.sleep(ABSENT_RECHECK_S)  # a 2.0.3 driver that only checked it puts it back at once
+                    textio._replace_with_retry(self.info_path, aside)
             except FileNotFoundError:
                 aside = None  # no record yet (announce before a claim), or this process's went away
             except OSError:
@@ -792,6 +800,9 @@ class DriverLock(object):
         if self.held and not self.lost:
             with self._writing:  # never while this process's own beat replaces the record
                 data = self.holder()
+                if not data and self._owned:
+                    time.sleep(ABSENT_RECHECK_S)  # a 2.0.3 driver that only checked it puts it back at once
+                    data = self.holder()
             self.lost = _int(data.get("pid")) != os.getpid() and bool(data or self._owned)
         return not (self.held and self.lost)
 

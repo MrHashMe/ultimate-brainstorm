@@ -440,6 +440,34 @@ class LostRecord(Base):
         self.assertEqual(textio.read_bytes(os.path.join(run, "run.json")), before)
         self.assertEqual(textio.read_json(info), taken[0])
 
+    def probed(self, run, back):
+        """A kit 2.0.3 driver judged this driver's record stale (it stalled), moved it aside to take it over, saw the
+        beat had rewritten it and puts it back (`back`), while this driver waits to look again; or it stays away."""
+        info = os.path.join(run, ".ub", "lock.json")
+        os.replace(info, info + ".stale-test")
+
+        def sleep(_s):
+            if back and not os.path.exists(info):
+                os.replace(info + ".stale-test", info)
+        return mock.patch.object(st, "time", mock.Mock(wraps=time, sleep=sleep))
+
+    def test_a_record_put_back_at_once_is_still_ours(self):
+        """Review 2.1.1: the lock counted as lost in the moment a 2.0.3 driver checked the record, and a command
+        stopped for nothing ("another session took over this run")."""
+        run, lock = self.claimed()
+        with self.probed(run, back=True):
+            self.assertTrue(lock.still_ours())
+        with self.probed(run, back=True):
+            self.assertTrue(lock._write())
+        self.assertTrue(lock.still_ours())
+        self.assertEqual(lock.holder().get("pid"), os.getpid())
+
+    def test_a_record_that_stays_away_is_lost(self):
+        run, lock = self.claimed()
+        with self.probed(run, back=False):
+            self.assertFalse(lock.still_ours())
+        self.assertFalse(os.path.exists(os.path.join(run, ".ub", "lock.json")))
+
     def test_a_driver_that_keeps_its_record_saves(self):
         run, lock = self.claimed()
         ctx = st.Ctx(run, st.load(run), tl.FakeDeps())
