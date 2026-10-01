@@ -54,7 +54,7 @@ from ublib.engine import base_family, seats  # noqa: E402
 from ublib.engine.privacy import fence_data  # noqa: E402
 from ublib.families import vendor_of  # noqa: E402
 
-VERSION = "2.1.0"
+VERSION = "2.1.1"
 NOBODY = ("human", "human-mixed", "ai-mixed", "?", "")  # origins that count as nobody's own
 HUMAN_ORIGINS = ("human", "human-mixed")
 GATES = ("g1", "g2", "g3")

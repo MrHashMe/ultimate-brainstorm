@@ -75,7 +75,7 @@ release archive has no `tests/`, so an installed kit answers only PING in fake m
 
 ## Releasing
 
-`python tools/release.py --version 2.1.0 --out dist/` builds the archives, `SHA256SUMS` and the rendered bootstrap
+`python tools/release.py --version 2.1.1 --out dist/` builds the archives, `SHA256SUMS` and the rendered bootstrap
 shims for the GitHub repository `MrHashMe/ultimate-brainstorm`. A fork passes `--owner <github-user>`; the owner name is
 then replaced only in the archive copy, never in the repository. Pushing a `vX.Y.Z` tag runs the same build in
 `.github/workflows/release.yml` and publishes the GitHub release. The tag must be `v` + VERSION. The release workflow

@@ -1,8 +1,15 @@
-# Changelog 2.1.0
+# Changelog 2.1.1
 
 All notable changes to ultimate-brainstorm are listed here, newest first.
 
-## Unreleased
+## 2.1.1 - 2026-10-01
+
+Bug-fix release: during an upgrade alongside kit 2.0.3, a driver no longer writes over a 2.0.3 driver's takeover of
+its run, and no longer stops for a takeover that did not happen.
+
+Acceptance override: a patch release of the driver lock fixes at the owner's request, before the live acceptance run
+of docs/ACCEPTANCE.md. The fixes pass the offline suites on Linux, macOS and Windows; the checks not yet verified live
+are listed at the end of these notes.
 
 ### Fixed
 

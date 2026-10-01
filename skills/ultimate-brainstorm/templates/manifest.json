@@ -1,6 +1,6 @@
 {
  "schema": 1,
- "kit_version": "2.1.0",
+ "kit_version": "2.1.1",
  "rules": [
   "Line 1 of every .md/.tpl template is '<!-- ub-template: NAME v1 kind=KIND -->'; the engine removes it when rendering.",
   "Isolated-call prompts (every prompts/*.md except GEN-HEADER) have line 2 'Do not load or invoke any skill; this prompt is the whole task.'",

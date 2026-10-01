@@ -9,7 +9,7 @@ from its own planner, `ub plan` (section 0 says how). Anything not confirmed by 
 
 ## 0. The kit (v2)
 
-Everything in this guide is automated by the **ultimate-brainstorm kit v2** (2.1.0). You install it once, type one
+Everything in this guide is automated by the **ultimate-brainstorm kit v2** (2.1.1). You install it once, type one
 command in your agent, and answer about 7 short replies (standard mode, guided): kickoff, frame, gut pick, decision,
 architecture choice, sign-off and handoff. Full-auto needs none after a one-time privacy confirmation.
 Out come a decided idea, an architecture package (`10_ARCHITECTURE/`) and a full proposal (`11_PROPOSAL/PROPOSAL.md`,
@@ -444,7 +444,7 @@ The sections below are the manual route, **without the installer**.
 
 ```text
 # Shell: the kit as a native plugin (Claude Code 2.1.268+) from a local copy or the GitHub repo; this replaces the
-# skill copy below. After a release: claude plugin marketplace add MrHashMe/ultimate-brainstorm@v2.1.0
+# skill copy below. After a release: claude plugin marketplace add MrHashMe/ultimate-brainstorm@v2.1.1
 claude plugin marketplace add <abs path to kit>
 claude plugin install ultimate-brainstorm@ultimate-brainstorm --scope user
 
@@ -492,7 +492,7 @@ Start: `/ultimate-brainstorm standard product "<your topic>"`. Resume later with
 
 ```text
 # Shell: the kit as a native plugin (Codex 0.156+), then restart Codex; this replaces the skill copy below.
-# After a release: codex plugin marketplace add MrHashMe/ultimate-brainstorm@v2.1.0
+# After a release: codex plugin marketplace add MrHashMe/ultimate-brainstorm@v2.1.1
 codex plugin marketplace add <abs path to kit> --json
 codex plugin add ultimate-brainstorm@ultimate-brainstorm --json
 

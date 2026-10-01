@@ -59,7 +59,7 @@ pipeline uses (Compound Engineering, and mattpocock `grilling` + `domain-modelin
 Prefer to read a script before running it? Download it once, check its build provenance, read it, then run that
 same file (the commands are in [docs/INSTALL.md](docs/INSTALL.md#21-one-line-from-github-any-machine)). With the GitHub
 CLI signed in, the scripts and `update` verify the release archive with `gh attestation verify` (the attestation must
-come from the release workflow for that version's tag) before they run anything from it. To pin a version, replace `latest/download` with `download/v2.1.0`.
+come from the release workflow for that version's tag) before they run anything from it. To pin a version, replace `latest/download` with `download/v2.1.1`.
 
 Check everything at any time with `python ~/.ultimate-brainstorm/kit/install/install.py doctor` (Windows:
 `py -3 "$HOME\.ultimate-brainstorm\kit\install\install.py" doctor`).
@@ -84,9 +84,9 @@ Installed from a git clone? `git pull` in the clone, then `python install/instal
 
 | Agent | Commands |
 |---|---|
-| Claude Code (terminal) | `claude plugin marketplace add MrHashMe/ultimate-brainstorm@v2.1.0` then `claude plugin install ultimate-brainstorm@ultimate-brainstorm --scope user` |
-| Codex (terminal) | `codex plugin marketplace add MrHashMe/ultimate-brainstorm@v2.1.0` then `codex plugin add ultimate-brainstorm@ultimate-brainstorm`, then restart Codex |
-| Kimi Code (inside the app) | `/plugins install https://github.com/MrHashMe/ultimate-brainstorm/releases/tag/v2.1.0` then `/reload` |
+| Claude Code (terminal) | `claude plugin marketplace add MrHashMe/ultimate-brainstorm@v2.1.1` then `claude plugin install ultimate-brainstorm@ultimate-brainstorm --scope user` |
+| Codex (terminal) | `codex plugin marketplace add MrHashMe/ultimate-brainstorm@v2.1.1` then `codex plugin add ultimate-brainstorm@ultimate-brainstorm`, then restart Codex |
+| Kimi Code (inside the app) | `/plugins install https://github.com/MrHashMe/ultimate-brainstorm/releases/tag/v2.1.1` then `/reload` |
 | ZCode | Settings > Plugins > add a marketplace (this route is not yet confirmed; the installer's copy route is) |
 
 With this route you add the helper skills yourself; the commands are in [docs/INSTALL.md](docs/INSTALL.md).

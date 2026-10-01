@@ -53,7 +53,7 @@ import tempfile  # noqa: E402
 import time  # noqa: E402
 import urllib.request  # noqa: E402
 
-KIT_VERSION = "2.1.0"
+KIT_VERSION = "2.1.1"
 INSTALL_DIR = os.path.dirname(os.path.abspath(__file__))
 KIT_ROOT = os.path.dirname(INSTALL_DIR)
 _SCRIPTS_DIR = os.path.join(KIT_ROOT, "skills", "ultimate-brainstorm", "scripts")

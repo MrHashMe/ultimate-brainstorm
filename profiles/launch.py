@@ -41,7 +41,7 @@ import sys
 import threading
 from pathlib import Path
 
-KIT_VERSION = "2.1.0"
+KIT_VERSION = "2.1.1"
 IS_WINDOWS = os.name == "nt"
 
 PROFILES_DIR = Path(__file__).resolve().parent

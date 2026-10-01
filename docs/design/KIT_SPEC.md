@@ -7,6 +7,10 @@ Revised 2026-09-26 for kit 2.1.0: the architecture-audit fixes (driver ownership
 validation, ranking, privacy, publishing, installer supply chain). The spec describes the code as it is after them;
 features the audit removed are gone from it, not kept as history.
 
+Revised 2026-10-01 for kit 2.1.1: the driver's `.ub/lock.json` record (6.3) is never rewritten over a kit 2.0.3
+takeover, a record that a 2.0.3 driver only checked is still this driver's, and once a 2.0.3 driver took the run no
+run.json save of this driver writes (C2, `state.LostLock`).
+
 Note for readers of the published repository: the build-time inputs listed below and the `.build/` builder
 notes this spec refers to were local to the original build and are not part of this repository.
 
@@ -498,7 +502,7 @@ Rules for the tree:
 
 ### 3.4 Versioning
 
-The file `VERSION` holds the kit version (`2.1.0` for this revision; the JSON examples in this spec show `2.0.0`). The
+The file `VERSION` holds the kit version (`2.1.1` for this revision; the JSON examples in this spec show `2.0.0`). The
 same string must appear in:
 - every manifest `version`;
 - the SKILL.md `metadata.version`;
@@ -4491,7 +4495,7 @@ description: "Evidence-based idea-to-proposal pipeline. Use when the user wants 
 license: MIT
 compatibility: "Claude Code 2.1.268+, Codex 0.156+, Kimi Code CLI 2.0+, ZCode. Needs Python 3.9+. The claude, codex and kimi CLIs or a GLM key add model families."
 metadata:
-  version: "2.1.0"
+  version: "2.1.1"
 ---
 
 # Ultimate Brainstorm (driver)
