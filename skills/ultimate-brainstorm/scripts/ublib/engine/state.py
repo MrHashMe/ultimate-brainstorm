@@ -307,8 +307,15 @@ class Stale(EngineError):
     """run.json changed since this process loaded it (C2): the save is refused, nothing is overwritten."""
 
 
+class LostLock(Stale):
+    """A kit 2.0.3 driver took this driver's lock.json record over (DriverLock.still_ours): the save is refused, so its
+    run.json writes stand. A 2.0.3 save keeps the rev it loaded, so Stale alone does not catch it."""
+
+
 # The rev and state digest this process last read or wrote, per run folder: a save of an unchanged state writes nothing.
 _SAVED = {}
+# The DriverLock this process drives each run folder with (claim to release): every save first asks it (still_ours).
+_DRIVING = {}
 
 
 def _key(run_dir):
@@ -398,13 +405,17 @@ def _fill_defaults(state, run_dir):
 def save(run_dir, state):
     """Compare-and-swap save (C2): writes run.json with rev+1 and re-renders 00_RUN.md, only when the state changed
     since it was loaded or last saved (a no-op poll writes nothing). Raises Stale, and writes nothing, when the rev on
-    disk is not the rev this state was loaded with. Returns True when it wrote."""
+    disk is not the rev this state was loaded with, and LostLock when a kit 2.0.3 driver took the run from the lock
+    this process drives it with. Returns True when it wrote."""
     key = _key(run_dir)
     rev = _rev(state)
     digest = _digest(state)
     path = run_json_path(run_dir)
     if _SAVED.get(key) == (rev, digest) and os.path.exists(path):
         return False
+    lock = _DRIVING.get(key)
+    if lock is not None and not lock.still_ours():
+        raise LostLock("driver lock lost", say="another session took over this run; this one stopped without saving")
     try:
         disk = textio.read_json(path) if os.path.exists(path) else None
     except (OSError, ValueError):
@@ -710,6 +721,7 @@ class DriverLock(object):
                 time.sleep(delay)
                 delay = min(delay * 2, 0.5)
         self.lost = False
+        _DRIVING[_key(self.run_dir)] = self
         self._start_beat()
         return None
 
@@ -843,6 +855,8 @@ class DriverLock(object):
         return data if isinstance(data, dict) else {}
 
     def release(self):
+        if _DRIVING.get(_key(self.run_dir)) is self:
+            del _DRIVING[_key(self.run_dir)]
         if not self.held:
             return
         if self._beat is not None:

@@ -72,6 +72,24 @@ class Base(tl.EngineTestCase):
                 raise AssertionError("timed out waiting for " + what)
             time.sleep(0.02)
 
+    def to_2_1g(self, autopilot):
+        rc, card = self.run_ub("init", "--host", "claude-code", "--text", "standard %s shift-swap app for nurses"
+                               % autopilot, "--root", self.project, "--no-preflight", "--components", "grilling",
+                               "--json")
+        self.assertEqual(rc, 0, card)
+        for _ in range(80):
+            if card.get("type") == "HOST" and card.get("step") == "2.1g":
+                return card["run"], card
+            self.assertIn(card.get("type"), ("HUMAN", "AUTO"), card)
+            if card.get("type") == "HUMAN":
+                rc, card = self.run_ub("answer", card["run"], card["gate"], "--default", "--json")
+            else:
+                rc, card = self.run_ub("next", card["run"], "--wait-s", "0", "--json")
+        self.fail("the run never reached 2.1g")
+
+    def lease(self, card):
+        return card["task"]["done_cmd"].split("--lease ")[1].split()[0]
+
 
 # ------------------------------------------------------------------------------------------------ kickoff seeds
 
@@ -440,6 +458,71 @@ class LostRecord(Base):
         self.assertEqual(textio.read_bytes(os.path.join(run, "run.json")), before)
         self.assertEqual(textio.read_json(info), taken[0])
 
+    def meets_takeover(self, run, target, name, *args):
+        """Review 2.1.1, the known gap: a 2.0.3 takeover that landed after the command's announce check, while it
+        applied its one change, still saved that change over the other driver's run.json (a 2.0.3 save keeps the rev
+        it loaded, so the rev check missed it). The takeover lands here as `target.name` runs; state.save refuses."""
+        before = textio.read_bytes(os.path.join(run, "run.json"))
+        taken, real = [], getattr(target, name)
+
+        def take_over_first(*a, **kw):
+            if not taken:
+                taken.append(self.take_over(run))
+            return real(*a, **kw)
+        with mock.patch.object(target, name, side_effect=take_over_first):
+            rc, card = self.run_ub(*args)
+        self.assertTrue(taken, "%s never ran" % name)
+        self.assertEqual(card["type"], "BLOCKED", card)
+        self.assertIn("another session took over this run; this one stopped without saving", card["say"])
+        self.assertIn("this %s was not applied" % args[0], card["notes"])
+        self.assertTrue(card["fix"], card)
+        self.assertEqual(textio.read_bytes(os.path.join(run, "run.json")), before)
+        self.assertEqual(textio.read_json(os.path.join(run, ".ub", "lock.json")), taken[0])
+
+    def test_a_takeover_before_a_gate_answer_saves_stops_it_without_saving(self):
+        rc, card = self.run_ub("init", "--host", "claude-code", "--text", "standard guided shift-swap app for nurses",
+                               "--root", self.project, "--no-preflight", "--json")
+        self.assertEqual((card["type"], card["gate"]), ("HUMAN", "G0"), card)
+        self.meets_takeover(card["run"], gates, "apply", "answer", card["run"], "G0", "--default", "--json")
+
+    def test_a_takeover_before_a_host_done_saves_stops_it_without_saving(self):
+        run, card = self.to_2_1g("guided")
+        textio.write_text_atomic(os.path.join(run, "01_FRAME.md"), FRAME)
+        textio.write_text_atomic(os.path.join(run, "criteria.json"), '{"Value": 60, "Feasibility": 40}\n')
+        self.meets_takeover(run, pipeline, "_make_durable", "done", run, "2.1g", "--lease", self.lease(card), "--json")
+
+    def test_a_takeover_while_a_terminal_run_drives_stops_it_without_saving(self):
+        seen = []
+
+        def loop(ctx, steps, lock=None, **kw):
+            seen.append((self.take_over(ctx.run_dir), textio.read_bytes(ctx.path("run.json"))))
+            st.add_note(ctx.state, "the terminal's change")
+            st.save(ctx.run_dir, ctx.state)
+            self.fail("saved over the takeover")
+        with mock.patch("ublib.engine.terminal.run_loop", loop):
+            rc, card = self.run_ub("run", "--text", "standard shift-swap app for nurses", "--root", self.project,
+                                   "--no-preflight", "--json")
+        self.assertEqual(card["type"], "BLOCKED", card)
+        self.assertIn("another session took over this run; this one stopped without saving", card["say"])
+        self.assertTrue(card["fix"], card)
+        self.assertEqual(textio.read_bytes(os.path.join(card["run"], "run.json")), seen[0][1])
+        self.assertEqual(textio.read_json(os.path.join(card["run"], ".ub", "lock.json")), seen[0][0])
+
+    def test_a_takeover_before_stop_saves_names_the_other_session(self):
+        run = self.run_dir()
+        before = textio.read_bytes(os.path.join(run, "run.json"))
+        taken, real = [], ub.load_ctx
+
+        def load_ctx(run_dir, deps=None, persist=False):
+            if persist and not taken:  # under the lock
+                taken.append(self.take_over(run))
+            return real(run_dir, deps, persist)
+        with mock.patch.object(ub, "load_ctx", load_ctx):
+            rc, res = self.run_ub("stop", run, "--json")
+        self.assertTrue(taken, "stop never loaded the run under its lock")
+        self.assertIn("A session of an older kit (2.0.3) is driving this run", res["say"])
+        self.assertEqual(textio.read_bytes(os.path.join(run, "run.json")), before)
+
     def probed(self, run, back):
         """A kit 2.0.3 driver judged this driver's record stale (it stalled), moved it aside to take it over, saw the
         beat had rewritten it and puts it back (`back`), while this driver waits to look again; or it stays away."""
@@ -488,24 +571,6 @@ FRAME = ("# FRAME: shift-swap\n## Job statement (anchor-stripped)\nswap shifts\n
 class EngineRewrites(Base):
     """Review (engine) P3: session A's 2.1g task is taken over by session B (`continue`), whose done is accepted;
     then the engine changes an accepted file, and A, which wrote nothing, runs its done."""
-
-    def to_2_1g(self, autopilot):
-        rc, card = self.run_ub("init", "--host", "claude-code", "--text", "standard %s shift-swap app for nurses"
-                               % autopilot, "--root", self.project, "--no-preflight", "--components", "grilling",
-                               "--json")
-        self.assertEqual(rc, 0, card)
-        for _ in range(80):
-            if card.get("type") == "HOST" and card.get("step") == "2.1g":
-                return card["run"], card
-            self.assertIn(card.get("type"), ("HUMAN", "AUTO"), card)
-            if card.get("type") == "HUMAN":
-                rc, card = self.run_ub("answer", card["run"], card["gate"], "--default", "--json")
-            else:
-                rc, card = self.run_ub("next", card["run"], "--wait-s", "0", "--json")
-        self.fail("the run never reached 2.1g")
-
-    def lease(self, card):
-        return card["task"]["done_cmd"].split("--lease ")[1].split()[0]
 
     def displaced_done(self, autopilot, criteria, corrections=None, late_frame=None):
         run, card_a = self.to_2_1g(autopilot)
