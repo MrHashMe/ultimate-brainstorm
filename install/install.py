@@ -3821,6 +3821,22 @@ def cmd_doctor(ctx):
             add("agent.kimi.version", "PASS" if not d["legacy"] else "FAIL",
                 "kimi %s" % (vtext(d["version"]) or "?"),
                 "upgrade: npm install -g @moonshot-ai/kimi-code, then kimi migrate")
+    # doctor sees native plugins only through `plugin list --json`: without it a plugin is "not checked", never "not
+    # found" (the desktop app or IDE extension without its CLI on PATH, or a CLI whose list fails)
+    unread = {}
+    for a in ("claude-code", "codex"):
+        if not agents[a]["detected"] or names[a] is not None:
+            continue
+        cli = ctx.targets["agents"][a]["detect"]["bin"]
+        if agents[a]["bin"]:
+            cmd = " ".join(ctx.targets["agents"][a]["native"]["list"])
+            unread[a] = ("`%s` failed" % cmd, "run `%s` to see why, then run install.py doctor again" % cmd)
+        else:
+            unread[a] = ("%s is not on PATH" % cli, "put the %s CLI on PATH, then run install.py doctor again, or check "
+                         "the installed plugins in the %s app" % (cli, DISPLAY[a]))
+        add("agent.%s.plugin_list" % a, "WARN", "%s: the plugin list could not be read (%s), so doctor cannot check "
+            "its native plugins (a duplicate %s, the plugin's source and version, Compound Engineering)"
+            % (DISPLAY[a], unread[a][0], SKILL), unread[a][1])
     # duplicates and skill presence
     folders = skill_folders(ctx)
     for skill in STACK_SKILLS:
@@ -3838,6 +3854,10 @@ def cmd_doctor(ctx):
                         "keep one: run install.py install (coverage rule) or delete the extra folder")
                 elif where and (agents[a]["detected"] or agents[a]["selected"]):
                     add("agent.%s.skill" % a, "PASS", "%s: %s" % (DISPLAY[a], where[0]))
+                elif a in unread:
+                    add("agent.%s.skill" % a, "WARN", "%s: no copy of %s found, and its native plugin could not be "
+                        "checked (%s)" % (DISPLAY[a], SKILL, unread[a][0]),
+                        "%s; if it is missing, run: install.py install" % unread[a][1])
                 elif agents[a]["detected"]:
                     add("agent.%s.skill" % a, "WARN", "%s: %s is not installed" % (DISPLAY[a], SKILL),
                         "run: install.py install")
@@ -3995,9 +4015,16 @@ def cmd_doctor(ctx):
                 "unless it is your own skill, delete the folder, then run install.py install")
     ce = [a for a in ("claude-code", "codex") if names.get(a) is not None and
           plugin_listed(names[a], "compound-engineering")]
-    add("stack.compound-engineering", "PASS" if ce else "WARN",
-        ("installed for %s" % ", ".join(ce)) if ce else "Compound Engineering plugin not found",
-        "install.py install (component compound-engineering), or the guide's section 3 commands")
+    ce_fix = "install.py install (component compound-engineering), or the guide's section 3 commands"
+    if ce or not unread:
+        add("stack.compound-engineering", "PASS" if ce else "WARN",
+            ("installed for %s" % ", ".join(ce)) if ce else "Compound Engineering plugin not found", ce_fix)
+    else:
+        missing = [DISPLAY[a] for a in ("claude-code", "codex") if names.get(a) is not None]
+        add("stack.compound-engineering", "WARN", "Compound Engineering plugin %snot checked for %s" % (
+            ("not found for %s, " % ", ".join(missing)) if missing else "",
+            ", ".join("%s (%s)" % (DISPLAY[a], why) for a, (why, _fix) in unread.items())),
+            "%s; if it is missing: %s" % ("; ".join(fix for _why, fix in unread.values()), ce_fix))
     # families via family.py (B2)
     fam_py = os.path.join(ctx.kit_dir, "skills", SKILL, "scripts", "family.py")
     if not os.path.isfile(fam_py):

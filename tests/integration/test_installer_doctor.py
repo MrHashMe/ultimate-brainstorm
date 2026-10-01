@@ -4,6 +4,7 @@ doctor is read-only; each check reaches PASS, WARN and FAIL in at least one case
 ~/.codex/skills FAIL with exit 1; a Z.ai base URL in ~/.claude/settings.json WARNs "claude family reclassified as glm".
 """
 
+import json
 import os
 import re
 import shutil
@@ -14,6 +15,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."
 import paths  # noqa: E402
 import fsnap  # noqa: E402
 import inst  # noqa: E402
+import shims  # noqa: E402
 
 SEEN = set()
 
@@ -87,6 +89,58 @@ class Doctor(unittest.TestCase):
                 shutil.copyfile(fixture, os.path.join(d, "SKILL.md"))
             data = doctor(self, th, expect_exit=1)
             self.assertEqual(set(c["status"] for c in data["checks"]), {"PASS", "WARN", "FAIL"})
+
+
+class UnreadPluginList(unittest.TestCase):
+    """Native plugins are seen only through `plugin list --json`: without it doctor says "not checked", never "not
+    found" (the desktop apps without their CLI on PATH)."""
+
+    def setUp(self):
+        inst.require_installer()
+
+    def test_an_app_only_agent_is_not_checked_rather_than_not_found(self):
+        with inst.installer_home(tools=("node",)) as th:
+            th.mkdir("home", ".claude")
+            th.mkdir("home", ".codex")
+            checks = {c["id"]: c for c in doctor(self, th)["checks"]}
+            for a, cli in (("claude-code", "claude"), ("codex", "codex")):
+                c = checks["agent.%s.plugin_list" % a]
+                self.assertEqual(c["status"], "WARN", c)
+                self.assertIn("plugin list could not be read (%s is not on PATH)" % cli, c["detail"])
+                self.assertIn("put the %s CLI on PATH" % cli, c["fix"])
+                skill = checks["agent.%s.skill" % a]
+                self.assertIn("could not be checked (%s is not on PATH)" % cli, skill["detail"])
+                self.assertNotIn("is not installed", skill["detail"])
+            ce = checks["stack.compound-engineering"]
+            self.assertEqual(ce["status"], "WARN")
+            self.assertEqual(ce["detail"], "Compound Engineering plugin not checked for Claude Code (claude is not on "
+                                           "PATH), Codex (codex is not on PATH)")
+
+    def test_a_stale_native_plugin_hidden_without_the_cli_is_named_as_not_checked(self):
+        with inst.installer_home(tools=("codex", "node")) as th:
+            with open(os.path.join(th.home, ".fakecli-registry.json"), "w", encoding="utf-8") as f:
+                json.dump({"codex|%s" % os.path.normcase(th.env["CODEX_HOME"]): {
+                    "marketplaces": {}, "plugins": {"ultimate-brainstorm@ultimate-brainstorm": {"scope": "user"}}}}, f)
+            d = th.mkdir("home", ".agents", "skills", "ultimate-brainstorm")
+            shutil.copyfile(os.path.join(paths.FIX_INSTALLER, "skill-v2", "SKILL.md.fixture"),
+                            os.path.join(d, "SKILL.md"))
+            ids = [c["id"] for c in doctor(self, th, expect_exit=1)["checks"] if c["status"] == "FAIL"]
+            self.assertIn("dup.ultimate-brainstorm.codex", ids)
+            th.mkdir("home", ".codex")
+            shims.remove_fake(th.bin, "codex")  # the Codex app only
+            checks = {c["id"]: c for c in doctor(self, th, expect_exit=0)["checks"]}
+            self.assertEqual(checks["agent.codex.plugin_list"]["status"], "WARN")
+            self.assertIn("a duplicate ultimate-brainstorm", checks["agent.codex.plugin_list"]["detail"])
+            self.assertEqual(checks["agent.codex.skill"]["status"], "PASS", "the copy is there")
+
+    def test_a_failing_plugin_list_is_named(self):
+        with inst.installer_home(tools=("claude", "node")) as th:
+            th.set_scenario([{"tool": "claude", "argv_regex": "^plugin list", "action": "fail", "exit": 1}])
+            checks = {c["id"]: c for c in doctor(self, th)["checks"]}
+            c = checks["agent.claude-code.plugin_list"]
+            self.assertIn("(`claude plugin list --json` failed)", c["detail"])
+            self.assertIn("run `claude plugin list --json` to see why", c["fix"])
+            self.assertIn("not checked for Claude Code", checks["stack.compound-engineering"]["detail"])
 
 
 if __name__ == "__main__":
