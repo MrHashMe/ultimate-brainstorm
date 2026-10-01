@@ -414,7 +414,9 @@ def with_run(run_dir, deps, fn, host=None, retry=None, resume=False, lease=None,
     the command's parsed arguments), so a mutation is retried, never dropped. While a supersede journal still lists
     files in place, no command changes the run (I6, #11): the BLOCKED supersede card is returned. A run.json that
     changed under this process (state.Stale; only possible without OS file locks) is never overwritten: the run's
-    current card is shown instead. resume: an explicit resume (`continue`, `run --continue`) lifts a `ub stop` (C3)."""
+    current card is shown instead. A command whose lock.json record a kit 2.0.3 driver took over while it ran saves
+    nothing (state.LostLock) and returns the BLOCKED lost-lock card (pipeline.lost_lock). resume: an explicit resume
+    (`continue`, `run --continue`) lifts a `ub stop` (C3)."""
     deps = deps or make_deps()
     lock = st.DriverLock(run_dir, host or "other")
     if not lock.acquire():
@@ -427,9 +429,8 @@ def with_run(run_dir, deps, fn, host=None, retry=None, resume=False, lease=None,
         ctx.lease, ctx.takeover = lease, takeover
         if not host:
             lock.announce(ctx.host_agent)
-            lost = pipeline.lost_lock(ctx, pipeline.load_steps(), lock)
-            if lost:
-                return lost  # a kit 2.0.3 driver took the run while announce rewrote the record: nothing is saved
+            if not lock.still_ours():
+                raise st.LostLock("driver lock lost")  # a 2.0.3 driver took the run as announce rewrote the record
         if (ctx.state.get("exec") or {}).get("redetect"):
             reseat_for_host(ctx, host or ctx.host_agent)  # a migrated v1 run: its families were never detected (#20)
             ctx.state["exec"].pop("redetect", None)
@@ -449,11 +450,21 @@ def with_run(run_dir, deps, fn, host=None, retry=None, resume=False, lease=None,
             return card
         try:
             return fn(ctx, lock)
+        except st.LostLock:
+            raise
         except st.Stale as e:
             ctx = load_ctx(run_dir, deps, persist=True)
             card = pipeline.advance(ctx, pipeline.load_steps(), 0, lock)
             card.setdefault("notes", []).insert(0, "%s (%s); this is the run's current card" % (e.say, e))
             return card
+    except st.LostLock:
+        # a kit 2.0.3 driver took the run while this command ran: nothing was saved, and the card shows the run as the
+        # other driver has it (read-only)
+        card = pipeline.lost_lock(load_ctx(run_dir, deps), pipeline.load_steps(), lock)
+        cmd = getattr(retry, "cmd", None)
+        if cmd not in (None, "next"):
+            card["notes"].insert(0, "this %s was not applied" % cmd)
+        return card
     finally:
         lock.release()
 
@@ -918,6 +929,8 @@ def cmd_init(a, deps=None, terminal=False):
             state["exec"]["wait_s"] = terminal_mode.TERMINAL_WAIT_S
             return terminal_mode.run_loop(ctx, steps, lock)
         return pipeline.advance(ctx, steps, 0, lock)
+    except st.LostLock:  # a kit 2.0.3 driver took the run while the terminal stalled: nothing was saved
+        return pipeline.lost_lock(load_ctx(run_dir, deps), pipeline.load_steps(), lock)
     finally:
         lock.release()
 
@@ -1212,7 +1225,10 @@ def cmd_stop(a, deps=None):
                 st.clear_stop(run_dir)  # it finished meanwhile
             else:
                 ctx.state["status"], ctx.state["stopped_reason"] = "stopped", "user"
-                st.save(run_dir, ctx.state)
+                try:
+                    st.save(run_dir, ctx.state)
+                except st.LostLock:  # a kit 2.0.3 driver took the run meanwhile: the say names it
+                    legacy = lock.holder() or {"pid": None, "host": "a kit 2.0.3 session"}
         holder = legacy or lock.holder()
     finally:
         lock.release()
