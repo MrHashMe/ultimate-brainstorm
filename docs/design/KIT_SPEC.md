@@ -5288,6 +5288,13 @@ The README shows all three routes, in this order.
   - `agent.<a>.plugin_source` (claude-code, codex): PASS when the kit's plugin loads from UB_HOME/kit, WARN when its
     marketplace names another source, including a local folder that no longer exists [U-50]; `agent.<a>.plugin_version`: WARN when `plugin list --json` reports a
     version different from the staged kit [U-18].
+  - `agent.<a>.plugin_list` (claude-code, codex): WARN when the agent is detected but its `plugin list --json` cannot
+    be read: the CLI is not on PATH (the desktop app or IDE extension alone: `<cli> is not on PATH`, fix: put the CLI
+    on PATH and run doctor again, or check the installed plugins in the app) or the command failed (fix: run it to see
+    why). Doctor reads native plugins from nothing else, so what depends on that list is reported as not checked,
+    never as not found: the native-plugin duplicate and `agent.<a>.plugin_source` / `plugin_version` are left out for
+    that agent, `agent.<a>.skill` with no copy says the native plugin could not be checked, and
+    `stack.compound-engineering` without a listed plugin says `not checked for <agent> (<reason>)`.
   - `leftover:<path>`: FAIL for an installer leftover holding a SKILL.md named ultimate-brainstorm (an agent may load
     it), WARN for any other leftover of 10.4 item 3; fix `run: install.py install`.
   - `stack.<skill>.drift:<path>`: WARN when a component skill folder no longer matches the hashes recorded when it was
@@ -5555,7 +5562,9 @@ Implements section 4.17. Generation for each contract type:
   `--purge` keeps `backups/`.
 - doctor: each check reaches PASS, WARN and FAIL in at least one case. A duplicate `ultimate-brainstorm` in both
   `~/.agents/skills` and `~/.codex/skills` gives FAIL and exit 1. A fake `~/.claude/settings.json` with a z.ai base URL
-  gives WARN "claude family reclassified as glm". `--json` shape.
+  gives WARN "claude family reclassified as glm". `--json` shape. A Claude Code or Codex home without its CLI on PATH
+  (or a failing `plugin list --json`) gives WARN `agent.<a>.plugin_list` naming the reason and
+  `stack.compound-engineering` "not checked", never "not found".
 
 **Launchers** (`test_launchers.py`), with a fake `claude`:
 - `claude-glm --version` passes `--settings <file>`; the file exists while the fake runs, has mode 0600 (POSIX), holds

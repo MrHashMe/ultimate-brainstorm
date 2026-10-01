@@ -2,6 +2,18 @@
 
 All notable changes to ultimate-brainstorm are listed here, newest first.
 
+## Unreleased
+
+### Fixed
+
+- `install.py doctor` no longer says the Compound Engineering plugin is "not found", or that ultimate-brainstorm "is
+  not installed", for Claude Code or Codex installed only as a desktop app or IDE extension (no `claude` or `codex` on
+  PATH). Doctor sees native plugins only through `plugin list --json`. Without it, a new WARN
+  `agent.<agent>.plugin_list` names the agent and the reason (`<cli> is not on PATH`, or the command failed), and lists
+  what it could not check: a duplicate ultimate-brainstorm (a stale native plugin beside a copied skill), the plugin's
+  source and version, Compound Engineering. Its fix: put the CLI on PATH and run doctor again, or check the plugins in
+  the app. `stack.compound-engineering` then says `not checked for <agent> (<reason>)`.
+
 ## 2.1.1 - 2026-10-01
 
 Bug-fix release: during an upgrade alongside kit 2.0.3, a driver no longer writes over a 2.0.3 driver's takeover of
