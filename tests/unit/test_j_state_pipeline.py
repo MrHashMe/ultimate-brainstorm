@@ -523,6 +523,31 @@ class LostRecord(Base):
         self.assertIn("A session of an older kit (2.0.3) is driving this run", res["say"])
         self.assertEqual(textio.read_bytes(os.path.join(run, "run.json")), before)
 
+    def test_a_takeover_before_a_step_saves_inside_the_loop_is_never_saved_over(self):
+        """Review 2.1.1: a step that saves inside step_once, before advance's check after it, saved over a takeover
+        too: gap_round_end's rearm_loop commits the next gap round and the moves of its old outputs (the journal)."""
+        ctx = self.make_ctx()
+        run = ctx.run_dir
+        st.set_step(ctx.state, "5.3c", "done", jobs=["5.3c-claude"])
+        st.save(run, ctx.state)
+        old = ctx.path("prompts", "5.3c-claude.prompt.md")
+        os.makedirs(os.path.dirname(old), exist_ok=True)
+        textio.write_text_atomic(old, "round 1\n")
+        before = textio.read_bytes(os.path.join(run, "run.json"))
+        taken = []
+
+        def round_end(ctx, step):
+            taken.append(self.take_over(run))
+            pipeline.rearm_loop(ctx, pipeline.step_ref("gap_loop"), "another gap round")
+        with mock.patch.dict(registry.SCRIPTS, {"noop": round_end}):
+            card = ub.with_run(run, tl.FakeDeps(), lambda ctx, lock: pipeline.advance(ctx, self.SCRIPT, 0, lock),
+                               host="claude-code")
+        self.assertEqual(card["type"], "BLOCKED", card)
+        self.assertIn("another session took over this run; this one stopped without saving", card["say"])
+        self.assertEqual(textio.read_bytes(os.path.join(run, "run.json")), before)
+        self.assertTrue(os.path.exists(old), "the old round's outputs were moved aside")
+        self.assertEqual(textio.read_json(os.path.join(run, ".ub", "lock.json")), taken[0])
+
     def probed(self, run, back):
         """A kit 2.0.3 driver judged this driver's record stale (it stalled), moved it aside to take it over, saw the
         beat had rewritten it and puts it back (`back`), while this driver waits to look again; or it stays away."""

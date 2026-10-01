@@ -16,10 +16,11 @@ All notable changes to ultimate-brainstorm are listed here, newest first.
   driver loop or the terminal before its next save. A record that is missing only for a moment, while a 2.0.3 driver
   checks it, does not count as a takeover. Seen as an intermittent Windows CI failure.
 - A command that a 2.0.3 driver takes the run from while it records its one change (a gate answer, a finished host
-  task, a `continue`, a `stop`) no longer saves that change over the other driver's work: every `run.json` save now
-  checks that this session still holds the run (a 2.0.3 save does not compare revisions, so the revision check alone
-  missed it). The command stops with the same BLOCKED card and the note "this <command> was not applied"; `ub stop`
-  says that an older kit's session drives the run and does not see the stop.
+  task, a `continue`, a `stop`, a step that moves old outputs aside for a new round) no longer saves that change over
+  the other driver's work: every `run.json` save now checks that this session still holds the run (a 2.0.3 save does
+  not compare revisions, so the revision check alone missed it). The command stops with the same BLOCKED card and the
+  note "this <command> was not applied"; `ub stop` says that an older kit's session drives the run and does not see
+  the stop.
 - A lock record moved aside and put back is no longer lost on a file system without hard links (exFAT, FAT32, some
   network shares): its bytes are copied back, never over a newer record.
 
